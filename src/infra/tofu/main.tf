@@ -25,6 +25,12 @@ variable "mtls_port" {
 }
 
 # Flower knobs
+variable "run_id" {
+  description = "Shared experiment identifier used by Hub, backend, and clients"
+  type        = string
+  default     = "local-pathmnist-ab-001"
+}
+
 variable "flower_rounds" {
   description = "Number of FL rounds"
   type        = number
@@ -417,6 +423,12 @@ resource "docker_container" "hub" {
 
   env = [
     "REDIS_URL=redis://redis:6379",
+    "RUN_ID=${var.run_id}",
+    "FLOWER_ROUNDS=${var.flower_rounds}",
+    "MIN_CLIENTS=2",
+    "LOCAL_EPOCHS=${var.local_epochs}",
+    "LEARNING_RATE=${var.learning_rate}",
+    "FLOWER_BACKEND_URL=http://flower-server:8081",
     #"VERIFY_TLS=0",
     "HUB_CERT_CRT=/run/certs/hub.crt",
     "HUB_CERT_KEY=/run/certs/hub.key",
@@ -440,6 +452,12 @@ resource "docker_container" "hub" {
     host_path      = abspath("${local.repo_root}/vfp-governance/verifier/certs/hub.key")
     container_path = "/run/certs/hub.key"
     read_only      = true
+  }
+
+  volumes {
+    host_path      = abspath("${local.repo_root}/vfp-governance/verifier/vault")
+    container_path = "/vault"
+    read_only      = false
   }
 
 
@@ -531,8 +549,11 @@ resource "docker_container" "flower_server" {
     "REDIS_URL=redis://redis:6379",
     "VERIFIER_URL=https://verifier-proxy:8443",
     "HUB_URL=http://fc-hub:8080",
+    "RUN_ID=${var.run_id}",
+    "BACKEND_URL=http://flower-server:8081",
+    "CONTROL_PORT=8081",
     "VERIFY_TLS=0",
-    "NUM_ROUNDS=${var.flower_rounds}",
+    "FLOWER_ROUNDS=${var.flower_rounds}",
     "MIN_CLIENTS=2",
     "HUB_CERT_CRT=/run/certs/hub.crt",
     "HUB_CERT_KEY=/run/certs/hub.key",
@@ -566,24 +587,33 @@ resource "docker_container" "flower_server" {
 }
 
 
-# Flower Client - EVEN
-resource "docker_image" "flower_client_even" {
-    name = "fcac/flower-client:local"
-    build {
-      context    = "${local.repo_root}/vfp-core/backend/flower_client"
-      dockerfile = "${local.repo_root}/vfp-core/backend/flower_client/Dockerfile"
-    }
-    keep_locally = true
+# Shared Flower client image
+resource "docker_image" "flower_client" {
+  name = "openhealth/flower-client:local"
+
+  build {
+    context    = "${local.repo_root}/vfp-core/backend/flower_client"
+    dockerfile = "${local.repo_root}/vfp-core/backend/flower_client/Dockerfile"
+  }
+
+  keep_locally = true
 }
 
-resource "docker_container" "flower_client_even" {
-  name  = "flower-client-even"
-  image = docker_image.flower_client_even.name
 
-  networks_advanced { name = docker_network.fc.name }
+# Flower Client - Hospital A
+resource "docker_container" "flower_client_a" {
+  name  = "flower-client-a"
+  image = docker_image.flower_client.name
+
+  networks_advanced {
+    name = docker_network.fc.name
+  }
 
   env = [
-    "ROLE=even",
+    "HOSPITAL=A",
+    "ORG_ID=${var.org_a_id}",
+    "RUN_ID=${var.run_id}",
+    "HUB_URL=http://fc-hub:8080",
     "SERVER_ADDRESS=flower-server:8080",
     "LOCAL_EPOCHS=${var.local_epochs}",
     "LEARNING_RATE=${var.learning_rate}",
@@ -591,18 +621,23 @@ resource "docker_container" "flower_client_even" {
 
   depends_on = [docker_container.flower_server]
   must_run   = true
-  restart    = "no"
+  restart    = "on-failure"
 }
 
-# Flower Client ODD
-resource "docker_container" "flower_client_odd" {
-  name  = "flower-client-odd"
-  image = docker_image.flower_client_even.name
+# Flower Client - Hospital B
+resource "docker_container" "flower_client_b" {
+  name  = "flower-client-b"
+  image = docker_image.flower_client.name
 
-  networks_advanced { name = docker_network.fc.name }
+  networks_advanced {
+    name = docker_network.fc.name
+  }
 
   env = [
-    "ROLE=odd",
+    "HOSPITAL=B",
+    "ORG_ID=${var.org_b_id}",
+    "RUN_ID=${var.run_id}",
+    "HUB_URL=http://fc-hub:8080",
     "SERVER_ADDRESS=flower-server:8080",
     "LOCAL_EPOCHS=${var.local_epochs}",
     "LEARNING_RATE=${var.learning_rate}",
@@ -610,7 +645,7 @@ resource "docker_container" "flower_client_odd" {
 
   depends_on = [docker_container.flower_server]
   must_run   = true
-  restart    = "no"
+  restart    = "on-failure"
 }
 
   
@@ -622,12 +657,12 @@ output "hub_container" {
   value = docker_container.hub.name
 }
 
-output "client_even_container" {
-  value = docker_container.flower_client_even.name
+output "client_a_container" {
+  value = docker_container.flower_client_a.name
 }
 
-output "client_odd_container" {
-  value = docker_container.flower_client_odd.name
+output "client_b_container" {
+  value = docker_container.flower_client_b.name
 }
 
 
@@ -635,5 +670,3 @@ output "mtls_base_url" {
   value       = "https://${var.lan_ip}:${var.mtls_port}"
   description = "Use this as LAN in Test_createEnvelope.sh (https://LAN:8443)"
 }
-
-

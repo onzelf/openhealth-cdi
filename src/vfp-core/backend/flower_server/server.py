@@ -1,452 +1,929 @@
- # backends/flower_server/server.py
-# FastAPI (control plane) + Flower server (data plane)
+# src/vfp-core/backend/flower_server/server.py
 #
-# Test #3 scope:
-# - Hub binds envelope -> training starts
-# - Persist artifact to VAULT_ROOT/<envelope_id>/run.json
-# - No authorization or admission logic in this service
+# Flower coordinator for OpenHealth PathMNIST experiments.
+#
+# The federation envelope establishes who may participate. It does not start
+# training. Training begins only after the Hub marks the selected experiment
+# as "running" (for example, after the user presses START in the frontend).
+#
+# This service contains no admission logic and no backend-registration logic.
+# It coordinates Flower rounds and records experiment evidence.
 
 from __future__ import annotations
 
-import json, random
-import numpy as np
-import os, time, requests, io, base64
+import csv
+import json
+import os
+import socket
 import threading
+import time
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, List
-from uuid import UUID
+from typing import Any, Dict, List, Optional, Tuple
 
 import flwr as fl
-from fastapi import FastAPI, HTTPException, Request
+import requests
 import uvicorn
+from fastapi import FastAPI
+from flwr.common import Metrics, Parameters
+from flwr.server.client_proxy import ClientProxy
 from flwr.server.strategy import FedAvg
-from flwr.common import parameters_to_ndarrays
+from pydantic import BaseModel, Field
 
-from pydantic import BaseModel
-from torchvision.datasets import MNIST
-import torch
-import torch.nn as nn
-from PIL import Image
-import torchvision.transforms as T
- 
-# ----------------------------
-# Configuration
-# ----------------------------
 
-NUM_ROUNDS = int(os.environ.get("NUM_ROUNDS", "3"))
-MIN_AVAILABLE_CLIENTS = int(os.environ.get("MIN_AVAILABLE_CLIENTS", "2"))
-FRACTION_FIT = float(os.environ.get("FRACTION_FIT", "1.0"))
-FRACTION_EVALUATE = float(os.environ.get("FRACTION_EVALUATE", "1.0"))
+# ---------------------------------------------------------------------
+# Environment
+# ---------------------------------------------------------------------
 
-# Simulated enclave boundary (mounted by OpenTofu)
-VAULT_ROOT = Path(os.environ.get("VAULT_ROOT", "/vault"))
+HUB_URL = os.getenv("HUB_URL", "http://fc-hub:8080").rstrip("/")
+RUN_ID = os.getenv("RUN_ID", "pathmnist-ab-001")
+RUNS_DIR = Path(os.getenv("RUNS_DIR", "/vault/runs"))
 
-# Kept for compatibility (not used in Test #3)
-VERIFIER_URL = os.environ.get("VERIFIER_URL", "https://verifier-proxy:8443")
-VERIFY_TLS = os.environ.get("VERIFY_TLS", "0") == "1"
-HUB_CERT: Tuple[str, str] = (
-    os.environ.get("HUB_CERT_CRT", "/run/certs/hub.crt"),
-    os.environ.get("HUB_CERT_KEY", "/run/certs/hub.key"),
+SERVER_ADDRESS = os.getenv("SERVER_ADDRESS", "0.0.0.0:8080")
+SERVER_POLL_SECONDS = float(os.getenv("SERVER_POLL_SECONDS", "1"))
+
+CONTROL_HOST = os.getenv("CONTROL_HOST", "0.0.0.0")
+CONTROL_PORT = int(os.getenv("CONTROL_PORT", "8081"))
+BACKEND_ID = os.getenv("BACKEND_ID", "flower-local")
+BACKEND_TYPE = os.getenv("BACKEND_TYPE", "flower_server")
+BACKEND_URL = os.getenv(
+    "BACKEND_URL",
+    f"http://flower-server:{CONTROL_PORT}",
+).rstrip("/")
+BACKEND_REGISTER_SECONDS = float(
+    os.getenv("BACKEND_REGISTER_SECONDS", "2")
+)
+COMPLETION_RETRY_SECONDS = float(
+    os.getenv("COMPLETION_RETRY_SECONDS", "2")
 )
 
-HUB_URL = os.environ.get("HUB_URL", "http://fc-hub:8080")
+DEFAULT_ROUNDS = int(
+    os.getenv("FLOWER_ROUNDS", os.getenv("NUM_ROUNDS", "3"))
+)
+DEFAULT_MIN_CLIENTS = int(
+    os.getenv(
+        "MIN_CLIENTS",
+        os.getenv("MIN_AVAILABLE_CLIENTS", "2"),
+    )
+)
+DEFAULT_FRACTION_FIT = float(os.getenv("FRACTION_FIT", "1.0"))
+DEFAULT_FRACTION_EVALUATE = float(
+    os.getenv("FRACTION_EVALUATE", "1.0")
+)
 
-_MNIST = None
 
-def sample_mnist_pil(d: int) -> Image.Image:
-    global _MNIST
-    if _MNIST is None:
-        _MNIST = MNIST("/tmp/mnist", train=False, download=True)
-    idx = [i for i, t in enumerate(_MNIST.targets) if int(t) == d]
-    if not idx:
-        raise HTTPException(500, f"mnist_no_samples_for_digit:{d}")
-    img, _ = _MNIST[random.choice(idx)]   # PIL image 28x28
-    return img.convert("L")
+# ---------------------------------------------------------------------
+# Hub-facing backend control plane
+# ---------------------------------------------------------------------
+
+control_app = FastAPI(title="OpenHealth Flower backend control plane")
+bound_envelope: Optional[Dict[str, Any]] = None
+bound_envelope_lock = threading.Lock()
 
 
-def register_with_hub():
-    payload = {"type": "flower_server", "url": "http://flower-server:8081"}
-    for i in range(60):
+class EnvelopeBinding(BaseModel):
+    envelope_id: str
+    allowed_ops: List[str] = Field(default_factory=list)
+    policy_hash: Optional[str] = None
+    valid_until: Optional[int] = None
+    participants: List[str] = Field(default_factory=list)
+    scope: Dict[str, Any] = Field(default_factory=dict)
+
+
+def model_dict(model: BaseModel) -> Dict[str, Any]:
+    if hasattr(model, "model_dump"):
+        return model.model_dump()  # type: ignore[attr-defined]
+    return model.dict()
+
+
+@control_app.get("/health")
+def control_health() -> Dict[str, Any]:
+    with bound_envelope_lock:
+        envelope_id = (
+            bound_envelope.get("envelope_id")
+            if bound_envelope is not None
+            else None
+        )
+
+    return {
+        "status": "ok",
+        "backend_id": BACKEND_ID,
+        "backend_type": BACKEND_TYPE,
+        "run_id": RUN_ID,
+        "bound_envelope_id": envelope_id,
+    }
+
+
+@control_app.post("/bind_envelope")
+def bind_envelope(binding: EnvelopeBinding) -> Dict[str, Any]:
+    """Record a Hub-approved binding without starting Flower training."""
+    global bound_envelope
+
+    payload = model_dict(binding)
+    payload["bound_at"] = utc_now()
+
+    with bound_envelope_lock:
+        bound_envelope = payload
+
+    binding_path = run_dir() / "bound_envelope.json"
+    binding_path.write_text(
+        json.dumps(payload, indent=2),
+        encoding="utf-8",
+    )
+    write_event(
+        "envelope_bound",
+        envelope_id=binding.envelope_id,
+        policy_hash=binding.policy_hash,
+        participants=binding.participants,
+    )
+
+    return {
+        "status": "bound",
+        "backend_id": BACKEND_ID,
+        "run_id": RUN_ID,
+        "envelope_id": binding.envelope_id,
+    }
+
+
+def start_control_plane() -> threading.Thread:
+    thread = threading.Thread(
+        target=uvicorn.run,
+        kwargs={
+            "app": control_app,
+            "host": CONTROL_HOST,
+            "port": CONTROL_PORT,
+            "log_level": "warning",
+        },
+        name="flower-control-plane",
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
+def wait_for_control_plane() -> None:
+    while True:
         try:
-            r = requests.post(f"{HUB_URL}/backend/register", json=payload, timeout=5)
-            if r.status_code == 200:
-                print("[flower-server] registered with hub", flush=True)
+            with socket.create_connection(
+                ("127.0.0.1", CONTROL_PORT),
+                timeout=1,
+            ):
                 return
-            print(f"[flower-server] register HTTP {r.status_code}: {r.text[:200]}", flush=True)
-        except Exception as e:
-            print(f"[flower-server] hub not ready ({i+1}/60): {e}", flush=True)
-        time.sleep(1)
-    raise RuntimeError("could not register with hub")
-
-# ----------------------------
-# State (workflow)
-# ----------------------------
-
-app = FastAPI()
-
-envelope_config: Optional[Dict[str, Any]] = None
-envelope_bound = threading.Event()  # set when Hub binds the envelope
-
-training_metrics: Dict[str, Any] = {
-    "rounds": 0,
-    "loss": None,
-    "accuracy": None,
-    "started_at": None,
-    "ended_at": None,
-    "status": "idle",  # idle | bound | training | done | failed
-    "error": None,
-}
+        except OSError:
+            time.sleep(0.1)
 
 
-def now() -> str:
-    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+def register_with_hub() -> None:
+    payload = {
+        "backend_id": BACKEND_ID,
+        "backend_type": BACKEND_TYPE,
+        "url": BACKEND_URL,
+        "metadata": {
+            "run_id": RUN_ID,
+            "server_address": SERVER_ADDRESS,
+            "rounds": DEFAULT_ROUNDS,
+            "min_clients": DEFAULT_MIN_CLIENTS,
+        },
+    }
+
+    while True:
+        try:
+            response = requests.post(
+                f"{HUB_URL}/backend/register",
+                json=payload,
+                timeout=15,
+            )
+            response.raise_for_status()
+            write_event(
+                "backend_registered_with_hub",
+                backend_id=BACKEND_ID,
+                backend_url=BACKEND_URL,
+            )
+            return
+        except Exception as exc:
+            write_event(
+                "backend_registration_failed",
+                error=str(exc),
+                retry_seconds=BACKEND_REGISTER_SECONDS,
+            )
+            time.sleep(BACKEND_REGISTER_SECONDS)
 
 
-def persist_run_artifact(envelope_id: str, payload: Dict[str, Any]) -> Path:
-    outdir = VAULT_ROOT / envelope_id
-    outdir.mkdir(parents=True, exist_ok=True)
-    path = outdir / "run.json"
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True))
-    print(f"[flower_server:{now()}] persisted artifact: {path}", flush=True)
+# ---------------------------------------------------------------------
+# Evidence paths
+# ---------------------------------------------------------------------
+
+def run_dir() -> Path:
+    path = RUNS_DIR / RUN_ID
+    path.mkdir(parents=True, exist_ok=True)
     return path
 
 
-COHORT_TO_DIGITS = {
-    "EVEN_ONLY": [0,2,4,6,8],
-    "ODD_ONLY":  [1,3,5,7,9],
-    "ODD_PLUS":  [1,5,7,0,2],
-}
-
-#
-# Prediction support
-class PredictReq(BaseModel):
-    envelope_id: UUID
-    cohort: str
-    digit: Optional[int] = None
-    image_b64: Optional[str] = None
-    topk: Optional[int] = 3
-
-_transform = T.Compose([
-    T.Grayscale(num_output_channels=1),
-    T.Resize((28, 28)),
-    T.ToTensor(),
-    # MNIST normalization if your training used it:
-    #T.Normalize((0.1307,), (0.3081,))
-])
+def events_path() -> Path:
+    return run_dir() / "events.jsonl"
 
 
-def persist_model_state(envelope_id: str, ndarrays: List[np.ndarray]) -> str:
-    outdir = VAULT_ROOT / envelope_id
-    outdir.mkdir(parents=True, exist_ok=True)
-    path = outdir / "model.pth"
-
-    model = Net()
-    with torch.no_grad():
-        for p, arr in zip(model.parameters(), ndarrays):
-            p.copy_(torch.tensor(arr).reshape_as(p))
-
-    torch.save(model.state_dict(), path)
-    print(f"[flower_server:{now()}] persisted model: {path}", flush=True)
-    return str(path)
+def metrics_path() -> Path:
+    return run_dir() / "metrics.csv"
 
 
-def load_model(envelope_id: str):
-    model_path = f"/vault/{envelope_id}/model.pth"
-    print(f"[load_model] envelope_id={envelope_id!r} path={model_path}")
-
-    if not os.path.exists(model_path):
-        raise HTTPException(409, "model_not_ready")
-
-    model = Net()
-    state = torch.load(model_path, map_location="cpu")
-    model.load_state_dict(state, strict=True)
-    model.eval()
-    return model
+def participants_path() -> Path:
+    return run_dir() / "participants.json"
 
 
-
-def mask_logits(logits: torch.Tensor, allowed: List[int]) -> torch.Tensor:
-    # logits: [1,10]
-    mask = torch.full_like(logits, float("-inf"))
-    for d in allowed:
-        if 0 <= d <= 9:
-            mask[0, d] = 0.0
-    return logits + mask
+def experiment_config_path() -> Path:
+    return run_dir() / "experiment_config.json"
 
 
-
-#
-#-- Net definition
-class Net(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.seq = nn.Sequential(
-            nn.Conv2d(1, 32, 3, 1), nn.ReLU(), nn.MaxPool2d(2),
-            nn.Conv2d(32, 64, 3, 1), nn.ReLU(), nn.MaxPool2d(2),
-            nn.Flatten(), nn.Linear(1600, 128), nn.ReLU(),
-            nn.Linear(128, 10)
-        )
-    def forward(self, x):
-        return self.seq(x)
+def final_model_metadata_path() -> Path:
+    return run_dir() / "final_model_metadata.json"
 
 
-# ----------------------------
-# Flower strategy (captures metrics)
-# ----------------------------
+# ---------------------------------------------------------------------
+# Logging and JSON helpers
+# ---------------------------------------------------------------------
 
-class MetricsFedAvg(FedAvg):
-    def aggregate_fit(self, server_round, results, failures):
-        agg_params, agg_metrics = super().aggregate_fit(server_round, results, failures)
-
-        # Persist final model at the end of training
-        try:
-            if agg_params is not None and envelope_config is not None:
-                if int(server_round) == int(NUM_ROUNDS):
-                    nds = parameters_to_ndarrays(agg_params)
-                    persist_model_state(envelope_config["envelope_id"], nds)
-        except Exception as e:
-            print(f"[flower_server:{now()}] WARN: model persist failed: {e}", flush=True)
-
-        return agg_params, agg_metrics 
-    
-    def aggregate_evaluate(self, server_round, results, failures):
-        # This hook runs after evaluation aggregation each round (if clients evaluate).
-        # We record whatever we can as "run evidence" for Test #3.
-        try:
-            # flwr returns list of (client_proxy, EvaluateRes)
-            if results:
-                losses = [float(res.loss) for _, res in results if res and res.loss is not None]
-                accs = []
-                for _, res in results:
-                    if res and res.metrics and "accuracy" in res.metrics:
-                        try:
-                            accs.append(float(res.metrics["accuracy"]))
-                        except Exception:
-                            pass
-
-                avg_loss = sum(losses) / max(1, len(losses)) if losses else None
-                avg_acc = sum(accs) / max(1, len(accs)) if accs else None
-
-                training_metrics["rounds"] = int(server_round)
-                if avg_loss is not None:
-                    training_metrics["loss"] = float(avg_loss)
-                if avg_acc is not None:
-                    training_metrics["accuracy"] = float(avg_acc)
-
-                if avg_loss is not None and avg_acc is not None:
-                    print(
-                        f"[flower_server] Round {server_round}: loss={avg_loss:.4f}, accuracy={avg_acc:.4f}",
-                        flush=True,
-                    )
-                elif avg_loss is not None:
-                    print(
-                        f"[flower_server] Round {server_round}: loss={avg_loss:.4f}",
-                        flush=True,
-                    )
-
-        except Exception as e:
-            print(f"[flower_server:{now()}] WARN: metrics aggregation failed: {e}", flush=True)
-
-        return super().aggregate_evaluate(server_round, results, failures)
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
-# ----------------------------
-# FastAPI endpoints (control plane)
-# ----------------------------
+def json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
 
-@app.get("/status")
-async def status():
-    if envelope_config is None:
+    if isinstance(value, dict):
         return {
-            "status": "waiting_for_binding",
-            "envelope_id": None,
-            "training": training_metrics,
+            str(key): json_safe(item)
+            for key, item in value.items()
         }
 
-    return {
-        "status": envelope_config.get("status", "bound"),
-        "envelope_id": envelope_config.get("envelope_id"),
-        "bound": envelope_bound.is_set(),
-        "training": training_metrics,
+    if isinstance(value, (list, tuple, set)):
+        return [json_safe(item) for item in value]
+
+    return str(value)
+
+
+def write_event(event_type: str, **kwargs: Any) -> None:
+    event = {
+        "timestamp": utc_now(),
+        "run_id": RUN_ID,
+        "component": "vfp-core/flower_server",
+        "event_type": event_type,
+        **kwargs,
     }
 
+    with events_path().open("a", encoding="utf-8") as file:
+        file.write(json.dumps(json_safe(event)) + "\n")
 
-@app.post("/bind_envelope")
-async def bind_envelope(req: Request):
-    """
-    Workflow hook called by Hub once the envelope is ACTIVE (quorum complete).
-    this is the only trigger condition: bind => start training.
-    """
-    global envelope_config
 
-    data = await req.json()
-    envelope_id = data.get("envelope_id")
-    if not envelope_id:
-        raise HTTPException(400, "missing envelope_id")
+def ensure_metrics_header() -> None:
+    path = metrics_path()
+    if path.exists():
+        return
 
-    if envelope_config is not None:
-        raise HTTPException(409, f"already bound to {envelope_config.get('envelope_id')}")
+    with path.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+        writer.writerow(
+            [
+                "run_id",
+                "round",
+                "phase",
+                "client_count",
+                "failure_count",
+                "loss",
+                "accuracy",
+                "train_loss",
+                "train_accuracy",
+            ]
+        )
 
-    envelope_config = {
-        "envelope_id": envelope_id,
-        "policy_hash": data.get("policy_hash"),
-        "scope": data.get("scope", {}),
-        "status": "bound",
-        "bound_at": int(time.time()),
+
+def append_metrics_row(
+    *,
+    server_round: int,
+    phase: str,
+    client_count: int,
+    failure_count: int,
+    loss: Optional[float] = None,
+    accuracy: Optional[float] = None,
+    train_loss: Optional[float] = None,
+    train_accuracy: Optional[float] = None,
+) -> None:
+    ensure_metrics_header()
+
+    with metrics_path().open("a", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+        writer.writerow(
+            [
+                RUN_ID,
+                server_round,
+                phase,
+                client_count,
+                failure_count,
+                "" if loss is None else loss,
+                "" if accuracy is None else accuracy,
+                "" if train_loss is None else train_loss,
+                "" if train_accuracy is None else train_accuracy,
+            ]
+        )
+
+
+# ---------------------------------------------------------------------
+# Experiment configuration
+# ---------------------------------------------------------------------
+
+def fetch_experiment_config_from_hub() -> Optional[Dict[str, Any]]:
+    try:
+        response = requests.get(
+            f"{HUB_URL}/experiments/{RUN_ID}",
+            timeout=5,
+        )
+        response.raise_for_status()
+
+        payload = response.json()
+        config = payload.get("experiment_config")
+
+        if not isinstance(config, dict):
+            raise ValueError(
+                "Hub response does not contain experiment_config"
+            )
+
+        experiment_config_path().write_text(
+            json.dumps(config, indent=2),
+            encoding="utf-8",
+        )
+        write_event("experiment_config_fetched_from_hub")
+        return config
+
+    except Exception as exc:
+        write_event(
+            "experiment_config_fetch_failed",
+            error=str(exc),
+        )
+        return None
+
+
+def load_experiment_config() -> Dict[str, Any]:
+    path = experiment_config_path()
+
+    if path.exists():
+        try:
+            config = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(config, dict):
+                write_event(
+                    "experiment_config_loaded",
+                    source="shared_run_directory",
+                )
+                return config
+        except Exception as exc:
+            write_event(
+                "experiment_config_read_failed",
+                error=str(exc),
+            )
+
+    fetched = fetch_experiment_config_from_hub()
+    if fetched is not None:
+        return fetched
+
+    fallback = {
+        "run_id": RUN_ID,
+        "dataset": "medmnist",
+        "dataset_subset": "pathmnist",
+        "aggregation_strategy": "FedAvg",
+        "rounds": DEFAULT_ROUNDS,
+        "min_clients": DEFAULT_MIN_CLIENTS,
+        "fraction_fit": DEFAULT_FRACTION_FIT,
+        "fraction_evaluate": DEFAULT_FRACTION_EVALUATE,
     }
 
-    training_metrics["status"] = "bound"
-    training_metrics["error"] = None
-
-    envelope_bound.set()
-
-    print(f"[flower_server:{now()}] Envelope bound: {envelope_id}. Training will start.", flush=True)
-    return {"bound": True, "envelope_id": envelope_id, "status": "bound"}
+    write_event(
+        "experiment_config_fallback_used",
+        config=fallback,
+    )
+    return fallback
 
 
-@app.post("/predict_image")
-async def predict_image(req: PredictReq):
+def positive_int(
+    config: Dict[str, Any],
+    key: str,
+    default: int,
+) -> int:
+    try:
+        return max(1, int(config.get(key, default)))
+    except (TypeError, ValueError):
+        write_event(
+            "invalid_experiment_config_value",
+            key=key,
+            value=config.get(key),
+            fallback=default,
+        )
+        return default
 
-    print(f"[predict_image] envelope_id={req.envelope_id!r} cohort={req.cohort!r} digit={req.digit!r}")
 
-    # ---- cohort → allowed digits (procedural constraint) ----
-    allowed = COHORT_TO_DIGITS.get(req.cohort)
-    if not allowed:
-        raise HTTPException(400, f"unknown_cohort:{req.cohort}")
+def bounded_fraction(
+    config: Dict[str, Any],
+    key: str,
+    default: float,
+) -> float:
+    try:
+        value = float(config.get(key, default))
+    except (TypeError, ValueError):
+        write_event(
+            "invalid_experiment_config_value",
+            key=key,
+            value=config.get(key),
+            fallback=default,
+        )
+        return default
 
-    # ---- choose image source: digit (preferred) OR image_b64 (fallback) ----
-    img: Image.Image
+    if not 0.0 < value <= 1.0:
+        write_event(
+            "invalid_experiment_config_value",
+            key=key,
+            value=value,
+            fallback=default,
+        )
+        return default
 
-    if req.digit is not None:
-        d = int(req.digit)
-        if d < 0 or d > 9:
-            raise HTTPException(400, f"bad_digit:{d}")
+    return value
 
-        # "Fail immediately" if digit is not allowed for the cohort
-        if d not in allowed:
-            raise HTTPException(403, "digit_not_allowed_by_cohort")
 
-        # Sample a random MNIST image for that digit (backend-controlled)
-        img = sample_mnist_pil(d)  # returns PIL.Image in "L"
+# ---------------------------------------------------------------------
+# Hub-controlled experiment lifecycle
+# ---------------------------------------------------------------------
 
-    elif req.image_b64:
-        raw = base64.b64decode(req.image_b64)
-        img = Image.open(io.BytesIO(raw)).convert("L")
+def wait_for_experiment_start() -> Dict[str, Any]:
+    write_event(
+        "server_waiting_for_start",
+        hub_url=HUB_URL,
+        poll_seconds=SERVER_POLL_SECONDS,
+    )
 
-    else:
-        raise HTTPException(400, "need_digit_or_image_b64")
+    last_status: Optional[str] = None
 
-    # ---- load model (persisted under /vault/<envelope_id>/...) ----
-    model = load_model(req.envelope_id)
+    while True:
+        try:
+            response = requests.get(
+                f"{HUB_URL}/experiments/{RUN_ID}/status",
+                timeout=5,
+            )
+            response.raise_for_status()
+            status = response.json()
 
-    # ---- preprocess and infer ----
-    x = _transform(img).unsqueeze(0)  # [1,1,28,28]
+            current_status = str(status.get("status", "unknown"))
 
-    with torch.no_grad():
-        logits = model(x)
-        logits = mask_logits(logits, allowed)          # enforce cohort on outputs
-        probs = torch.softmax(logits, dim=-1)[0]       # [10]
+            if current_status != last_status:
+                write_event(
+                    "experiment_status_changed",
+                    status=current_status,
+                    registered_client_count=status.get(
+                        "registered_client_count"
+                    ),
+                    min_clients=status.get("min_clients"),
+                    can_start=status.get("can_start"),
+                )
+                last_status = current_status
 
-    topk = max(1, min(int(req.topk or 3), 10))
-    vals, idxs = torch.topk(probs, k=topk)
+            if current_status == "running":
+                write_event(
+                    "server_activation_received",
+                    experiment_status=status,
+                )
+                return status
 
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    image_png_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+            if current_status in {
+                "completed",
+                "failed",
+            }:
+                write_event(
+                    "server_terminal_status_received",
+                    experiment_status=status,
+                )
+                return status
 
-    return {
-        "prediction": int(idxs[0].item()),
-        "topk": [{"digit": int(i.item()), "prob": float(v.item())} for v, i in zip(vals, idxs)],
-        "allowed_digits": allowed,
-        "image_png_b64": image_png_b64,
-        "requested_digit": int(req.digit) if req.digit is not None else None,
+        except RuntimeError:
+            raise
+
+        except Exception as exc:
+            write_event(
+                "server_activation_poll_error",
+                error=str(exc),
+            )
+
+        time.sleep(SERVER_POLL_SECONDS)
+
+
+def notify_hub_completed() -> None:
+    while True:
+        try:
+            response = requests.post(
+                f"{HUB_URL}/experiments/{RUN_ID}/complete",
+                timeout=5,
+            )
+            response.raise_for_status()
+
+            write_event(
+                "hub_completion_notified",
+                response=response.json(),
+            )
+            return
+
+        except Exception as exc:
+            write_event(
+                "hub_completion_notify_failed",
+                error=str(exc),
+                retry_seconds=COMPLETION_RETRY_SECONDS,
+            )
+            time.sleep(COMPLETION_RETRY_SECONDS)
+
+
+def keep_control_plane_alive() -> None:
+    write_event("server_control_plane_idle")
+    threading.Event().wait()
+
+
+# ---------------------------------------------------------------------
+# Metric aggregation
+# ---------------------------------------------------------------------
+
+def weighted_average(
+    metrics: List[Tuple[int, Metrics]],
+    key: str,
+) -> Optional[float]:
+    total_examples = 0
+    weighted_sum = 0.0
+
+    for num_examples, metric in metrics:
+        value = metric.get(key)
+        if value is None:
+            continue
+
+        total_examples += num_examples
+        weighted_sum += num_examples * float(value)
+
+    if total_examples == 0:
+        return None
+
+    return weighted_sum / total_examples
+
+
+def fit_metrics_aggregation_fn(
+    metrics: List[Tuple[int, Metrics]],
+) -> Metrics:
+    result: Metrics = {}
+
+    train_loss = weighted_average(metrics, "train_loss")
+    train_accuracy = weighted_average(
+        metrics,
+        "train_accuracy",
+    )
+
+    if train_loss is not None:
+        result["train_loss"] = train_loss
+
+    if train_accuracy is not None:
+        result["train_accuracy"] = train_accuracy
+
+    return result
+
+
+def evaluate_metrics_aggregation_fn(
+    metrics: List[Tuple[int, Metrics]],
+) -> Metrics:
+    result: Metrics = {}
+
+    accuracy = weighted_average(metrics, "accuracy")
+
+    if accuracy is not None:
+        result["accuracy"] = accuracy
+
+    return result
+
+
+# ---------------------------------------------------------------------
+# Evidence-aware FedAvg
+# ---------------------------------------------------------------------
+
+def participant_identity(metrics: Metrics) -> Optional[str]:
+    org_id = metrics.get("org_id")
+    if org_id:
+        return str(org_id)
+
+    hospital = metrics.get("hospital")
+    if hospital:
+        hospital_name = str(hospital).upper()
+        if hospital_name in {"A", "B", "C"}:
+            return f"org://Hospital{hospital_name}"
+        return f"hospital:{hospital_name}"
+
+    return None
+
+
+class EvidenceFedAvg(FedAvg):
+    def __init__(
+        self,
+        *,
+        expected_rounds: int,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.expected_rounds = expected_rounds
+        self.participants: Dict[str, Dict[str, Any]] = {}
+
+    def write_participants(self) -> None:
+        payload = {
+            "run_id": RUN_ID,
+            "participants": [
+                self.participants[participant_id]
+                for participant_id in sorted(self.participants)
+            ],
+        }
+
+        participants_path().write_text(
+            json.dumps(payload, indent=2),
+            encoding="utf-8",
+        )
+
+    def configure_fit(
+        self,
+        server_round: int,
+        parameters: Parameters,
+        client_manager: Any,
+    ):
+        write_event(
+            "round_fit_configured",
+            round=server_round,
+        )
+        return super().configure_fit(
+            server_round,
+            parameters,
+            client_manager,
+        )
+
+    def aggregate_fit(
+        self,
+        server_round: int,
+        results: List[Tuple[ClientProxy, Any]],
+        failures: List[Any],
+    ):
+        parameters_aggregated, metrics_aggregated = (
+            super().aggregate_fit(
+                server_round,
+                results,
+                failures,
+            )
+        )
+
+        for _client, fit_result in results:
+            participant = participant_identity(
+                fit_result.metrics or {}
+            )
+            if participant:
+                self.participants[participant] = {
+                    "participant_id": participant,
+                    "last_seen_round": server_round,
+                    "last_event": "fit_completed",
+                }
+
+        self.write_participants()
+
+        write_event(
+            "round_fit_aggregated",
+            round=server_round,
+            client_count=len(results),
+            failure_count=len(failures),
+            metrics=metrics_aggregated,
+        )
+
+        append_metrics_row(
+            server_round=server_round,
+            phase="fit",
+            client_count=len(results),
+            failure_count=len(failures),
+            train_loss=metrics_aggregated.get("train_loss"),
+            train_accuracy=metrics_aggregated.get(
+                "train_accuracy"
+            ),
+        )
+
+        return parameters_aggregated, metrics_aggregated
+
+    def configure_evaluate(
+        self,
+        server_round: int,
+        parameters: Parameters,
+        client_manager: Any,
+    ):
+        write_event(
+            "round_evaluate_configured",
+            round=server_round,
+        )
+        return super().configure_evaluate(
+            server_round,
+            parameters,
+            client_manager,
+        )
+
+    def aggregate_evaluate(
+        self,
+        server_round: int,
+        results: List[Tuple[ClientProxy, Any]],
+        failures: List[Any],
+    ):
+        loss_aggregated, metrics_aggregated = (
+            super().aggregate_evaluate(
+                server_round,
+                results,
+                failures,
+            )
+        )
+
+        for _client, evaluate_result in results:
+            participant = participant_identity(
+                evaluate_result.metrics or {}
+            )
+            if participant:
+                self.participants[participant] = {
+                    "participant_id": participant,
+                    "last_seen_round": server_round,
+                    "last_event": "evaluation_completed",
+                }
+
+        self.write_participants()
+
+        write_event(
+            "round_evaluate_aggregated",
+            round=server_round,
+            client_count=len(results),
+            failure_count=len(failures),
+            loss=loss_aggregated,
+            metrics=metrics_aggregated,
+        )
+
+        append_metrics_row(
+            server_round=server_round,
+            phase="evaluate",
+            client_count=len(results),
+            failure_count=len(failures),
+            loss=loss_aggregated,
+            accuracy=metrics_aggregated.get("accuracy"),
+        )
+
+        return loss_aggregated, metrics_aggregated
+
+
+# ---------------------------------------------------------------------
+# Final metadata
+# ---------------------------------------------------------------------
+
+def write_final_model_metadata(
+    *,
+    config: Dict[str, Any],
+    rounds_completed: int,
+    status: str,
+    error: Optional[str] = None,
+) -> None:
+    metadata = {
+        "run_id": RUN_ID,
+        "timestamp": utc_now(),
+        "status": status,
+        "dataset": config.get("dataset", "medmnist"),
+        "dataset_subset": config.get(
+            "dataset_subset",
+            "pathmnist",
+        ),
+        "aggregation_strategy": config.get(
+            "aggregation_strategy",
+            "FedAvg",
+        ),
+        "rounds_completed": rounds_completed,
+        "model_artifact": None,
+        "note": (
+            "The Flower coordinator records experiment metadata "
+            "and metrics. Model serving is a separate component."
+        ),
+        "error": error,
     }
 
+    final_model_metadata_path().write_text(
+        json.dumps(metadata, indent=2),
+        encoding="utf-8",
+    )
 
 
-def start_fastapi():
-    uvicorn.run(app, host="0.0.0.0", port=8081, log_level="info")
+# ---------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------
 
+def main() -> None:
+    run_dir()
+    ensure_metrics_header()
 
-# ----------------------------
-# Main (data plane)
-# ----------------------------
+    write_event(
+        "server_starting",
+        server_address=SERVER_ADDRESS,
+        hub_url=HUB_URL,
+        default_rounds=DEFAULT_ROUNDS,
+        default_min_clients=DEFAULT_MIN_CLIENTS,
+        strategy="FedAvg",
+    )
 
-if __name__ == "__main__":
-    print(f"[flower_server:{now()}] Starting up...", flush=True)
-
-    # Start control-plane API
-    fastapi_thread = threading.Thread(target=start_fastapi, daemon=True)
-    fastapi_thread.start()
-
-    # Register backend with Hub 
+    start_control_plane()
+    wait_for_control_plane()
     register_with_hub()
 
-    print("[flower_server] Waiting for Hub binding...", flush=True)
-    envelope_bound.wait()
+    activation = wait_for_experiment_start()
+    if activation.get("status") in {"completed", "failed"}:
+        keep_control_plane_alive()
+        return
 
-    assert envelope_config is not None
-    envelope_id = envelope_config["envelope_id"]
+    config = load_experiment_config()
 
-    # Start Flower training
+    rounds = positive_int(
+        config,
+        "rounds",
+        DEFAULT_ROUNDS,
+    )
+    min_clients = positive_int(
+        config,
+        "min_clients",
+        DEFAULT_MIN_CLIENTS,
+    )
+    fraction_fit = bounded_fraction(
+        config,
+        "fraction_fit",
+        DEFAULT_FRACTION_FIT,
+    )
+    fraction_evaluate = bounded_fraction(
+        config,
+        "fraction_evaluate",
+        DEFAULT_FRACTION_EVALUATE,
+    )
+
+    write_event(
+        "server_starting_flower",
+        server_address=SERVER_ADDRESS,
+        dataset=config.get("dataset", "medmnist"),
+        dataset_subset=config.get(
+            "dataset_subset",
+            "pathmnist",
+        ),
+        flower_rounds=rounds,
+        min_clients=min_clients,
+        fraction_fit=fraction_fit,
+        fraction_evaluate=fraction_evaluate,
+        strategy="FedAvg",
+    )
+
+    strategy = EvidenceFedAvg(
+        expected_rounds=rounds,
+        fraction_fit=fraction_fit,
+        fraction_evaluate=fraction_evaluate,
+        min_fit_clients=min_clients,
+        min_evaluate_clients=min_clients,
+        min_available_clients=min_clients,
+        fit_metrics_aggregation_fn=(
+            fit_metrics_aggregation_fn
+        ),
+        evaluate_metrics_aggregation_fn=(
+            evaluate_metrics_aggregation_fn
+        ),
+    )
+
     try:
-        training_metrics["started_at"] = time.time()
-        training_metrics["status"] = "training"
-
-        strategy = MetricsFedAvg(
-            fraction_fit=FRACTION_FIT,
-            fraction_evaluate=FRACTION_EVALUATE,
-            min_available_clients=MIN_AVAILABLE_CLIENTS,
-        )
-
-        print(
-            f"[flower_server:{now()}] Starting Flower gRPC server on 0.0.0.0:8080 "
-            f"(rounds={NUM_ROUNDS}, min_clients={MIN_AVAILABLE_CLIENTS})",
-            flush=True,
-        )
-
         fl.server.start_server(
-            server_address="0.0.0.0:8080",
-            config=fl.server.ServerConfig(num_rounds=NUM_ROUNDS),
+            server_address=SERVER_ADDRESS,
+            config=fl.server.ServerConfig(
+                num_rounds=rounds
+            ),
             strategy=strategy,
         )
 
-        training_metrics["ended_at"] = time.time()
-        training_metrics["status"] = "done"
+        write_final_model_metadata(
+            config=config,
+            rounds_completed=rounds,
+            status="completed",
+        )
+        write_event(
+            "server_completed",
+            flower_rounds=rounds,
+        )
+        notify_hub_completed()
+        keep_control_plane_alive()
 
-        print(f"[flower_server:{now()}] Training completed", flush=True)
-
-        # Persist run evidence to vault/<envelope_id>/run.json
-        persist_run_artifact(envelope_id, {
-            "envelope_id": envelope_id,
-            "policy_hash": envelope_config.get("policy_hash"),
-            "scope": envelope_config.get("scope", {}),
-            "num_rounds": NUM_ROUNDS,
-            "min_available_clients": MIN_AVAILABLE_CLIENTS,
-            "fraction_fit": FRACTION_FIT,
-            "fraction_evaluate": FRACTION_EVALUATE,
-            "training": training_metrics,
-        })
-
-    except Exception as ex:
-        training_metrics["ended_at"] = time.time()
-        training_metrics["status"] = "failed"
-        training_metrics["error"] = str(ex)
-
-        print(f"[flower_server:{now()}] FATAL ERROR in Flower: {ex}", flush=True)
-
-        # Persist failure evidence too (useful in PoC)
-        try:
-            persist_run_artifact(envelope_id, {
-                "envelope_id": envelope_id,
-                "status": "failed",
-                "error": str(ex),
-                "training": training_metrics,
-            })
-        except Exception as persist_ex:
-            print(f"[flower_server:{now()}] WARN: could not persist failure artifact: {persist_ex}", flush=True)
-
+    except Exception as exc:
+        write_final_model_metadata(
+            config=config,
+            rounds_completed=0,
+            status="failed",
+            error=str(exc),
+        )
+        write_event(
+            "server_failed",
+            error=str(exc),
+        )
         raise
 
-    # Keep process alive after training for observability (status endpoint)
-    threading.Event().wait()
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,98 @@
+{
+    "constitution": {
+    "federation_id": "openhealth-pathmnist-ab",
+    "mou_file": "MOU.txt",
+    "founding_members": [
+      {
+        "org_id": "org://HospitalA",
+        "legal_name": "Hospital A",
+        "representative_name": "[Director A name]",
+        "mou_rules": [
+          "AB-MEMBER-01",
+          "AB-MEMBER-02"
+        ]
+      },
+      {
+        "org_id": "org://HospitalB",
+        "legal_name": "Hospital B",
+        "representative_name": "[Director B name]",
+        "mou_rules": [
+          "AB-MEMBER-01",
+          "AB-MEMBER-02"
+        ]
+      }
+    ],
+    "active_pathology_scope": {
+      "dataset": "PathMNIST",
+      "labels": {
+        "0": "adipose",
+        "1": "background",
+        "2": "debris",
+        "3": "lymphocytes",
+        "4": "mucus",
+        "5": "smooth_muscle"
+      },
+      "excluded_from_ab_envelope": {
+        "6": "normal_colon_mucosa",
+        "7": "cancer_associated_stroma",
+        "8": "colorectal_adenocarcinoma_epithelium"
+      },
+      "mou_rules": [
+        "AB-CONTRIB-A-01",
+        "AB-CONTRIB-B-01",
+        "AB-QUERY-03"
+      ]
+    },
+    "delegation": {
+      "permitted_delegator_role": "hospital_administrator",
+      "permitted_delegate_role": "team_leader",
+      "constraints": {
+        "child_capabilities_must_be_subset": true,
+        "child_query_scope_must_be_subset": true,
+        "child_contribution_scope_must_be_subset": true,
+        "same_federation_envelope_required": true,
+        "same_session_required": true,
+        "child_expiry_must_not_exceed_parent": true,
+        "delegation_chain_must_be_auditable": true,
+        "hospital_remains_accountable": true
+      },
+      "mou_rules": [
+        "AB-DELEGATE-01",
+        "AB-DELEGATE-02",
+        "AB-DELEGATE-03",
+        "AB-DELEGATE-04"
+      ],
+      "enforcement_status": "constitutional_rule_not_yet_enforced_by_current_poc_issuer"
+    },
+    "evidence_requirements": {
+      "required_fields": [
+        "subject",
+        "issuing_organization",
+        "federation_envelope",
+        "session",
+        "capabilities",
+        "scopes",
+        "policy_version",
+        "validity_period"
+      ],
+      "mou_rules": [
+        "AB-EVIDENCE-01",
+        "AB-EVIDENCE-02"
+      ]
+    },
+    "formalization_test": {
+      "rule": "A rule belongs in policy.json only when it can be expressed as a constitutional statement agreed by the hospital directors.",
+      "excluded_by_default": [
+        "service_registration",
+        "container_deployment",
+        "backend_discovery",
+        "local_training_execution"
+      ],
+      "mou_rules": [
+        "AB-FORMAL-01",
+        "AB-FORMAL-02",
+        "AB-FORMAL-03"
+      ]
+    }
+  }
+}

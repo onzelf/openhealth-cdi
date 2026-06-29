@@ -1,75 +1,182 @@
 {
-  "version": "1.1",
+  "version": "1.2",
   "ops": {
-    "view_demographics_deid": {
-      "resource": "DEMOGRAPHICS",
-      "action": "read",
-      "flags": { "pii": false }
+    "join_pathmnist_ab_session": {
+      "resource": "openhealth-pathmnist-ab",
+      "action": "join_session",
+      "purpose": "federated_participation"
+
     },
-    "view_timelines_deid": {
-      "resource": "TIMELINES",
-      "action": "read",
-      "flags": { "pii": false }
+    "submit_update_hospital_a": {
+      "resource": "pathmnist-colon-pathology",
+      "action": "submit_update",
+      "purpose": "federated_training",
+      "scope": {
+        "cohort": [
+          "hospital_a_pathmnist_0_2"
+        ],
+        "pathology_labels": [
+          "adipose",
+          "background",
+          "debris"
+        ]
+      }
+
     },
-    "train_petct_A": {
-      "resource": "PET-CT",
-      "action": "train",
-      "purpose": "model_training",
-      "scope": { "cohort": ["A"] }
+    "submit_update_hospital_b": {
+      "resource": "pathmnist-colon-pathology",
+      "action": "submit_update",
+      "purpose": "federated_training",
+      "scope": {
+        "cohort": [
+          "hospital_b_pathmnist_3_5"
+        ],
+        "pathology_labels": [
+          "lymphocytes",
+          "mucus",
+          "smooth_muscle"
+        ]
+      }
+
     },
-    "read_tumor_agg_nopii": {
-      "resource": "TUMOR_MEASUREMENTS",
-      "action": "read",
-      "flags": { "agg": "aggregated", "pii": false, "contact": false }
+    "submit_evaluation_ab": {
+      "resource": "pathmnist-colon-pathology",
+      "action": "submit_evaluation",
+      "purpose": "model_evaluation",
+      "scope": {
+        "cohort": [
+          "pathmnist_ab_labels_0_5"
+        ],
+        "pathology_labels": [
+          "adipose",
+          "background",
+          "debris",
+          "lymphocytes",
+          "mucus",
+          "smooth_muscle"
+        ]
+      }
+
     },
-    "export_model_params": {
-      "resource": "MODEL_PARAMS",
-      "action": "export"
+    "query_model_hospital_a": {
+      "resource": "pathmnist-colon-pathology",
+      "action": "query_model",
+      "purpose": "approved_model_query",
+      "scope": {
+        "cohort": [
+          "adipose",
+          "background",
+          "debris",
+          "lymphocytes"
+        ]
+      }
+
     },
-    "predict_petct_even_only": {
-  "resource": "PET-CT",
-  "action": "read",
-  "purpose": "model_prediction",
-  "scope": { "cohort": ["EVEN_ONLY"] }
-},
-"predict_petct_odd_only": {
-  "resource": "PET-CT",
-  "action": "read",
-  "purpose": "model_prediction",
-  "scope": { "cohort": ["ODD_ONLY"] }
-},
-"predict_petct_odd_plus": {
-  "resource": "PET-CT",
-  "action": "read",
-  "purpose": "model_prediction",
-  "scope": { "cohort": ["ODD_PLUS"] }
-}
+    "query_model_hospital_b": {
+      "resource": "pathmnist-colon-pathology",
+      "action": "query_model",
+      "purpose": "approved_model_query",
+      "scope": {
+        "cohort": [
+          "debris",
+          "lymphocytes",
+          "mucus",
+          "smooth_muscle"
+        ]
+      }
+
+    },
+    "query_model_hospital_a_team_example": {
+      "resource": "pathmnist-colon-pathology",
+      "action": "query_model",
+      "purpose": "approved_model_query",
+      "scope": {
+        "cohort": [
+          "adipose",
+          "debris",
+          "lymphocytes"
+        ]
+      }
+
+    },
+    "query_model_hospital_b_team_example": {
+      "resource": "pathmnist-colon-pathology",
+      "action": "query_model",
+      "purpose": "approved_model_query",
+      "scope": {
+        "cohort": [
+          "mucus",
+          "smooth_muscle"
+        ]
+      }
+
+    }
   },
   "cap_profiles": {
-    "capset:research_nurse": { "cap": ["view_demographics_deid", "view_timelines_deid"] },
-    "capset:data_scientist": { "cap": ["read_tumor_agg_nopii"] },
-    "capset:trainer_A":      { "cap": ["train_petct_A"] },
-    "capset:egress_safe":    { "cap": ["export_model_params"] },
-    "capset:predictor_even": { "cap": ["predict_petct_even_only"] },
-    "capset:predictor_odd":  { "cap": ["predict_petct_odd_only"] },
-    "capset:predictor_odd_plus": { "cap": ["predict_petct_odd_plus"] }
+    "capset:pathmnist_hospital_a_admin": {
+      "cap": [
+        "join_pathmnist_ab_session",
+        "submit_update_hospital_a",
+        "submit_evaluation_ab",
+        "query_model_hospital_a"
+      ]
 
+    },
+    "capset:pathmnist_hospital_b_admin": {
+      "cap": [
+        "join_pathmnist_ab_session",
+        "submit_update_hospital_b",
+        "submit_evaluation_ab",
+        "query_model_hospital_b"
+      ]
+
+    },
+    "capset:pathmnist_hospital_a_participant": {
+      "cap": [
+        "join_pathmnist_ab_session",
+        "submit_update_hospital_a",
+        "submit_evaluation_ab"
+      ]
+    },
+    "capset:pathmnist_hospital_b_participant": {
+      "cap": [
+        "join_pathmnist_ab_session",
+        "submit_update_hospital_b",
+        "submit_evaluation_ab"
+      ]
+    },
+    "capset:pathmnist_hospital_a_team_example": {
+      "cap": [
+        "query_model_hospital_a_team_example"
+      ]
+    },
+    "capset:pathmnist_hospital_b_team_example": {
+      "cap": [
+        "query_model_hospital_b_team_example"
+      ]
+    }
   },
-  
-  "cap_profiles_default": [
-    "capset:trainer_A",
-    "capset:data_scientist"
-  ],
+  "cap_profiles_default": [],
   "caveats": {
     "audience": "svc:fl-gateway:eu",
-    "prohibitions": ["no_export_raw"]
+    "prohibitions": [
+      "no_export_raw",
+      "no_cross_envelope_reuse",
+      "no_cross_session_reuse",
+      "no_privilege_amplification"
+    ]
   },
+  
   "meta": {
-    "policy_id": "POL-IMAGING-2025H1",
-    "manifest_id": "gov-manifest-2025Q1",
+    "policy_id": "POL-OPENHEALTH-PATHMNIST-AB",
+    "manifest_id": "MOU-OPENHEALTH-PATHMNIST-AB-EXEMPLAR",
+    "mou_file": "MOU.txt",
+    "status": "proof_of_concept",
     "notes": [
-      "EU↔US DPA handled outside ECT (attestation/deployment routing)",
-      "Data quality >= 0.95 enforced upstream, not by gatekeeper"
+      "The pathology query grants are exemplar constitutional choices and may be revised by the Hospital A and Hospital B directors.",
+      "For compatibility with the current verifier, scope.cohort carries either a PathMNIST partition identifier or a pathology class name.",
+      "Delegation constraints are constitutionally declared but require additional issuer and token-claim enforcement.",
+      "No default capability profile is granted."
     ]
   }
 }

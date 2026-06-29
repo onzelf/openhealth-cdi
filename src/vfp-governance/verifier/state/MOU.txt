@@ -1,0 +1,99 @@
+OPENHEALTH PATHMNIST FEDERATION
+EXEMPLAR MEMORANDUM OF UNDERSTANDING
+
+Status: Proof-of-concept constitutional specification
+Federation: Hospital A–Hospital B PathMNIST Federation
+Policy identifier: POL-OPENHEALTH-PATHMNIST-AB
+
+1. FOUNDING MEMBERS
+
+[AB-MEMBER-01] The founding members of the federation are:
+
+* Hospital A, represented by [Director A name]
+* Hospital B, represented by [Director B name]
+
+[AB-MEMBER-02] Each hospital remains institutionally independent and retains responsibility for its personnel, systems, credentials, delegated authorities, and local data processing.
+
+2. FEDERATION PURPOSE
+
+[AB-PURPOSE-01] The federation is constituted to train and use a shared PathMNIST colon-pathology classification model without transferring raw clinical images between members.
+
+[AB-PURPOSE-02] Only actions performed for federated training, evaluation, and approved model query are within the purpose of this federation.
+
+3. CONTRIBUTION RIGHTS
+
+[AB-CONTRIB-A-01] Hospital A may contribute training observations associated with:
+
+* adipose
+* background
+* debris
+
+[AB-CONTRIB-A-02] Hospital A may not contribute observations associated with pathology classes outside this declared contribution scope.
+
+[AB-CONTRIB-B-01] Hospital B may contribute training observations associated with:
+
+* lymphocytes
+* mucus
+* smooth muscle
+
+[AB-CONTRIB-B-02] Hospital B may not contribute observations associated with pathology classes outside this declared contribution scope.
+
+4. QUERY RIGHTS
+
+[AB-QUERY-01] Query authority is independent from contribution authority.
+
+[AB-QUERY-02] A token may authorize queries over all or only a subset of the pathology classes available within the federation.
+
+[AB-QUERY-A-01] Hospital A may issue tokens authorizing queries over pathology classes approved for Hospital A under the federation policy.
+
+[AB-QUERY-B-01] Hospital B may issue tokens authorizing queries over pathology classes approved for Hospital B under the federation policy.
+
+[AB-QUERY-03] No token may authorize queries over a pathology class not covered by the active federation envelope.
+
+5. DELEGATION
+
+[AB-DELEGATE-01] A hospital administrator may delegate bounded token-issuing authority to an identified team leader.
+
+[AB-DELEGATE-02] A delegated token must remain a strict subset of the delegating authority with respect to:
+
+* permitted operations
+* query scope
+* contribution scope
+* federation envelope
+* session
+* validity period
+
+[AB-DELEGATE-03] Delegation must not permit privilege amplification.
+
+[AB-DELEGATE-04] The delegating hospital remains accountable for tokens issued under its delegated authority.
+
+6. ADMISSION AND SESSION BINDING
+
+[AB-SESSION-01] Participation is valid only within an active federation envelope.
+
+[AB-SESSION-02] Session-bound authority expires when the named session ends or when its token expires, whichever occurs first.
+
+[AB-SESSION-03] Authority granted for one envelope or session must not be reused in another envelope or session.
+
+7. ACCOUNTABILITY AND EVIDENCE
+
+[AB-EVIDENCE-01] Every admission decision must produce verifiable evidence identifying:
+
+* the admitted subject
+* the issuing organization
+* the applicable federation envelope
+* the session
+* the granted capabilities
+* the applicable scopes
+* the policy version
+* the validity period
+
+[AB-EVIDENCE-02] Every delegated token must preserve an auditable chain to the accountable hospital.
+
+8. POLICY FORMALIZATION RULE
+
+[AB-FORMAL-01] A rule may be included in policy.json only when it can be expressed as a constitutional statement jointly agreed by the hospital directors.
+
+[AB-FORMAL-02] Infrastructure implementation details, including service registration, container deployment, backend discovery, and local training execution, are not constitutional rules unless the members explicitly agree to govern them at the federation boundary.
+
+[AB-FORMAL-03] Each machine-readable rule in policy.json must reference the corresponding rule identifier in this Memorandum of Understanding.

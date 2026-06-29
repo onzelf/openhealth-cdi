@@ -1,9 +1,12 @@
 {
   "org://HospitalA": {
-    "EVEN_ONLY": "capset:predictor_even",
-    "ODD_PLUS":  "capset:predictor_odd_plus"
+    "PATHMNIST_ADMIN": "capset:pathmnist_hospital_a_admin",
+    "PATHMNIST_PARTICIPANT": "capset:pathmnist_hospital_a_participant",
+    "PATHMNIST_TEAM": "capset:pathmnist_hospital_a_team_example"
   },
   "org://HospitalB": {
-    "ODD_ONLY":  "capset:predictor_odd"
+    "PATHMNIST_ADMIN": "capset:pathmnist_hospital_b_admin",
+    "PATHMNIST_PARTICIPANT": "capset:pathmnist_hospital_b_participant",
+    "PATHMNIST_TEAM": "capset:pathmnist_hospital_b_team_example"
   }
 }

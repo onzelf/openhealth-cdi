@@ -43,8 +43,8 @@ def _save_registry(org: str, data: Dict[str, dict]) -> None:
     tmp.write_text(json.dumps(data, indent=2, sort_keys=True))
     os.replace(tmp, p)  # atomic
 
-# PoC: org-scoped cohort -> cap_profile mapping (constitutional capability profiles)
-CAP_BY_ORG_AND_COHORT = json.load(open(os.getenv("CAP_PROFILE_PATH", "config/cap_profiles.json")))
+# Organization-scoped requestable profile -> policy capset mapping
+CAP_PROFILE_BY_ORG = json.load(open(os.getenv("CAP_PROFILE_PATH", "config/cap_profiles.json")))
 
 def _verify_arg():
     if VERIFY_TLS in ("0", "false", "False", ""):
@@ -53,7 +53,7 @@ def _verify_arg():
 
 class MintReq(BaseModel):
     sub: str
-    cohort: str
+    profile: str
     nbf: Optional[str] = None
     exp: Optional[str] = None
 
@@ -101,16 +101,16 @@ def list_members():
 
 @app.get("/rights")
 def rights():
-    return {"org": ORG, "cohorts": sorted(CAP_BY_ORG_AND_COHORT.get(ORG, {}).keys())}
+    return {"org": ORG, "profiles": sorted(CAP_PROFILE_BY_ORG.get(ORG, {}).keys())}
 
 @app.post("/mint")
 def mint(req: MintReq):
     if not ORG:
         raise HTTPException(500, "issuer_not_configured:missing_ORG")
 
-    cap = CAP_BY_ORG_AND_COHORT.get(ORG, {}).get(req.cohort)
-    if not cap:
-        raise HTTPException(403, f"cohort_not_allowed:{req.cohort}")
+    cap_profile = CAP_PROFILE_BY_ORG.get(ORG, {}).get(req.profile)
+    if not cap_profile:
+        raise HTTPException(403, f"profile_not_allowed:{req.profile}")
 
     # resolve sub -> holder_pub_b64 (and jkt is available for later use)
     db = _load_registry(ORG)
@@ -130,7 +130,7 @@ def mint(req: MintReq):
             f"{VERIFIER_URL}/mint_ect",
             json={
                 "holder_pub_b64": holder_pub_b64,
-                "cap_profiles": [cap],
+                "cap_profiles": [cap_profile],
                 "nbf": nbf,
                 "exp": exp,
                 # Optional: if verifier can embed cnf.jkt, pass it through:
