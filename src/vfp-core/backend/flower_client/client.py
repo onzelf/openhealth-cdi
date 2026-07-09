@@ -25,6 +25,7 @@ import torchvision.transforms as T
 from medmnist import INFO
 from torch.utils.data import DataLoader, Dataset, Subset
 
+from pathlib import Path
 
 # ---------------------------------------------------------------------
 # Configuration
@@ -183,6 +184,7 @@ def load_data() -> Tuple[DataLoader, DataLoader, int, int]:
     """
     info = INFO[DATASET_FLAG]
     data_class = getattr(medmnist, info["python_class"])
+    Path(DATA_ROOT).mkdir(parents=True, exist_ok=True)
 
     num_classes = len(info["label"])
     num_channels = int(info["n_channels"])

@@ -94,14 +94,14 @@ hr
 bold "Step 0: Preflight container liveness"
 need_container fc-hub
 need_container flower-server
-need_container flower-client-even
-need_container flower-client-odd
+need_container flower-client-a
+need_container flower-client-b
 
 # Hub/server should be long-lived; clients may exit due to retry window.
 ensure_running fc-hub
 ensure_running flower-server
-ensure_running flower-client-even
-ensure_running flower-client-odd
+ensure_running flower-client-a
+ensure_running flower-client-b
 
 # --- Step 1: Hub received envelope event ---
 hr
@@ -121,7 +121,7 @@ if log_has fc-hub "Successfully bound flower_server"; then
 elif log_has fc-hub "409|Conflict|already bound|Failed to bind backend flower_server"; then
   warn "Hub reports flower_server bind conflict (likely already bound from a previous run)."
   warn "If you intended a fresh envelope/training, reset with:"
-  echo "  docker restart flower-server flower-client-even flower-client-odd"
+  echo "  docker restart flower-server flower-client-a flower-client-b"
 else
   fail "No binding outcome found in Hub logs. Check: docker logs fc-hub | tail -200"
 fi
@@ -169,7 +169,7 @@ echo "  docker exec -it fc-hub sh -lc 'curl -s http://flower-server:8081/status'
 echo "  docker exec -it flower-server sh -lc 'ls -l /vault/${ENVELOPE_ID}/run.json'"
 echo ""
 echo "If clients exited due to the ~10-minute retry window, restart them:"
-echo "  docker restart flower-client-even flower-client-odd"
+echo "  docker restart flower-client-a flower-client-b"
 echo ""
 echo "If hub reports bind conflict (409), reset server + clients before a new envelope:"
-echo "  docker restart flower-server flower-client-even flower-client-odd"
+echo "  docker restart flower-server flower-client-s flower-client-b"

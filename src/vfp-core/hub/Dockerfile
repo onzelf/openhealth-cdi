@@ -15,15 +15,4 @@ ENV PORT=8080
 
 EXPOSE 8080
 
-CMD [
-  "python",
-  "-m",
-  "uvicorn",
-  "hub:app",
-  "--host",
-  "0.0.0.0",
-  "--port",
-  "8080",
-  "--log-level",
-  "warning"
-]
+CMD ["python","-m","uvicorn","hub:app","--host","0.0.0.0","--port","8080","--log-level","warning"]

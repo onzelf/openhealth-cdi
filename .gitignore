@@ -1,3 +1,13 @@
 
 # OpenTofu/Terraform local provider cache
 **/.terraform/*
+src/infra/tofu/terraform.tfstate*
+src/vfp-governance/verifier/certs/
+src/vfp-governance/verifier/state/binds/
+src/vfp-governance/verifier/state/envelopes/
+src/vfp-governance/verifier/state/events/
+src/vfp-governance/verifier/state/keys/
+src/vfp-governance/verifier/vault/
+LOCAL_GIT_STATUS.txt
+LOCAL_BASE_COMMIT.txt
+LOCAL_UNCOMMITTED_DIFF.patch
