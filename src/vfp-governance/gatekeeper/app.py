@@ -220,25 +220,40 @@ def pick_caps(policy: Dict[str, Any], cap_profiles: List[str]) -> List[Dict[str,
             uniq.append(c)
     return uniq
 
-def cap_matches_request(cap: Dict[str, Any], req: Dict[str, Any]) -> bool:
+def cap_match_result(
+    cap: Dict[str, Any],
+    req: Dict[str, Any],
+) -> tuple[bool, Optional[str]]:
     if cap.get("resource") != req.get("resource"):
-        return False
+        return False, "capability_violation"
     if cap.get("action") != req.get("action"):
-        return False
+        return False, "capability_violation"
 
     if "purpose" in cap and cap["purpose"] != req.get("purpose"):
-        return False
+        return False, "capability_violation"
 
     if "scope" in cap and isinstance(cap["scope"], dict):
         if "cohort" in cap["scope"]:
             if req.get("cohort") not in cap["scope"]["cohort"]:
-                return False
+                return False, "capability_violation"
+
+        if "pathology_labels" in cap["scope"]:
+            granted_tissues = set(cap["scope"]["pathology_labels"])
+            requested_tissues = set(req.get("requested_tissues", []))
+            if not requested_tissues.issubset(granted_tissues):
+                return False, "capability_scope_exceeded"
 
     if "flags" in cap and isinstance(cap["flags"], dict):
         for k, v in cap["flags"].items():
             if req.get(k) != v:
-                return False
-    return True
+                return False, "capability_violation"
+
+    return True, None
+
+
+def cap_matches_request(cap: Dict[str, Any], req: Dict[str, Any]) -> bool:
+    matched, _ = cap_match_result(cap, req)
+    return matched
 
 
 # =============================================================================
@@ -265,6 +280,7 @@ def load_org_key_and_alg():
 class MintReq(BaseModel):
     holder_pub_b64: str = Field(..., description="Ed25519 public key, base64url (from gen_member_keys.py)")
     cap_profiles: List[str] = Field(..., description="cap profile ids to grant (must exist in policy.cap_profiles)")
+    envelope_id: str = Field(..., min_length=1, description="Active federation envelope bound into the ECT")
     nbf: str
     exp: str
 
@@ -275,9 +291,12 @@ class MintResp(BaseModel):
     kid: str
 
 class ProbeReq(BaseModel):
+    envelope_id: str = Field(..., min_length=1)
+    run_id: str = Field(..., min_length=1)
     resource: str
     action: str
     purpose: Optional[str] = None
+    requested_tissues: List[str]
     cohort: Optional[str] = None
     agg: Optional[str] = None
     pii: Optional[bool] = None
@@ -581,10 +600,26 @@ def health():
     }
 
 # -----------------------------------------------
-# POST /min_ect
+# POST /mint_ect
 # ----------------------------------------------
+def load_active_envelope(envelope_id: str) -> Dict[str, Any]:
+    envelope = _read_json(env_path(envelope_id))
+    if not envelope:
+        raise HTTPException(400, "unknown_envelope")
+    if envelope.get("state") != "ACTIVE":
+        raise HTTPException(400, "envelope_not_active")
+
+    valid_until = envelope.get("valid_until") or envelope.get("exp")
+    if valid_until is not None and int(valid_until) <= now_epoch():
+        raise HTTPException(400, "envelope_expired")
+
+    return envelope
+
+
 @app.post("/mint_ect", response_model=MintResp)
 def mint_ect(req: MintReq):
+    load_active_envelope(req.envelope_id)
+
     caps = pick_caps(_policy, req.cap_profiles)
     if not caps:
         raise HTTPException(400, "selected profiles produce empty capability set")
@@ -601,6 +636,7 @@ def mint_ect(req: MintReq):
             "manifest_id": _policy["meta"]["manifest_id"],
             "policy_hash": _policy_hash,
         },
+        "envelope_id": req.envelope_id,
         "cnf": {"jkt": jkt},
         "cap": caps,
     }
@@ -652,7 +688,10 @@ def _probe_impl(
             ect_jws,
             _org_pub,
             algorithms=["ES256", "ES384", "ES512", "RS256"],
-            options={"require": ["iss", "nbf", "exp", "policy", "cnf", "cap"], "verify_aud": False},
+            options={
+                "require": ["iss", "nbf", "exp", "policy", "cnf", "cap", "envelope_id"],
+                "verify_aud": False,
+            },
         )
     except Exception as e:
         token_ms = _ms(_ns() - t)
@@ -673,6 +712,9 @@ def _probe_impl(
 
     if POLICY_ALLOWLIST and ect["policy"].get("policy_hash") not in POLICY_ALLOWLIST:
         return ProbeResp(allow=False, reason="policy_hash_not_allowed")
+
+    if ect.get("envelope_id") != body.envelope_id:
+        return _bench_return(token_ms, None, t0, False, "envelope_mismatch")
 
     # 2) DPoP
     if not dpop_header:
@@ -714,12 +756,13 @@ def _probe_impl(
     except Exception as e:
         return _bench_return(token_ms, t, t0, False, f"dpop_verify:{e}")
 
-    # htm/htu/nonce/jti
+    # htm/htu/nonce/jti/envelope_id
     try:
         htm = str(pl.get("htm", "")).upper()
         htu = str(pl.get("htu", ""))
         jti = str(pl.get("jti", ""))
         nonce_claim = str(pl.get("nonce", ""))
+        proof_envelope_id = str(pl.get("envelope_id", ""))
 
         if htm != request.method.upper():
             return _bench_return(token_ms, t, t0, False, "dpop_htm_mismatch")
@@ -736,8 +779,15 @@ def _probe_impl(
         if jti != body.jti:
             return _bench_return(token_ms, t, t0, False, "dpop_jti_mismatch")
 
+        if proof_envelope_id != body.envelope_id:
+            return _bench_return(
+                token_ms, t, t0, False,
+                "dpop_envelope_mismatch"
+            )
+
         if (dpop_nonce or "") != nonce_claim:
             return _bench_return(token_ms, t, t0, False, "dpop_nonce_mismatch")
+
     except Exception as e:
         return _bench_return(token_ms, t, t0, False, f"dpop_claims:{e}")
     
@@ -747,30 +797,46 @@ def _probe_impl(
     if ect.get("cnf", {}).get("jkt") != rfc7638_thumbprint_okp_ed25519(jwk["x"]):
         return _bench_return(token_ms, t, t0, False, "dpop_binding_mismatch")
 
-    # 3) tuple match
+    # 3) constitutional reserved-tissue rule
+    reserved_tissues = set(
+        _policy.get("caveats", {}).get("reserved_pathology_labels", [])
+    )
+    if reserved_tissues.intersection(body.requested_tissues):
+        return _bench_return(token_ms, t, t0, False, "reserved_tissue")
+
+    # 4) tuple match
     t = _ns()
     req_tuple = {
+        "envelope_id": body.envelope_id,
+        "run_id": body.run_id,
         "resource": body.resource,
         "action": body.action,
         "purpose": body.purpose,
+        "requested_tissues": body.requested_tissues,
         "cohort": body.cohort,
         "agg": body.agg,
         "pii": body.pii,
         "contact": body.contact,
     }
+
+    failure_reason = "capability_violation"
     for cap in ect.get("cap", []):
-        if cap_matches_request(cap, req_tuple):
+        matched, reason = cap_match_result(cap, req_tuple)
+        if matched:
             cap_ms = _ms(_ns() - t)
             if BENCH: _bench_add({"token_verify_ms": token_ms, "pop_verify_ms": pop_ms, "cap_match_ms": cap_ms,
                                   "full_check_ms": _ms(_ns()-t0), "allow": True})
-             
+
             return ProbeResp(allow=True)
-        
+
+        if reason == "capability_scope_exceeded":
+            failure_reason = reason
+
     cap_ms = _ms(_ns() - t)
     if BENCH: _bench_add({"token_verify_ms": token_ms, "pop_verify_ms": pop_ms, "cap_match_ms": cap_ms,
-                          "full_check_ms": _ms(_ns()-t0), "allow": False, "reason": "capability_violation"})
-  
-    return ProbeResp(allow=False, reason="capability_violation")
+                          "full_check_ms": _ms(_ns()-t0), "allow": False, "reason": failure_reason})
+
+    return ProbeResp(allow=False, reason=failure_reason)
 
 
 @app.post("/admission/check", response_model=ProbeResp)

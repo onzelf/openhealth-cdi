@@ -1,7 +1,27 @@
 {
-    "constitution": {
-    "federation_id": "openhealth-pathmnist-ab",
-    "mou_file": "MOU.txt",
+  "constitution": {
+    "document_id": "CONST-OPENHEALTH-PATHMNIST-AB",
+    "version": "2.1-draft",
+    "status": "proof_of_concept",
+    "source_mou": {
+      "document_id": "MOU-OPENHEALTH-PATHMNIST-AB",
+      "version": "2.1-draft",
+      "file": "MOU.txt"
+    },
+    "research_collaboration": {
+      "name": "OpenHealth PathMNIST A+B",
+      "federation_id": "openhealth-pathmnist-ab",
+      "dataset": "PathMNIST",
+      "protected_resource": "pathmnist-colon-pathology",
+      "clinical_use": false,
+      "purpose": "Study governed federated learning, protected shared-model custody, bounded authorization, and controlled research access.",
+      "mou_rules": [
+        "AB-PURPOSE-01",
+        "AB-PURPOSE-02",
+        "AB-PURPOSE-03",
+        "AB-PURPOSE-04"
+      ]
+    },
     "founding_members": [
       {
         "org_id": "org://HospitalA",
@@ -22,76 +42,294 @@
         ]
       }
     ],
-    "active_pathology_scope": {
-      "dataset": "PathMNIST",
-      "labels": {
-        "0": "adipose",
-        "1": "background",
-        "2": "debris",
-        "3": "lymphocytes",
-        "4": "mucus",
-        "5": "smooth_muscle"
-      },
-      "excluded_from_ab_envelope": {
-        "6": "normal_colon_mucosa",
-        "7": "cancer_associated_stroma",
-        "8": "colorectal_adenocarcinoma_epithelium"
-      },
+    "default_rule": {
+      "decision": "DENY",
+      "principle": "Any activity not explicitly authorized by the constitutional agreement or by a valid authorization derived from it is refused.",
       "mou_rules": [
-        "AB-CONTRIB-A-01",
-        "AB-CONTRIB-B-01",
-        "AB-QUERY-03"
+        "AB-MEMBER-03",
+        "AB-MEMBER-04"
+      ]
+    },
+    "pathmnist_scope": {
+      "tissue_dictionary": {
+        "0": {
+          "identifier": "adipose",
+          "clinical_name": "adipose"
+        },
+        "1": {
+          "identifier": "background",
+          "clinical_name": "background"
+        },
+        "2": {
+          "identifier": "debris",
+          "clinical_name": "debris"
+        },
+        "3": {
+          "identifier": "lymphocytes",
+          "clinical_name": "lymphocytes"
+        },
+        "4": {
+          "identifier": "mucus",
+          "clinical_name": "mucus"
+        },
+        "5": {
+          "identifier": "smooth_muscle",
+          "clinical_name": "smooth muscle"
+        },
+        "6": {
+          "identifier": "normal_colon_mucosa",
+          "clinical_name": "normal colon mucosa"
+        },
+        "7": {
+          "identifier": "cancer_associated_stroma",
+          "clinical_name": "cancer-associated stroma",
+          "interpretation": "tumor-associated stromal tissue"
+        },
+        "8": {
+          "identifier": "colorectal_adenocarcinoma_epithelium",
+          "clinical_name": "colorectal adenocarcinoma epithelium",
+          "interpretation": "malignant epithelial tissue"
+        }
+      },
+      "other_tissue_classes": [
+        "adipose",
+        "background",
+        "lymphocytes",
+        "mucus",
+        "smooth_muscle",
+        "normal_colon_mucosa"
+      ],
+      "cancer_associated_tissue_classes": [
+        "cancer_associated_stroma",
+        "colorectal_adenocarcinoma_epithelium"
+      ],
+      "reserved_tissue_classes": [
+        "debris"
+      ],
+      "mou_rules": [
+        "AB-LABEL-01",
+        "AB-LABEL-02",
+        "AB-LABEL-03",
+        "AB-LABEL-04",
+        "AB-LABEL-05"
+      ]
+    },
+    "training_and_evaluation": {
+      "authorized_tissue_classes": [
+        "adipose",
+        "background",
+        "lymphocytes",
+        "mucus",
+        "smooth_muscle",
+        "normal_colon_mucosa",
+        "cancer_associated_stroma",
+        "colorectal_adenocarcinoma_epithelium"
+      ],
+      "reserved_tissue_effects": {
+        "debris": [
+          "excluded_from_local_training_partitions",
+          "excluded_from_governed_story_evaluation",
+          "outside_authorized_query_scope"
+        ]
+      },
+      "raw_data_exchange_between_hospitals": false,
+      "permitted_outputs_from_local_environment": [
+        "approved_model_updates",
+        "approved_evaluation_information",
+        "required_research_evidence"
+      ],
+      "operational_parameters_not_constitutional": [
+        "sample_allocation",
+        "random_seed",
+        "optimizer",
+        "number_of_rounds",
+        "computing_equipment"
+      ],
+      "mou_rules": [
+        "AB-TRAIN-01",
+        "AB-TRAIN-02",
+        "AB-TRAIN-03",
+        "AB-TRAIN-04",
+        "AB-CONTRIB-01",
+        "AB-CONTRIB-02",
+        "AB-CONTRIB-03"
+      ]
+    },
+    "shared_model_custody": {
+      "classification": "protected_shared_research_asset",
+      "custody": "protected_environment_controlled_for_the_collaboration",
+      "direct_access_by_contributing_hospitals": false,
+      "model_download_by_contributing_hospitals": false,
+      "external_predictions_require_approved_service": true,
+      "principles": [
+        "contribution_rights_are_distinct_from_model_custody",
+        "model_custody_is_distinct_from_query_rights",
+        "query_rights_do_not_imply_access_to_model_weights"
+      ],
+      "mou_rules": [
+        "AB-CUSTODY-01",
+        "AB-CUSTODY-02",
+        "AB-CUSTODY-03",
+        "AB-CUSTODY-04",
+        "AB-CUSTODY-05",
+        "AB-CUSTODY-06"
+      ]
+    },
+    "research_roles": {
+      "other_tissue_reader": {
+        "description": "Research role limited to explicitly granted other-tissue classes.",
+        "minimal_poc_query_scope": [
+          "background",
+          "lymphocytes"
+        ],
+        "does_not_imply_access_to": [
+          "cancer_associated_stroma",
+          "colorectal_adenocarcinoma_epithelium",
+          "debris"
+        ],
+        "mou_rules": [
+          "AB-QUERY-01",
+          "AB-QUERY-02",
+          "AB-QUERY-03",
+          "AB-QUERY-04",
+          "AB-QUERY-06",
+          "AB-QUERY-08"
+        ]
+      },
+      "cancer_associated_tissue_reader": {
+        "description": "Separate research role required to query cancer-associated tissue classes.",
+        "query_scope": [
+          "cancer_associated_stroma",
+          "colorectal_adenocarcinoma_epithelium"
+        ],
+        "does_not_imply_access_to": [
+          "debris"
+        ],
+        "mou_rules": [
+          "AB-QUERY-01",
+          "AB-QUERY-02",
+          "AB-QUERY-05",
+          "AB-QUERY-06",
+          "AB-QUERY-08"
+        ]
+      }
+    },
+    "authorization_context": {
+      "principle": "Every authorization is valid only for the particular approved research collaboration for which it was issued.",
+      "concurrent_collaborations_may_exist": true,
+      "cross_collaboration_reuse_prohibited": true,
+      "independent_verifiability_required": true,
+      "implementation_note": "The executable policy may represent each approved collaboration with a technical identifier. That identifier is not part of the institutional language.",
+      "mou_rules": [
+        "AB-CONTEXT-01",
+        "AB-CONTEXT-02",
+        "AB-CONTEXT-03",
+        "AB-CONTEXT-04",
+        "AB-CONTEXT-05"
+      ]
+    },
+    "issuer_authority": {
+      "authorized_hospitals": [
+        "org://HospitalA",
+        "org://HospitalB"
+      ],
+      "issuer_may_grant_only_authorized_roles": true,
+      "issuer_authority_must_not_be_exceeded": true,
+      "reserved_tissues_may_not_be_granted": [
+        "debris"
+      ],
+      "traceability_to_mou_required": true,
+      "mou_rules": [
+        "AB-ISSUER-01",
+        "AB-ISSUER-02",
+        "AB-ISSUER-03",
+        "AB-ISSUER-04",
+        "AB-ISSUER-05"
+      ]
+    },
+    "holder_assurance": {
+      "holder_binding_required": true,
+      "proof_of_legitimate_possession_required": true,
+      "holder_mismatch_result": "DENY",
+      "bearer_possession_alone_is_insufficient": true,
+      "mou_rules": [
+        "AB-HOLDER-01",
+        "AB-HOLDER-02",
+        "AB-HOLDER-03",
+        "AB-HOLDER-04"
       ]
     },
     "delegation": {
-      "permitted_delegator_role": "hospital_administrator",
-      "permitted_delegate_role": "team_leader",
-      "constraints": {
-        "child_capabilities_must_be_subset": true,
-        "child_query_scope_must_be_subset": true,
-        "child_contribution_scope_must_be_subset": true,
-        "same_federation_envelope_required": true,
-        "same_session_required": true,
-        "child_expiry_must_not_exceed_parent": true,
-        "delegation_chain_must_be_auditable": true,
-        "hospital_remains_accountable": true
-      },
+      "permitted_only_when_explicitly_authorized": true,
+      "child_authority_must_be_subset": true,
+      "collaboration_context_must_be_preserved": true,
+      "child_expiry_must_not_exceed_parent": true,
+      "privilege_amplification_prohibited": true,
+      "sponsoring_hospital_remains_accountable": true,
+      "enforcement_status": "constitutional_rule_not_yet_enforced_by_current_poc",
       "mou_rules": [
         "AB-DELEGATE-01",
         "AB-DELEGATE-02",
         "AB-DELEGATE-03",
-        "AB-DELEGATE-04"
-      ],
-      "enforcement_status": "constitutional_rule_not_yet_enforced_by_current_poc_issuer"
-    },
-    "evidence_requirements": {
-      "required_fields": [
-        "subject",
-        "issuing_organization",
-        "federation_envelope",
-        "session",
-        "capabilities",
-        "scopes",
-        "policy_version",
-        "validity_period"
-      ],
-      "mou_rules": [
-        "AB-EVIDENCE-01",
-        "AB-EVIDENCE-02"
+        "AB-DELEGATE-04",
+        "AB-DELEGATE-05"
       ]
     },
-    "formalization_test": {
-      "rule": "A rule belongs in policy.json only when it can be expressed as a constitutional statement agreed by the hospital directors.",
-      "excluded_by_default": [
-        "service_registration",
+    "evidence_and_accountability": {
+      "authorization_evidence_must_identify": [
+        "issuer",
+        "holder",
+        "research_role_or_capability",
+        "authorized_scope",
+        "approved_research_collaboration",
+        "validity_period"
+      ],
+      "decision_evidence_must_include": [
+        "allow_or_deny",
+        "decision_reason",
+        "requester_binding_result",
+        "requested_action",
+        "requested_tissue_classes",
+        "approved_research_collaboration",
+        "related_model_run_when_applicable",
+        "timestamp"
+      ],
+      "secrets_excluded_from_presented_evidence": true,
+      "mou_rules": [
+        "AB-EVIDENCE-01",
+        "AB-EVIDENCE-02",
+        "AB-EVIDENCE-03",
+        "AB-EVIDENCE-04",
+        "AB-EVIDENCE-05"
+      ]
+    },
+    "formalization_boundary": {
+      "constitutional_topics": [
+        "participating_hospitals",
+        "research_scope",
+        "reserved_tissue_classes",
+        "model_custody",
+        "research_roles",
+        "authorization_context",
+        "issuer_authority",
+        "holder_assurance",
+        "delegation",
+        "evidence_requirements"
+      ],
+      "operational_topics": [
         "container_deployment",
         "backend_discovery",
-        "local_training_execution"
+        "GPU_configuration",
+        "model_architecture",
+        "optimizer",
+        "batch_size",
+        "number_of_rounds"
       ],
       "mou_rules": [
-        "AB-FORMAL-01",
-        "AB-FORMAL-02",
-        "AB-FORMAL-03"
+        "AB-CHANGE-01",
+        "AB-CHANGE-02",
+        "AB-CHANGE-03",
+        "AB-CHANGE-04"
       ]
     }
   }

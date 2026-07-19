@@ -40,13 +40,31 @@ variable "flower_rounds" {
 variable "local_epochs" {
   description = "Local epochs per client"
   type        = number
-  default     = 5
+  default     = 1
 }
 
 variable "learning_rate" {
   description = "Client learning rate"
   type        = number
-  default     = 0.01
+  default     = 0.001
+}
+
+variable "batch_size" {
+  description = "PathMNIST client batch size"
+  type        = number
+  default     = 32
+}
+
+variable "train_fraction" {
+  description = "Fraction of eligible PathMNIST training samples retained"
+  type        = number
+  default     = 0.80
+}
+
+variable "cancer_samples_per_ab_hospital" {
+  description = "Cancer samples per label retained at Hospital A and B"
+  type        = number
+  default     = 100
 }
 
 variable "org_a_id" { 
@@ -525,7 +543,7 @@ resource "docker_container" "frontend_even" {
 resource "docker_image" "flower_server" {
   name = "fcac/flower-server:local"
   build {
-    context    = "${local.repo_root}/vfp-core/backend/flower_server" 
+    context    = "${local.repo_root}/vfp-core/backend"
     dockerfile = "${local.repo_root}/vfp-core/backend/flower_server/Dockerfile"
     no_cache   = false
   }
@@ -555,6 +573,14 @@ resource "docker_container" "flower_server" {
     "VERIFY_TLS=0",
     "FLOWER_ROUNDS=${var.flower_rounds}",
     "MIN_CLIENTS=2",
+    "PHASE=AB_BASE",
+    "DEVICE=cpu",
+    "TRAIN_FRACTION=${var.train_fraction}",
+    "CANCER_SAMPLES_PER_AB_HOSPITAL=${var.cancer_samples_per_ab_hospital}",
+    "BATCH_SIZE=${var.batch_size}",
+    "LOCAL_EPOCHS=${var.local_epochs}",
+    "LEARNING_RATE=${var.learning_rate}",
+    "MEDMNIST_ROOT=/tmp/medmnist",
     "HUB_CERT_CRT=/run/certs/hub.crt",
     "HUB_CERT_KEY=/run/certs/hub.key",
 
@@ -592,7 +618,7 @@ resource "docker_image" "flower_client" {
   name = "openhealth/flower-client:local"
 
   build {
-    context    = "${local.repo_root}/vfp-core/backend/flower_client"
+    context    = "${local.repo_root}/vfp-core/backend"
     dockerfile = "${local.repo_root}/vfp-core/backend/flower_client/Dockerfile"
   }
 
@@ -604,6 +630,7 @@ resource "docker_image" "flower_client" {
 resource "docker_container" "flower_client_a" {
   name  = "flower-client-a"
   image = docker_image.flower_client.name
+  gpus  = "all"
 
   networks_advanced {
     name = docker_network.fc.name
@@ -617,6 +644,11 @@ resource "docker_container" "flower_client_a" {
     "SERVER_ADDRESS=flower-server:8080",
     "LOCAL_EPOCHS=${var.local_epochs}",
     "LEARNING_RATE=${var.learning_rate}",
+    "BATCH_SIZE=${var.batch_size}",
+    "TRAIN_FRACTION=${var.train_fraction}",
+    "CANCER_SAMPLES_PER_AB_HOSPITAL=${var.cancer_samples_per_ab_hospital}",
+    "MEDMNIST_ROOT=/tmp/medmnist",
+    "DEVICE=cuda",
   ]
 
   depends_on = [docker_container.flower_server]
@@ -628,6 +660,7 @@ resource "docker_container" "flower_client_a" {
 resource "docker_container" "flower_client_b" {
   name  = "flower-client-b"
   image = docker_image.flower_client.name
+  gpus  = "all"
 
   networks_advanced {
     name = docker_network.fc.name
@@ -641,6 +674,11 @@ resource "docker_container" "flower_client_b" {
     "SERVER_ADDRESS=flower-server:8080",
     "LOCAL_EPOCHS=${var.local_epochs}",
     "LEARNING_RATE=${var.learning_rate}",
+    "BATCH_SIZE=${var.batch_size}",
+    "TRAIN_FRACTION=${var.train_fraction}",
+    "CANCER_SAMPLES_PER_AB_HOSPITAL=${var.cancer_samples_per_ab_hospital}",
+    "MEDMNIST_ROOT=/tmp/medmnist",
+    "DEVICE=cuda",
   ]
 
   depends_on = [docker_container.flower_server]

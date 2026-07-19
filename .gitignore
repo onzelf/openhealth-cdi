@@ -10,4 +10,5 @@ src/vfp-governance/verifier/state/keys/
 src/vfp-governance/verifier/vault/
 LOCAL_GIT_STATUS.txt
 LOCAL_BASE_COMMIT.txt
-LOCAL_UNCOMMITTED_DIFF.patch
+__pycache__/
+*.py[cod]

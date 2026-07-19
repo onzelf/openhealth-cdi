@@ -1,12 +1,12 @@
 {
   "org://HospitalA": {
-    "PATHMNIST_ADMIN": "capset:pathmnist_hospital_a_admin",
     "PATHMNIST_PARTICIPANT": "capset:pathmnist_hospital_a_participant",
-    "PATHMNIST_TEAM": "capset:pathmnist_hospital_a_team_example"
+    "PATHMNIST_OTHER_TISSUE_READER": "capset:pathmnist_other_tissue_reader",
+    "PATHMNIST_CANCER_ASSOCIATED_READER": "capset:pathmnist_cancer_associated_reader"
   },
   "org://HospitalB": {
-    "PATHMNIST_ADMIN": "capset:pathmnist_hospital_b_admin",
     "PATHMNIST_PARTICIPANT": "capset:pathmnist_hospital_b_participant",
-    "PATHMNIST_TEAM": "capset:pathmnist_hospital_b_team_example"
+    "PATHMNIST_OTHER_TISSUE_READER": "capset:pathmnist_other_tissue_reader",
+    "PATHMNIST_CANCER_ASSOCIATED_READER": "capset:pathmnist_cancer_associated_reader"
   }
 }

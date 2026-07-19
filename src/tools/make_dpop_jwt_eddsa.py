@@ -20,8 +20,8 @@ def b64u_json(obj) -> str:
     return b64u(json.dumps(obj, separators=(",", ":"), sort_keys=True).encode("utf-8"))
 
 def main():
-    if len(sys.argv) != 7:
-        print("Usage: python3 make_dpop_jwt_eddsa.py <privhex> <pubb64> <nonce> <jti> <method> <htu_full_url>")
+    if len(sys.argv) != 8:
+        print("Usage: python3 make_dpop_jwt_eddsa.py <privhex> <pubb64> <nonce> <jti> <htm> <htu> <envelope_id>")
         sys.exit(1)
 
     priv_hex = sys.argv[1]
@@ -30,6 +30,7 @@ def main():
     jti      = sys.argv[4]
     method   = sys.argv[5].upper()
     htu      = sys.argv[6]      # full URL, e.g. http://127.0.0.1:9100/probe
+    envelope_id = sys.argv[7]
 
     # DPoP JWT header with embedded JWK (OKP Ed25519)
     header = {
@@ -43,9 +44,9 @@ def main():
         "htm": method,
         "iat": int(time.time()),
         "jti": jti,
+        "nonce": nonce,
+        "envelope_id": envelope_id
     }
-    if nonce:
-        payload["nonce"] = nonce
 
     h_b64 = b64u_json(header)
     p_b64 = b64u_json(payload)

@@ -1,11 +1,15 @@
 {
-  "version": "1.2",
+  "version": "2.0",
   "ops": {
-    "join_pathmnist_ab_session": {
+    "join_pathmnist_ab_envelope": {
       "resource": "openhealth-pathmnist-ab",
-      "action": "join_session",
-      "purpose": "federated_participation"
-
+      "action": "join_envelope",
+      "purpose": "federated_participation",
+      "mou_rules": [
+        "AB-MEMBER-03",
+        "AB-CONTEXT-01",
+        "AB-CONTEXT-02"
+      ]
     },
     "submit_update_hospital_a": {
       "resource": "pathmnist-colon-pathology",
@@ -13,15 +17,26 @@
       "purpose": "federated_training",
       "scope": {
         "cohort": [
-          "hospital_a_pathmnist_0_2"
+          "hospital_a_pathmnist_ab_base"
         ],
         "pathology_labels": [
           "adipose",
           "background",
-          "debris"
+          "lymphocytes",
+          "mucus",
+          "smooth_muscle",
+          "normal_colon_mucosa",
+          "cancer_associated_stroma",
+          "colorectal_adenocarcinoma_epithelium"
         ]
-      }
-
+      },
+      "mou_rules": [
+        "AB-TRAIN-01",
+        "AB-TRAIN-02",
+        "AB-CONTRIB-01",
+        "AB-CONTRIB-02",
+        "AB-CONTRIB-03"
+      ]
     },
     "submit_update_hospital_b": {
       "resource": "pathmnist-colon-pathology",
@@ -29,15 +44,26 @@
       "purpose": "federated_training",
       "scope": {
         "cohort": [
-          "hospital_b_pathmnist_3_5"
+          "hospital_b_pathmnist_ab_base"
         ],
         "pathology_labels": [
+          "adipose",
+          "background",
           "lymphocytes",
           "mucus",
-          "smooth_muscle"
+          "smooth_muscle",
+          "normal_colon_mucosa",
+          "cancer_associated_stroma",
+          "colorectal_adenocarcinoma_epithelium"
         ]
-      }
-
+      },
+      "mou_rules": [
+        "AB-TRAIN-01",
+        "AB-TRAIN-02",
+        "AB-CONTRIB-01",
+        "AB-CONTRIB-02",
+        "AB-CONTRIB-03"
+      ]
     },
     "submit_evaluation_ab": {
       "resource": "pathmnist-colon-pathology",
@@ -45,138 +71,119 @@
       "purpose": "model_evaluation",
       "scope": {
         "cohort": [
-          "pathmnist_ab_labels_0_5"
+          "pathmnist_ab_base"
         ],
         "pathology_labels": [
           "adipose",
           "background",
-          "debris",
           "lymphocytes",
           "mucus",
-          "smooth_muscle"
+          "smooth_muscle",
+          "normal_colon_mucosa",
+          "cancer_associated_stroma",
+          "colorectal_adenocarcinoma_epithelium"
         ]
-      }
-
+      },
+      "mou_rules": [
+        "AB-TRAIN-01",
+        "AB-TRAIN-03"
+      ]
     },
-    "query_model_hospital_a": {
+    "query_model_other_tissue_reader": {
       "resource": "pathmnist-colon-pathology",
       "action": "query_model",
       "purpose": "approved_model_query",
       "scope": {
-        "cohort": [
-          "adipose",
+        "pathology_labels": [
           "background",
-          "debris",
           "lymphocytes"
         ]
-      }
-
+      },
+      "mou_rules": [
+        "AB-QUERY-01",
+        "AB-QUERY-02",
+        "AB-QUERY-03",
+        "AB-QUERY-04",
+        "AB-QUERY-06",
+        "AB-QUERY-08"
+      ]
     },
-    "query_model_hospital_b": {
+    "query_model_cancer_associated_reader": {
       "resource": "pathmnist-colon-pathology",
       "action": "query_model",
       "purpose": "approved_model_query",
       "scope": {
-        "cohort": [
-          "debris",
-          "lymphocytes",
-          "mucus",
-          "smooth_muscle"
+        "pathology_labels": [
+          "cancer_associated_stroma",
+          "colorectal_adenocarcinoma_epithelium"
         ]
-      }
-
-    },
-    "query_model_hospital_a_team_example": {
-      "resource": "pathmnist-colon-pathology",
-      "action": "query_model",
-      "purpose": "approved_model_query",
-      "scope": {
-        "cohort": [
-          "adipose",
-          "debris",
-          "lymphocytes"
-        ]
-      }
-
-    },
-    "query_model_hospital_b_team_example": {
-      "resource": "pathmnist-colon-pathology",
-      "action": "query_model",
-      "purpose": "approved_model_query",
-      "scope": {
-        "cohort": [
-          "mucus",
-          "smooth_muscle"
-        ]
-      }
-
+      },
+      "mou_rules": [
+        "AB-QUERY-01",
+        "AB-QUERY-02",
+        "AB-QUERY-05",
+        "AB-QUERY-06",
+        "AB-QUERY-08"
+      ]
     }
   },
   "cap_profiles": {
-    "capset:pathmnist_hospital_a_admin": {
-      "cap": [
-        "join_pathmnist_ab_session",
-        "submit_update_hospital_a",
-        "submit_evaluation_ab",
-        "query_model_hospital_a"
-      ]
-
-    },
-    "capset:pathmnist_hospital_b_admin": {
-      "cap": [
-        "join_pathmnist_ab_session",
-        "submit_update_hospital_b",
-        "submit_evaluation_ab",
-        "query_model_hospital_b"
-      ]
-
-    },
     "capset:pathmnist_hospital_a_participant": {
       "cap": [
-        "join_pathmnist_ab_session",
+        "join_pathmnist_ab_envelope",
         "submit_update_hospital_a",
         "submit_evaluation_ab"
       ]
     },
     "capset:pathmnist_hospital_b_participant": {
       "cap": [
-        "join_pathmnist_ab_session",
+        "join_pathmnist_ab_envelope",
         "submit_update_hospital_b",
         "submit_evaluation_ab"
       ]
     },
-    "capset:pathmnist_hospital_a_team_example": {
+    "capset:pathmnist_other_tissue_reader": {
       "cap": [
-        "query_model_hospital_a_team_example"
+        "query_model_other_tissue_reader"
       ]
     },
-    "capset:pathmnist_hospital_b_team_example": {
+    "capset:pathmnist_cancer_associated_reader": {
       "cap": [
-        "query_model_hospital_b_team_example"
+        "query_model_cancer_associated_reader"
       ]
     }
   },
   "cap_profiles_default": [],
   "caveats": {
     "audience": "svc:fl-gateway:eu",
+    "required_bindings": [
+      "envelope_id"
+    ],
+    "reserved_pathology_labels": [
+      "debris"
+    ],
     "prohibitions": [
       "no_export_raw",
       "no_cross_envelope_reuse",
-      "no_cross_session_reuse",
       "no_privilege_amplification"
     ]
   },
-  
   "meta": {
     "policy_id": "POL-OPENHEALTH-PATHMNIST-AB",
-    "manifest_id": "MOU-OPENHEALTH-PATHMNIST-AB-EXEMPLAR",
+    "manifest_id": "MOU-OPENHEALTH-PATHMNIST-AB-2.1",
     "mou_file": "MOU.txt",
+    "constitution_file": "constitution.json",
     "status": "proof_of_concept",
     "notes": [
-      "The pathology query grants are exemplar constitutional choices and may be revised by the Hospital A and Hospital B directors.",
-      "For compatibility with the current verifier, scope.cohort carries either a PathMNIST partition identifier or a pathology class name.",
-      "Delegation constraints are constitutionally declared but require additional issuer and token-claim enforcement.",
-      "No default capability profile is granted."
+      "This policy is derived from MOU.txt: OPENHEALTH-PATHMNIST-AB version 2.1-draft.",
+      "The tuple compiler continues to resolve policy.cap_profiles into policy.ops.",
+      "scope.pathology_labels contains canonical PathMNIST identifiers.",
+      "The verifier must reject any request containing a label listed in caveats.reserved_pathology_labels.",
+      "The issuer and verifier must bind every minted ECT to one envelope_id.",
+      "The verifier must require exact equality between the ECT envelope_id and the request envelope_id.",
+      "No default capability profile is granted.",
+      "Delegation remains constitutionally declared but outside the current PoC enforcement scope.",
+      "Nonce and replay-handling changes are deferred and are not modified by this policy revision."
     ]
   }
 }

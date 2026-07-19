@@ -20,8 +20,23 @@ priv_hex = sk.encode(encoder=encoding.HexEncoder).decode()
 pub_raw  = vk.encode()  # 32 bytes Ed25519 public key
 pub_b64  = b64url_no_pad(pub_raw)
 
-# jkt := base64url(sha256(pubkey_bytes))
-jkt = b64url_no_pad(hashlib.sha256(pub_raw).digest())
+def rfc7638_thumbprint_okp_ed25519(pub_b64u: str) -> str:
+    jwk = {
+        "crv": "Ed25519",
+        "kty": "OKP",
+        "x": pub_b64u,
+    }
+    canonical = json.dumps(
+        jwk,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+    return b64url_no_pad(hashlib.sha256(canonical).digest())
+
+# RFC 7638 / RFC 8037 JWK SHA-256 thumbprint
+jkt = rfc7638_thumbprint_okp_ed25519(pub_b64)
 
 pathlib.Path("holder_keys").mkdir(exist_ok=True)
 pathlib.Path(f"holder_keys/{who}.privhex").write_text(priv_hex)

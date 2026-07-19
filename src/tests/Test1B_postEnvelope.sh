@@ -1,12 +1,26 @@
- #!/usr/bin/env bash
-# Test_post_envelope.sh - Post-envelope verification using server /status + vault evidence
-# Usage: ./Test_post_envelope.sh <envelope_id>
+#!/usr/bin/env bash
+# Post-envelope smoke test for the current OpenHealth lifecycle.
+#
+# Usage:
+#   ./Test1B_postEnvelope.sh <envelope_id> [run_id] [timeout_seconds]
+#
+# Defaults:
+#   run_id          = local-pathmnist-ab-001
+#   timeout_seconds = 1800
+#
+# Note:
+#   This script deliberately does not require curl inside the containers.
+#   Hub/Flower HTTP calls are made with Python stdlib urllib from inside
+#   the relevant Python containers.
 
 set -euo pipefail
 
 ENVELOPE_ID="${1:-}"
-if [[ -z "$ENVELOPE_ID" ]]; then
-  echo "Usage: $0 <envelope_id>"
+RUN_ID="${2:-local-pathmnist-ab-001}"
+TIMEOUT_S="${3:-1800}"
+
+if [[ -z "${ENVELOPE_ID}" ]]; then
+  echo "Usage: $0 <envelope_id> [run_id] [timeout_seconds]"
   exit 1
 fi
 
@@ -16,160 +30,195 @@ warn() { printf "\033[33m!\033[0m %s\n" "$*"; }
 fail() { printf "\033[31m✗\033[0m %s\n" "$*"; exit 1; }
 hr()   { printf "\n%s\n\n" "────────────────────────────────────────"; }
 
-need_container() {
+command -v docker >/dev/null || fail "docker is not installed"
+command -v jq >/dev/null || fail "jq is not installed on host"
+
+need_running_container() {
   local name="$1"
-  docker ps -a --format '{{.Names}}' | grep -qx "$name" || fail "Missing container: $name"
+  docker ps --format '{{.Names}}' | grep -qx "${name}" \
+    || fail "Container is not running: ${name}"
 }
 
-is_running() {
-  local name="$1"
-  docker ps --format '{{.Names}}' | grep -qx "$name"
+container_http() {
+  local container="$1"
+  local method="$2"
+  local url="$3"
+
+  docker exec "${container}" python - "${method}" "${url}" <<'PYCODE'
+import sys
+import urllib.error
+import urllib.request
+
+method = sys.argv[1]
+url = sys.argv[2]
+
+req = urllib.request.Request(url, method=method)
+try:
+    with urllib.request.urlopen(req, timeout=5) as response:
+        body = response.read().decode("utf-8", errors="replace")
+        print(body)
+except urllib.error.HTTPError as exc:
+    body = exc.read().decode("utf-8", errors="replace")
+    print(f"HTTP_ERROR {exc.code} {exc.reason}")
+    print(body)
+    sys.exit(22)
+except Exception as exc:
+    print(f"REQUEST_ERROR {type(exc).__name__}: {exc}")
+    sys.exit(23)
+PYCODE
 }
 
-ensure_running() {
-  local name="$1"
-  if is_running "$name"; then
-    return 0
-  fi
-  warn "$name is not running (may have exited). Restarting..."
-  docker restart "$name" >/dev/null
-  sleep 2
-  is_running "$name" || fail "$name failed to start"
-  pass "$name restarted"
-}
+require_json() {
+  local label="$1"
+  local payload="$2"
 
-log_has() {
-  local name="$1"
-  local pat="$2"
-  if docker logs "$name" 2>&1 | grep  "$pat" > /dev/null; then
-    return 0
-  else
+  if ! jq . >/dev/null 2>&1 <<<"${payload}"; then
+    echo "${label} did not return JSON:" >&2
+    echo "${payload}" >&2
     return 1
   fi
 }
 
-# Call flower-server /status via hub (hub has curl in your environment)
+hub_status() {
+  container_http fc-hub GET \
+    "http://127.0.0.1:8080/experiments/${RUN_ID}/status"
+}
+
+hub_start() {
+  container_http fc-hub POST \
+    "http://127.0.0.1:8080/experiments/${RUN_ID}/start"
+}
+
 flower_status() {
-  docker exec -i fc-hub sh -lc 'curl -s --connect-timeout 2 --max-time 5 http://flower-server:8081/status' 2>/dev/null || true
+  container_http flower-server GET \
+    "http://127.0.0.1:8081/status"
+}
+
+wait_until_ready() {
+  local start now payload active bound count minimum can_start
+  start="$(date +%s)"
+
+  while true; do
+    payload="$(hub_status 2>/dev/null || true)"
+
+    if [[ -n "${payload}" ]] && jq . >/dev/null 2>&1 <<<"${payload}"; then
+      active="$(jq -r '.active_envelope_id // empty' <<<"${payload}")"
+      bound="$(jq -r '.backend_bound // false' <<<"${payload}")"
+      count="$(jq -r '.registered_client_count // 0' <<<"${payload}")"
+      minimum="$(jq -r '.min_clients // 0' <<<"${payload}")"
+      can_start="$(jq -r '.can_start // false' <<<"${payload}")"
+
+      printf 'Hub: envelope=%s bound=%s clients=%s/%s can_start=%s\n' \
+        "${active:-none}" "${bound}" "${count}" "${minimum}" "${can_start}"
+
+      if [[ -n "${active}" && "${active}" != "${ENVELOPE_ID}" ]]; then
+        fail "Hub is bound to envelope ${active}, not ${ENVELOPE_ID}"
+      fi
+
+      if [[ "${active}" == "${ENVELOPE_ID}" \
+         && "${bound}" == "true" \
+         && "${can_start}" == "true" ]]; then
+        return 0
+      fi
+    elif [[ -n "${payload}" ]]; then
+      warn "Hub status is not JSON yet: ${payload}"
+    fi
+
+    now="$(date +%s)"
+    (( now - start < 120 )) || return 1
+    sleep 2
+  done
 }
 
 wait_training_done() {
-  local timeout_s="${1:-600}"   # 10 minutes
-  local start_ts now out
+  local start now payload state round rounds error
+  start="$(date +%s)"
 
-  start_ts=$(date +%s)
   while true; do
-    out="$(flower_status)"
+    payload="$(flower_status 2>/dev/null || true)"
 
-    if [[ -z "$out" ]]; then
-      echo "(!) No /status response yet"
-    else
-      echo "$out" | head -60
+    if [[ -n "${payload}" ]] && jq . >/dev/null 2>&1 <<<"${payload}"; then
+      state="$(jq -r '.training.status // empty' <<<"${payload}")"
+      round="$(jq -r '.training.round // 0' <<<"${payload}")"
+      rounds="$(jq -r '.training.rounds // 0' <<<"${payload}")"
+      error="$(jq -r '.training.error // empty' <<<"${payload}")"
 
-      # Success only when /status says done
-      if echo "$out" | grep -qE '"training"\s*:\s*\{[^}]*"status"\s*:\s*"done"'; then
-        return 0
-      fi
+      printf 'Training: status=%s round=%s/%s\n' \
+        "${state:-unknown}" "${round}" "${rounds}"
 
-      # Fail fast if /status reports error
-      if echo "$out" | grep -qE '"training"\s*:\s*\{[^}]*"status"\s*:\s*"error"'; then
-        return 1
-      fi
+      case "${state}" in
+        done)
+          return 0
+          ;;
+        error)
+          [[ -n "${error}" ]] && echo "Server error: ${error}" >&2
+          return 1
+          ;;
+      esac
+    elif [[ -n "${payload}" ]]; then
+      warn "Flower status is not JSON yet: ${payload}"
     fi
 
-    now=$(date +%s)
-    if (( now - start_ts > timeout_s )); then
-      return 1
-    fi
+    now="$(date +%s)"
+    (( now - start < TIMEOUT_S )) || return 1
     sleep 5
   done
 }
 
+bold "=== OpenHealth post-envelope smoke test ==="
+echo "Envelope ID: ${ENVELOPE_ID}"
+echo "Run ID:      ${RUN_ID}"
 
-bold "=== Post-Envelope Flow Test (Hub → bind → Flower run evidence) ==="
-echo "Envelope ID: $ENVELOPE_ID"
-
-# --- Step 0: Preflight ---
 hr
-bold "Step 0: Preflight container liveness"
-need_container fc-hub
-need_container flower-server
-need_container flower-client-a
-need_container flower-client-b
+bold "Step 1: Container preflight"
+need_running_container fc-hub
+need_running_container flower-server
+need_running_container flower-client-a
+need_running_container flower-client-b
+pass "Hub, server, and A/B clients are running"
 
-# Hub/server should be long-lived; clients may exit due to retry window.
-ensure_running fc-hub
-ensure_running flower-server
-ensure_running flower-client-a
-ensure_running flower-client-b
-
-# --- Step 1: Hub received envelope event ---
 hr
-bold "Step 1: Verify Hub received envelope event"
-if log_has fc-hub "$ENVELOPE_ID"; then
-  pass "Hub received envelope event"
-  docker logs fc-hub 2>&1 | grep "$ENVELOPE_ID" | tail -3 || true
+bold "Step 2: Wait for bound envelope and START readiness"
+if wait_until_ready; then
+  pass "Envelope is bound and experiment can start"
 else
-  fail "Hub did not log the envelope. Check: docker logs fc-hub | tail -200"
-fi
-
-# --- Step 2: Hub attempted binding ---
-hr
-bold "Step 2: Verify Hub bound (or attempted to bind) flower_server"
-if log_has fc-hub "Successfully bound flower_server"; then
-  pass "Hub successfully bound flower_server"
-elif log_has fc-hub "409|Conflict|already bound|Failed to bind backend flower_server"; then
-  warn "Hub reports flower_server bind conflict (likely already bound from a previous run)."
-  warn "If you intended a fresh envelope/training, reset with:"
-  echo "  docker restart flower-server flower-client-a flower-client-b"
-else
-  fail "No binding outcome found in Hub logs. Check: docker logs fc-hub | tail -200"
-fi
-
-# --- Step 3: Flower server saw this envelope ---
-hr
-bold "Step 3: Verify flower-server references this envelope"
-#if docker logs flower-server 2>&1 | grep  -F "$ENVELOPE_ID"; then
-if log_has flower-server "$ENVELOPE_ID"; then
-  pass "flower-server logs reference envelope_id"
-  docker logs flower-server 2>&1 | grep "$ENVELOPE_ID" | tail -5 || true
-else
-  warn "flower-server logs do not mention the envelope id yet (may be log-format dependent)."
-fi
-
-# --- Step 4/5: Training progress via /status (authoritative) ---
-hr
-bold "Step 4: Wait for training completion (authoritative: /status)"
-if wait_training_done 900; then
-  pass "Training completed (per /status)"
-else
-  fail "Training did not complete (per /status)"
-fi
-
-# --- Step 6: Evidence check inside flower-server container (authoritative) ---
-hr
-bold "Step 5: Verify evidence in /vault/<envelope_id> (inside flower-server)"
-if docker exec -i flower-server sh -lc "test -f /vault/${ENVELOPE_ID}/run.json"; then
-  pass "Found /vault/${ENVELOPE_ID}/run.json"
-  ls ../vfp-governance/verifier/vault/${ENVELOPE_ID}/*
-  docker exec -i flower-server sh -lc "head -60 /vault/${ENVELOPE_ID}/run.json" || true
-else
-  warn "Missing /vault/${ENVELOPE_ID}/run.json inside flower-server"
-  warn "Check mount + logs:"
-  echo "  docker exec -it flower-server sh -lc 'ls -l /vault && find /vault -maxdepth 2 -name run.json -print'"
-  fail "Evidence missing"
+  payload="$(hub_status 2>/dev/null || true)"
+  [[ -n "${payload}" ]] && echo "${payload}" | jq . 2>/dev/null || echo "${payload}"
+  fail "Experiment did not become start-ready within 120 seconds"
 fi
 
 hr
-bold "=== Summary ==="
-echo "Envelope: $ENVELOPE_ID"
-echo ""
-echo "Authoritative checks:"
-echo "  docker exec -it fc-hub sh -lc 'curl -s http://flower-server:8081/status'"
-echo "  docker exec -it flower-server sh -lc 'ls -l /vault/${ENVELOPE_ID}/run.json'"
-echo ""
-echo "If clients exited due to the ~10-minute retry window, restart them:"
-echo "  docker restart flower-client-a flower-client-b"
-echo ""
-echo "If hub reports bind conflict (409), reset server + clients before a new envelope:"
-echo "  docker restart flower-server flower-client-s flower-client-b"
+bold "Step 3: Simulate the START button"
+START_RESPONSE="$(hub_start)"
+require_json "Hub START endpoint" "${START_RESPONSE}" || fail "START returned non-JSON"
+echo "${START_RESPONSE}" | jq .
+
+START_STATUS="$(jq -r '.status // empty' <<<"${START_RESPONSE}")"
+[[ "${START_STATUS}" == "running" || "${START_STATUS}" == "completed" ]] \
+  || fail "START failed: status=${START_STATUS:-missing}"
+pass "Experiment START accepted"
+
+hr
+bold "Step 4: Wait for Flower training completion"
+if wait_training_done; then
+  pass "Training completed"
+else
+  payload="$(flower_status 2>/dev/null || true)"
+  [[ -n "${payload}" ]] && echo "${payload}" | jq . 2>/dev/null || echo "${payload}"
+  fail "Training failed or timed out after ${TIMEOUT_S} seconds"
+fi
+
+hr
+bold "Step 5: Verify envelope-bound run evidence"
+EVIDENCE_PATH="/vault/${ENVELOPE_ID}/run.json"
+if docker exec flower-server test -s "${EVIDENCE_PATH}"; then
+  pass "Found ${EVIDENCE_PATH}"
+  docker exec flower-server sh -lc "head -80 '${EVIDENCE_PATH}'"
+else
+  fail "Missing or empty ${EVIDENCE_PATH}"
+fi
+
+hr
+bold "=== PASS ==="
+echo "Envelope ${ENVELOPE_ID} was bound, explicitly started, trained, and evidenced."
+echo "Run artefact checks remain in Test1C_verifyABRounds.sh."

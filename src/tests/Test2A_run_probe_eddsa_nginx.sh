@@ -1,119 +1,433 @@
 #!/usr/bin/env bash
+# Test2A_run_probe_eddsa_nginx.sh
+#
+# Governance-side smoke test only.
+#
+# Direct path under test:
+#   policy.json capset
+#       -> POST /mint_ect
+#       -> signed envelope-bound ECT
+#       -> EdDSA DPoP
+#       -> POST /admission/check
+#       -> expected ALLOW / DENY decisions
+#
+# Deliberately outside this test:
+#   - issuer.py
+#   - issuer-side cap_profiles.json
+#   - holder registry lookup
+# Those belong to Test2B.
+#
+# Usage:
+#   ./Test2A_run_probe_eddsa_nginx.sh <active-envelope-id>
+#
+#  or With the additional inspection:
+#   INSPECT_MINTED_ECT=true ./Test2A_run_probe_eddsa_nginx.sh <active-envelope-id>
+#
+# Optional environment overrides:
+#   VERIFIER_URL=https://verifier.local:8443
+#   DPOP_HTU=https://verifier.local/admission/check
+#   RUN_ID=local-pathmnist-ab-001
+#   CAP_PROFILE=capset:pathmnist_other_tissue_reader
+
 set -euo pipefail
 
-# -------- Config --------
-PORT=${PORT:-8443}
-ISSUER="https://verifier.local:8443"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SRC_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+TOOLS_DIR="${SRC_DIR}/tools"
 
-CAC="../vfp-governance/verifier/certs/ca.crt"
-CRT="../vfp-governance/verifier/certs/hub.crt"
-KEY="../vfp-governance/verifier/certs/hub.key"
+VERIFIER_URL="${VERIFIER_URL:-https://verifier.local:8443}"
+DPOP_HTU="${DPOP_HTU:-https://verifier.local/admission/check}"
 
-# Org-admin mTLS material for /mint_ect (Test#2)
-MINT_CRT="${MINT_CRT:-../vfp-governance/verifier/certs/HospitalA-admin.crt}"
-MINT_KEY="${MINT_KEY:-../vfp-governance/verifier/certs/HospitalA-admin.key}"
+RUN_ID="${RUN_ID:-local-pathmnist-ab-001}"
+CAP_PROFILE="${CAP_PROFILE:-capset:pathmnist_other_tissue_reader}"
 
-# Cap profiles to mint (must exist in policy.cap_profiles)
-CAP_PROFILES='["capset:trainer_A","capset:data_scientist"]'
+POLICY_JSON="${SRC_DIR}/vfp-governance/verifier/state/policy.json"
+
+CAC="${SRC_DIR}/vfp-governance/verifier/certs/ca.crt"
+HUB_CRT="${SRC_DIR}/vfp-governance/verifier/certs/hub.crt"
+HUB_KEY="${SRC_DIR}/vfp-governance/verifier/certs/hub.key"
+
+# Administrative mTLS identity required by nginx for /mint_ect.
+MINT_CRT="${MINT_CRT:-${SRC_DIR}/vfp-governance/verifier/certs/HospitalA-admin.crt}"
+MINT_KEY="${MINT_KEY:-${SRC_DIR}/vfp-governance/verifier/certs/HospitalA-admin.key}"
+
+ENVELOPE_ID="${1:-}"
+OTHER_ENVELOPE_ID="${ENVELOPE_ID}-different"
+INSPECT_MINTED_ECT="${INSPECT_MINTED_ECT:-false}"
 
 NBF="$(date -u -Iseconds -d '-60 seconds' | sed 's/+00:00/Z/')"
-EXP="$(date -u -Iseconds -d '+1 hour'     | sed 's/+00:00/Z/')"
-CURL_MTLS=( -s --cacert "$CAC" --cert "$CRT" --key "$KEY" )
-CURL_MTLS_MINT=( -s --cacert "$CAC" --cert "$MINT_CRT" --key "$MINT_KEY" )
+EXP="$(date -u -Iseconds -d '+5 minutes' | sed 's/+00:00/Z/')"
 
-# -------- Generate holder keys --------
-echo "== 1) Generate holder keys =="
-python3 ../tools/gen_member_keys.py --org org://HospitalA   --who Martinez | sed 's/^/[keys] /' || true
-PUB_B64=$(cat holder_keys/Martinez.pubb64)
-PRIV_HEX=$(cat holder_keys/Martinez.privhex)
+pass() {
+  printf '\033[32m✓\033[0m %s\n' "$*"
+}
 
+fail() {
+  printf '\033[31m✗\033[0m %s\n' "$*" >&2
+  exit 1
+}
 
-echo "== 2)  Wait for /health =="
-for i in {1..30}; do
-  sleep 0.3
-  echo -n "."
-  if curl "${CURL_MTLS[@]}" "${ISSUER}/health" >/dev/null; then break; fi
+section() {
+  printf '\n\033[1m== %s ==\033[0m\n' "$*"
+}
+
+require_file() {
+  local path="$1"
+  [[ -s "${path}" ]] || fail "Missing or empty file: ${path}"
+}
+
+require_command() {
+  local cmd="$1"
+  command -v "${cmd}" >/dev/null 2>&1 || fail "Missing command: ${cmd}"
+}
+
+[[ -n "${ENVELOPE_ID}" ]] || fail \
+  "Usage: $0 <active-envelope-id>"
+
+for cmd in curl jq python3; do
+  require_command "${cmd}"
 done
-echo "[issuer $i] $(curl "${CURL_MTLS[@]}" ${ISSUER}/health)"
 
-# -------- Mint ECT --------
-echo "== 3) Mint ECT =="
-ECT_RESP=$(curl "${CURL_MTLS_MINT[@]}" -X POST "${ISSUER}/mint_ect" \
-  -H 'content-type: application/json' \
-  -d "$(jq -n --arg pub "$PUB_B64" --argjson profiles "${CAP_PROFILES}" --arg nbf "$NBF" --arg exp "$EXP" \
-        '{holder_pub_b64:$pub, cap_profiles:$profiles, nbf:$nbf, exp:$exp}')")
+for path in \
+  "${POLICY_JSON}" \
+  "${CAC}" \
+  "${HUB_CRT}" \
+  "${HUB_KEY}" \
+  "${MINT_CRT}" \
+  "${MINT_KEY}" \
+  "${TOOLS_DIR}/gen_member_keys.py" \
+  "${TOOLS_DIR}/make_dpop_jwt_eddsa.py"; do
+  require_file "${path}"
+done
 
-echo "${ECT_RESP}" | jq .
-ECT=$(echo "${ECT_RESP}" | jq -r .ect_jws)
-echo "[ect]" "${ECT}"
+CURL_HUB=(
+  -sS
+  --cacert "${CAC}"
+  --cert "${HUB_CRT}"
+  --key "${HUB_KEY}"
+)
 
-# -------- Make DPoP (custom, from make_dpop.py) --------
-echo "== 4) Make DPoP =="
-NONCE="test-nonce-$(date +%s)"
-echo "[nonce]" "${NONCE}"
+CURL_MINT=(
+  -sS
+  --cacert "${CAC}"
+  --cert "${MINT_CRT}"
+  --key "${MINT_KEY}"
+)
 
-JTI="jti-$(date +%s)"
-#HTU="${ISSUER}/admission/check"
-HTU="https://verifier.local/admission/check"
-DPoP=$(python3 ../tools/make_dpop_jwt_eddsa.py "${PRIV_HEX}" "${PUB_B64}" "${NONCE}" "${JTI}" "POST" "${HTU}")
-echo "[dpop]" "${DPoP}"
+section "0. Validate executable policy"
 
-# -------- Probe: allow (tumor measurements aggregated, no PII/contact) --------
-echo "== 5) Probe ALLOW =="
-ALLOW_REQ='{"resource":"TUMOR_MEASUREMENTS","action":"read","agg":"aggregated","pii":false,"contact":false,"jti":"'"${JTI}"'"}'
-echo $ALLOW_REQ
-curl "${CURL_MTLS[@]}" -X POST "${ISSUER}/admission/check" \
-  -H "Authorization: ECT ${ECT}" \
-  -H "DPoP: ${DPoP}" \
-  -H "X-DPoP-Nonce: ${NONCE}" \
-  -H 'content-type: application/json' \
-  -d "${ALLOW_REQ}" | jq .
+jq -e . "${POLICY_JSON}" >/dev/null \
+  || fail "policy.json is invalid JSON"
 
-# -------- Probe: deny (wrong purpose) --------
-echo "== 6) Probe DENY (wrong purpose) =="
-DENY_REQ='{"resource":"PET-CT","action":"train","purpose":"model_prediction","cohort":"A","jti":"'"${JTI}"'"}'
-echo $DENY_REQ
-curl "${CURL_MTLS[@]}" -X POST "${ISSUER}/admission/check" \
-  -H "Authorization: ECT ${ECT}" \
-  -H "DPoP: ${DPoP}" \
-  -H "X-DPoP-Nonce: ${NONCE}" \
-  -H 'content-type: application/json' \
-  -d "${DENY_REQ}" | jq .
+jq -e \
+  --arg profile "${CAP_PROFILE}" \
+  '.cap_profiles[$profile].cap | type == "array" and length > 0' \
+  "${POLICY_JSON}" >/dev/null \
+  || fail "Missing or empty policy capset: ${CAP_PROFILE}"
 
+OP_ID="$(
+  jq -r \
+    --arg profile "${CAP_PROFILE}" \
+    '.cap_profiles[$profile].cap[0]' \
+    "${POLICY_JSON}"
+)"
 
-# -------- Probe: deny (wrong cohort) --------
-echo "== 7) Probe DENY (wrong cohort B) =="
-DENY_REQ_COHORT='{"resource":"PET-CT","action":"train","purpose":"model_training","cohort":"B","jti":"'"${JTI}"'"}'
-echo $DENY_REQ_COHORT
-curl "${CURL_MTLS[@]}" -X POST "${ISSUER}/admission/check" \
-  -H "Authorization: ECT ${ECT}" \
-  -H "DPoP: ${DPoP}" \
-  -H "X-DPoP-Nonce: ${NONCE}" \
-  -H 'content-type: application/json' \
-  -d "${DENY_REQ_COHORT}" | jq .
+jq -e \
+  --arg op "${OP_ID}" \
+  '.ops[$op] != null' \
+  "${POLICY_JSON}" >/dev/null \
+  || fail "Capset ${CAP_PROFILE} references missing operation: ${OP_ID}"
 
+jq -e \
+  --arg op "${OP_ID}" \
+  '
+    .ops[$op].resource == "pathmnist-colon-pathology"
+    and .ops[$op].action == "query_model"
+    and .ops[$op].purpose == "approved_model_query"
+    and (.ops[$op].scope.pathology_labels | index("background") != null)
+    and (.ops[$op].scope.pathology_labels | index("lymphocytes") != null)
+    and (.ops[$op].scope.pathology_labels | index("debris") == null)
+  ' \
+  "${POLICY_JSON}" >/dev/null \
+  || fail "Other-tissue reader operation does not match the agreed PathMNIST scope"
 
-# -------- Probe: deny (binding mismatch) --------
-echo "== 8) Probe DENY (binding mismatch with different key) =="
-# Generate a second keypair for another member
-python3 ../tools/gen_member_keys.py --org org://HospitalA   --who "intruder" | sed 's/^/[keys-intruder] /' || true
-PUB_B64_INTRUDER=$(cat holder_keys/intruder.pubb64)
-PRIV_HEX_INTRUDER=$(cat holder_keys/intruder.privhex)
+jq -e \
+  '.caveats.reserved_pathology_labels | index("debris") != null' \
+  "${POLICY_JSON}" >/dev/null \
+  || fail "policy.json does not declare debris as reserved"
 
-# Make a DPoP with the intruder's key instead of the bound one
-NONCE_INTRUDER="nonce-intruder-$(date +%s)"
-JTI_INTRUDER="jti-intruder-$(date +%s)"
-DPoP_INTRUDER=$(python3 ../tools/make_dpop_jwt_eddsa.py "${PRIV_HEX_INTRUDER}" "${PUB_B64_INTRUDER}" "${NONCE_INTRUDER}" "${JTI_INTRUDER}" "POST" "${HTU}")
-ALLOW_REQ_INTRUDER=$(echo "${ALLOW_REQ}" | jq -c --arg jti "${JTI_INTRUDER}" '.jti=$jti')
+pass "Policy capset and PathMNIST tissue scopes are coherent"
 
+section "1. Wait for gatekeeper"
 
-curl "${CURL_MTLS[@]}" -X POST "${ISSUER}/admission/check" \
-  -H "Authorization: ECT ${ECT}" \
-  -H "DPoP: ${DPoP_INTRUDER}" \
-  -H "X-DPoP-Nonce: ${NONCE_INTRUDER}" \
-  -H 'content-type: application/json' \
-  -d "${ALLOW_REQ_INTRUDER}" | jq .
+HEALTH=""
+for _ in $(seq 1 40); do
+  if HEALTH="$(curl "${CURL_HUB[@]}" "${VERIFIER_URL}/health" 2>/dev/null)"; then
+    if printf '%s' "${HEALTH}" | jq -e '.ok == true' >/dev/null 2>&1; then
+      break
+    fi
+  fi
+  HEALTH=""
+  sleep 0.25
+done
 
+[[ -n "${HEALTH}" ]] || fail "Gatekeeper /health is not ready"
+printf '%s\n' "${HEALTH}" | jq .
+HEALTH_POLICY_HASH="$(printf '%s' "${HEALTH}" | jq -r '.policy_hash')"
+
+STATUS="$(
+  curl "${CURL_HUB[@]}" \
+    "${VERIFIER_URL}/status?state=ACTIVE"
+)"
+printf '%s\n' "${STATUS}" | jq .
+
+printf '%s\n' "${STATUS}" | jq -e \
+  --arg envelope "${ENVELOPE_ID}" \
+  '.envelopes[] | select(.envelope_id == $envelope and .state == "ACTIVE")' \
+  >/dev/null \
+  || fail "Envelope is absent or not ACTIVE: ${ENVELOPE_ID}"
+
+pass "Gatekeeper is ready and envelope is ACTIVE"
+
+section "2. Generate holder-bound Ed25519 keys"
+
+cd "${SCRIPT_DIR}"
+
+python3 "${TOOLS_DIR}/gen_member_keys.py" \
+  --org "org://HospitalA" \
+  --who "Martinez" \
+  | sed 's/^/[Martinez] /'
+
+PUB_B64="$(tr -d '\r\n' < holder_keys/Martinez.pubb64)"
+PRIV_HEX="$(tr -d '\r\n' < holder_keys/Martinez.privhex)"
+
+[[ -n "${PUB_B64}" ]] || fail "Missing Martinez public key"
+[[ -n "${PRIV_HEX}" ]] || fail "Missing Martinez private key"
+
+pass "Holder key material generated"
+
+section "3. Mint ECT directly through /mint_ect"
+
+MINT_REQUEST="$(
+  jq -nc \
+    --arg pub "${PUB_B64}" \
+    --arg profile "${CAP_PROFILE}" \
+    --arg envelope "${ENVELOPE_ID}" \
+    --arg nbf "${NBF}" \
+    --arg exp "${EXP}" \
+    '{
+      holder_pub_b64: $pub,
+      cap_profiles: [$profile],
+      envelope_id: $envelope,
+      nbf: $nbf,
+      exp: $exp
+    }'
+)"
+
+printf '%s\n' "${MINT_REQUEST}" | jq .
+
+MINT_RESPONSE="$(
+  curl "${CURL_MINT[@]}" \
+    -X POST "${VERIFIER_URL}/mint_ect" \
+    -H 'content-type: application/json' \
+    -d "${MINT_REQUEST}"
+)"
+
+printf '%s\n' "${MINT_RESPONSE}" | jq .
+
+ECT="$(printf '%s' "${MINT_RESPONSE}" | jq -r '.ect_jws // empty')"
+MINT_POLICY_HASH="$(printf '%s' "${MINT_RESPONSE}" | jq -r '.policy_hash // empty')"
+
+[[ -n "${ECT}" ]] || fail "/mint_ect did not return ect_jws"
+[[ "${MINT_POLICY_HASH}" == "${HEALTH_POLICY_HASH}" ]] || fail \
+  "Minted ECT policy hash differs from active gatekeeper policy hash"
+
+# Optional inspection of the minted ECT, if requested by the user.
+if [[ "${INSPECT_MINTED_ECT:-false}" == "true" ]]; then
+  require_file "${TOOLS_DIR}/inspect_ect.py"
+  require_file "holder_keys/Martinez.jkt"
+
+  printf '%s' "${ECT}" |
+    python3 "${TOOLS_DIR}/inspect_ect.py" \
+      --stdin \
+      --expected-envelope-id "${ENVELOPE_ID}" \
+      --expected-jkt-file "holder_keys/Martinez.jkt" \
+      --require-tissue background \
+      --require-tissue lymphocytes \
+      --forbid-tissue debris
  
-echo "Done."
+fi
 
+pass "Direct /mint_ect compiled and signed an envelope-bound capability"
+
+make_dpop() {
+  local private_hex="$1"
+  local public_b64="$2"
+  local nonce="$3"
+  local jti="$4"
+  local proof_envelope="$5"
+
+  python3 "${TOOLS_DIR}/make_dpop_jwt_eddsa.py" \
+    "${private_hex}" \
+    "${public_b64}" \
+    "${nonce}" \
+    "${jti}" \
+    "POST" \
+    "${DPOP_HTU}" \
+    "${proof_envelope}"
+}
+
+run_probe() {
+  local test_name="$1"
+  local expected_allow="$2"
+  local expected_reason="$3"
+  local request_envelope="$4"
+  local proof_envelope="$5"
+  local tissues_json="$6"
+  local private_hex="$7"
+  local public_b64="$8"
+
+
+  local nonce
+  local jti
+  local dpop
+  local request_body
+  local response
+  local actual_allow
+  local actual_reason
+
+  nonce="nonce-$(date +%s%N)"
+  jti="jti-$(date +%s%N)"
+
+  dpop="$(
+    make_dpop \
+      "${private_hex}" \
+      "${public_b64}" \
+      "${nonce}" \
+      "${jti}" \
+      "${proof_envelope}"
+  )"
+
+  request_body="$(
+    jq -nc \
+      --arg envelope "${request_envelope}" \
+      --arg run "${RUN_ID}" \
+      --arg jti "${jti}" \
+      --argjson tissues "${tissues_json}" \
+      '{
+        envelope_id: $envelope,
+        run_id: $run,
+        resource: "pathmnist-colon-pathology",
+        action: "query_model",
+        purpose: "approved_model_query",
+        requested_tissues: $tissues,
+        jti: $jti
+      }'
+  )"
+
+  printf '\n-- %s --\n' "${test_name}"
+  printf '%s\n' "${request_body}" | jq .
+
+  response="$(
+    curl "${CURL_HUB[@]}" \
+      -X POST "${VERIFIER_URL}/admission/check" \
+      -H "Authorization: ECT ${ECT}" \
+      -H "DPoP: ${dpop}" \
+      -H "X-DPoP-Nonce: ${nonce}" \
+      -H 'content-type: application/json' \
+      -d "${request_body}"
+  )"
+
+  printf '%s\n' "${response}" | jq .
+
+  actual_allow="$(printf '%s' "${response}" | jq -r '.allow')"
+  actual_reason="$(printf '%s' "${response}" | jq -r '.reason // ""')"
+
+  [[ "${actual_allow}" == "${expected_allow}" ]] || fail \
+    "${test_name}: expected allow=${expected_allow}, got allow=${actual_allow}"
+
+  if [[ -n "${expected_reason}" ]]; then
+    [[ "${actual_reason}" == "${expected_reason}" ]] || fail \
+      "${test_name}: expected reason=${expected_reason}, got reason=${actual_reason}"
+  fi
+
+  pass "${test_name}"
+}
+
+section "4. Admission decisions"
+
+run_probe \
+  "UC-01 allowed other-tissue request" \
+  "true" \
+  "" \
+  "${ENVELOPE_ID}" \
+  "${ENVELOPE_ID}" \
+  '["background","lymphocytes"]' \
+  "${PRIV_HEX}" \
+  "${PUB_B64}"
+
+run_probe \
+  "UC-02 reserved debris request" \
+  "false" \
+  "reserved_tissue" \
+  "${ENVELOPE_ID}" \
+  "${ENVELOPE_ID}" \
+  '["debris"]' \
+  "${PRIV_HEX}" \
+  "${PUB_B64}"
+
+run_probe \
+  "UC-03 cancer-associated scope exceeds capability" \
+  "false" \
+  "capability_scope_exceeded" \
+  "${ENVELOPE_ID}" \
+  "${ENVELOPE_ID}" \
+  '[
+    "cancer_associated_stroma",
+    "colorectal_adenocarcinoma_epithelium"
+  ]' \
+  "${PRIV_HEX}" \
+  "${PUB_B64}"
+
+run_probe \
+  "UC-04 cross-envelope reuse" \
+  "false" \
+  "envelope_mismatch" \
+  "${OTHER_ENVELOPE_ID}" \
+  "${OTHER_ENVELOPE_ID}" \
+  '["background","lymphocytes"]' \
+  "${PRIV_HEX}" \
+  "${PUB_B64}"
+
+run_probe \
+  "UC-04b proof signed for another envelope" \
+  "false" \
+  "dpop_envelope_mismatch" \
+  "${ENVELOPE_ID}" \
+  "${OTHER_ENVELOPE_ID}" \
+  '["background","lymphocytes"]' \
+  "${PRIV_HEX}" \
+  "${PUB_B64}"
+
+section "5. Holder-binding mismatch"
+
+python3 "${TOOLS_DIR}/gen_member_keys.py" \
+  --org "org://HospitalA" \
+  --who "intruder" \
+  | sed 's/^/[intruder] /'
+
+INTRUDER_PUB_B64="$(tr -d '\r\n' < holder_keys/intruder.pubb64)"
+INTRUDER_PRIV_HEX="$(tr -d '\r\n' < holder_keys/intruder.privhex)"
+
+run_probe \
+  "UC-05 DPoP signed by a different holder" \
+  "false" \
+  "dpop_binding_mismatch" \
+  "${ENVELOPE_ID}" \
+  "${ENVELOPE_ID}" \
+  '["background","lymphocytes"]' \
+  "${INTRUDER_PRIV_HEX}" \
+  "${INTRUDER_PUB_B64}"
+
+printf '\n'
+pass "Test2A passed: governance minting and admission checks are operational"

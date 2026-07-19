@@ -1,99 +1,266 @@
-OPENHEALTH PATHMNIST FEDERATION
-EXEMPLAR MEMORANDUM OF UNDERSTANDING
+MEMORANDUM OF UNDERSTANDING
+OPENHEALTH PATHMNIST A+B RESEARCH COLLABORATION
+Proof-of-Concept Constitutional Agreement
 
-Status: Proof-of-concept constitutional specification
-Federation: Hospital A–Hospital B PathMNIST Federation
-Policy identifier: POL-OPENHEALTH-PATHMNIST-AB
+Document ID: MOU-OPENHEALTH-PATHMNIST-AB
+Version: 2.1-draft
+Status: Research proof of concept; not for clinical use
+Parties: Hospital A and Hospital B
+Referenced dataset: PathMNIST
+Research collaboration: OpenHealth PathMNIST A+B
 
-1. FOUNDING MEMBERS
 
-[AB-MEMBER-01] The founding members of the federation are:
+1. PURPOSE AND STATUS
 
-* Hospital A, represented by [Director A name]
-* Hospital B, represented by [Director B name]
+AB-PURPOSE-01
+Hospital A and Hospital B agree to conduct a joint research activity using federated learning on the PathMNIST dataset.
 
-[AB-MEMBER-02] Each hospital remains institutionally independent and retains responsibility for its personnel, systems, credentials, delegated authorities, and local data processing.
+AB-PURPOSE-02
+The purpose of the collaboration is to study how hospitals may contribute to a shared model while retaining control of their local data, limiting the scope of the collaboration, and governing access to the resulting model.
 
-2. FEDERATION PURPOSE
+AB-PURPOSE-03
+This collaboration is a technical and organizational proof of concept. Its model, predictions, metrics, and decisions are not validated for diagnosis, treatment, patient management, or any other clinical use.
 
-[AB-PURPOSE-01] The federation is constituted to train and use a shared PathMNIST colon-pathology classification model without transferring raw clinical images between members.
+AB-PURPOSE-04
+This Memorandum is the human-readable statement of the constitutional rules agreed by the participating hospitals. A structured machine-readable constitution and an executable policy may be derived from it for implementation and testing.
 
-[AB-PURPOSE-02] Only actions performed for federated training, evaluation, and approved model query are within the purpose of this federation.
 
-3. CONTRIBUTION RIGHTS
+2. PARTICIPATING HOSPITALS
 
-[AB-CONTRIB-A-01] Hospital A may contribute training observations associated with:
+AB-MEMBER-01
+Hospital A and Hospital B are the founding participants in the OpenHealth PathMNIST A+B research collaboration.
 
-* adipose
-* background
-* debris
+AB-MEMBER-02
+Each hospital remains responsible for its own local data, local research environment, organizational credentials, and the persons or services acting under its authority.
 
-[AB-CONTRIB-A-02] Hospital A may not contribute observations associated with pathology classes outside this declared contribution scope.
+AB-MEMBER-03
+Participation in the collaboration does not create an unrestricted right to train, evaluate, query, copy, export, administer, or possess the shared model.
 
-[AB-CONTRIB-B-01] Hospital B may contribute training observations associated with:
+AB-MEMBER-04
+Any activity not explicitly authorized by this agreement or by a valid authorization derived from it shall be refused.
 
-* lymphocytes
-* mucus
-* smooth muscle
 
-[AB-CONTRIB-B-02] Hospital B may not contribute observations associated with pathology classes outside this declared contribution scope.
+3. PATHMNIST RESEARCH SCOPE
 
-4. QUERY RIGHTS
+AB-LABEL-01
+The collaboration uses the following PathMNIST tissue classes:
 
-[AB-QUERY-01] Query authority is independent from contribution authority.
+  0  adipose
+  1  background
+  2  debris
+  3  lymphocytes
+  4  mucus
+  5  smooth muscle
+  6  normal colon mucosa
+  7  cancer-associated stroma
+  8  colorectal adenocarcinoma epithelium
 
-[AB-QUERY-02] A token may authorize queries over all or only a subset of the pathology classes available within the federation.
+AB-LABEL-02
+For governance and presentation, adipose, background, lymphocytes, mucus, smooth muscle, and normal colon mucosa are designated OTHER TISSUE CLASSES.
 
-[AB-QUERY-A-01] Hospital A may issue tokens authorizing queries over pathology classes approved for Hospital A under the federation policy.
+AB-LABEL-03
+Cancer-associated stroma and colorectal adenocarcinoma epithelium are designated CANCER-ASSOCIATED TISSUE CLASSES.
 
-[AB-QUERY-B-01] Hospital B may issue tokens authorizing queries over pathology classes approved for Hospital B under the federation policy.
+AB-LABEL-04
+Cancer-associated stroma is tumor-associated stromal tissue. Colorectal adenocarcinoma epithelium is the malignant epithelial class. The collective designation “cancer-associated” shall not erase this distinction.
 
-[AB-QUERY-03] No token may authorize queries over a pathology class not covered by the active federation envelope.
+AB-LABEL-05
+Debris is designated the RESERVED TISSUE CLASS for this collaboration.
 
-5. DELEGATION
 
-[AB-DELEGATE-01] A hospital administrator may delegate bounded token-issuing authority to an identified team leader.
+4. TRAINING AND EVALUATION
 
-[AB-DELEGATE-02] A delegated token must remain a strict subset of the delegating authority with respect to:
+AB-TRAIN-01
+The authorized training scope comprises all PathMNIST tissue classes except debris.
 
-* permitted operations
-* query scope
-* contribution scope
-* federation envelope
-* session
-* validity period
+AB-TRAIN-02
+Debris shall be removed from the local training data before federated training begins.
 
-[AB-DELEGATE-03] Delegation must not permit privilege amplification.
+AB-TRAIN-03
+Debris shall not be included in the governed evaluation results used to describe the research collaboration.
 
-[AB-DELEGATE-04] The delegating hospital remains accountable for tokens issued under its delegated authority.
+AB-TRAIN-04
+The exact allocation of samples, random seeds, optimization method, number of rounds, computing equipment, and similar implementation choices are operational research parameters rather than constitutional rights.
 
-6. ADMISSION AND SESSION BINDING
+AB-CONTRIB-01
+Each hospital may contribute only through the research activity, purpose, tissue scope, and authorization context approved for that collaboration.
 
-[AB-SESSION-01] Participation is valid only within an active federation envelope.
+AB-CONTRIB-02
+Raw PathMNIST images or patient-level data shall not be transferred from one hospital to another as part of the federated training process.
 
-[AB-SESSION-02] Session-bound authority expires when the named session ends or when its token expires, whichever occurs first.
+AB-CONTRIB-03
+Only approved model updates, approved evaluation information, and required research evidence may leave a hospital’s local execution environment.
 
-[AB-SESSION-03] Authority granted for one envelope or session must not be reused in another envelope or session.
 
-7. ACCOUNTABILITY AND EVIDENCE
+5. SHARED MODEL CUSTODY
 
-[AB-EVIDENCE-01] Every admission decision must produce verifiable evidence identifying:
+AB-CUSTODY-01
+The aggregated federated model is a protected shared research asset.
 
-* the admitted subject
-* the issuing organization
-* the applicable federation envelope
-* the session
-* the granted capabilities
-* the applicable scopes
-* the policy version
-* the validity period
+AB-CUSTODY-02
+The model shall be stored and operated within a protected environment controlled on behalf of the collaboration.
 
-[AB-EVIDENCE-02] Every delegated token must preserve an auditable chain to the accountable hospital.
+AB-CUSTODY-03
+A hospital’s contribution to training does not grant that hospital direct possession of, filesystem access to, download rights for, or unrestricted execution rights over the aggregated model.
 
-8. POLICY FORMALIZATION RULE
+AB-CUSTODY-04
+The model may be loaded inside the protected environment for technical validation and maintenance. Such internal access does not create an external access right.
 
-[AB-FORMAL-01] A rule may be included in policy.json only when it can be expressed as a constitutional statement jointly agreed by the hospital directors.
+AB-CUSTODY-05
+External predictions or model-derived results shall be obtained only through an approved service that applies the agreed authorization rules.
 
-[AB-FORMAL-02] Infrastructure implementation details, including service registration, container deployment, backend discovery, and local training execution, are not constitutional rules unless the members explicitly agree to govern them at the federation boundary.
+AB-CUSTODY-06
+Contribution rights, custody of the shared model, and rights to query the model are separate authorities. Possession of one shall not imply possession of the others.
 
-[AB-FORMAL-03] Each machine-readable rule in policy.json must reference the corresponding rule identifier in this Memorandum of Understanding.
+
+6. RESEARCH ROLES AND QUERY SCOPE
+
+AB-QUERY-01
+The tissue classes used during training and the tissue classes available to a particular researcher or research role at query time are separate matters.
+
+AB-QUERY-02
+A tissue class may be included in federated training while remaining unavailable to a particular researcher, team, hospital, or research role.
+
+AB-QUERY-03
+A researcher authorized as an OTHER TISSUE READER may query only the other-tissue classes explicitly granted to that role.
+
+AB-QUERY-04
+For the minimal proof-of-concept case, an OTHER TISSUE READER may be authorized to query background and lymphocytes.
+
+AB-QUERY-05
+Cancer-associated stroma and colorectal adenocarcinoma epithelium require a separate CANCER-ASSOCIATED TISSUE READER authorization.
+
+AB-QUERY-06
+The presence of a tissue class in the trained model does not by itself create a right to query that class.
+
+AB-QUERY-07
+Any request that includes debris shall be refused because debris is outside the authorized learning and query scope of the collaboration.
+
+AB-QUERY-08
+A request containing both authorized and unauthorized tissue classes shall be refused as submitted rather than silently reduced or rewritten.
+
+
+7. AUTHORIZATION CONTEXT
+
+AB-CONTEXT-01
+Every authorization shall be valid only for the particular approved research collaboration for which it was issued.
+
+AB-CONTEXT-02
+An authorization issued for one collaboration shall not be reused in another collaboration, even when the researcher, hospital, role, purpose, and requested tissue classes are otherwise the same.
+
+AB-CONTEXT-03
+Several approved collaborations may exist concurrently. Each authorization shall remain bound to its own collaboration.
+
+AB-CONTEXT-04
+The implementation shall preserve this contextual binding in a form that can be independently verified when a request is evaluated.
+
+AB-CONTEXT-05
+The implementation may assign a technical identifier to each approved collaboration. That identifier is an implementation detail and does not alter the institutional meaning of this rule.
+
+
+8. AUTHORIZED ISSUERS AND CAPABILITIES
+
+AB-ISSUER-01
+Only an issuer acting under the authority of Hospital A or Hospital B may create an authorization for this collaboration.
+
+AB-ISSUER-02
+Each issuer may create only the research roles and capabilities that its hospital is authorized to grant.
+
+AB-ISSUER-03
+An issuer shall not grant a broader action, purpose, tissue scope, collaboration context, audience, or validity period than its own authority permits.
+
+AB-ISSUER-04
+No issuer may grant access to debris.
+
+AB-ISSUER-05
+The implementation shall preserve traceability between each research role, the corresponding capability, and the clauses of this Memorandum from which that capability is derived.
+
+
+9. HOLDER IDENTITY AND PROOF OF AUTHORITY
+
+AB-HOLDER-01
+Every authorization shall identify or securely bind the researcher, service, or other holder to whom it is granted.
+
+AB-HOLDER-02
+The presenter of an authorization shall provide evidence that it is the legitimate holder.
+
+AB-HOLDER-03
+A request presented by a different holder from the one bound to the authorization shall be refused.
+
+AB-HOLDER-04
+A human-readable name, organizational role, bearer assertion, or possession of an authorization string alone is insufficient proof of legitimate authority.
+
+
+10. DELEGATION
+
+AB-DELEGATE-01
+A hospital administrator may delegate limited authorization authority to an approved subordinate role only when such delegation is expressly permitted by the collaboration’s constitution.
+
+AB-DELEGATE-02
+A delegated authorization shall remain a strict subset of the parent authority.
+
+AB-DELEGATE-03
+Delegation shall not broaden the permitted actions, purposes, tissue classes, collaboration context, audience, or validity period.
+
+AB-DELEGATE-04
+A delegated authorization shall expire no later than the parent authorization.
+
+AB-DELEGATE-05
+Delegation shall not permit privilege amplification. The sponsoring hospital shall remain accountable for the delegated authority.
+
+
+11. EVIDENCE AND ACCOUNTABILITY
+
+AB-EVIDENCE-01
+The collaboration shall retain sufficient evidence to determine who issued an authorization, to whom it was granted, what it permitted, for which collaboration it was valid, and for how long.
+
+AB-EVIDENCE-02
+Each evaluated request shall produce an auditable decision indicating whether it was allowed or refused and the reason for that decision.
+
+AB-EVIDENCE-03
+Decision evidence shall be linked, where appropriate, to the corresponding collaboration and model run.
+
+AB-EVIDENCE-04
+Private keys, raw credentials, and other secrets shall not be included in evidence exposed to researchers or user interfaces.
+
+AB-EVIDENCE-05
+The evidence shall be sufficient to distinguish at least:
+
+  authorization granted
+  reserved tissue requested
+  requested scope exceeded
+  authorization used in the wrong collaboration
+  holder identity mismatch
+  invalid or expired authorization
+
+
+12. CHANGE CONTROL
+
+AB-CHANGE-01
+A change to the participating hospitals, reserved tissue classes, model custody, research roles, authorization scope, contextual binding, issuer authority, or delegation rules is a constitutional change.
+
+AB-CHANGE-02
+A constitutional change shall require corresponding updates to this Memorandum and to the machine-readable constitution and executable policy derived from it.
+
+AB-CHANGE-03
+A change limited to implementation detail or operational training parameters may be recorded in run configuration and evidence without amending this Memorandum, provided it does not alter an agreed governance boundary.
+
+AB-CHANGE-04
+Each derived machine-readable artifact shall identify the version of this Memorandum from which it was produced.
+
+
+13. AGREEMENT
+
+For this proof-of-concept exemplar, the representatives of Hospital A and Hospital B acknowledge that the OpenHealth PathMNIST A+B research collaboration operates according to the governance boundaries stated above.
+
+Hospital A
+Representative: ______________________________
+Role: _______________________________________
+Date: _______________________________________
+Signature: __________________________________
+
+Hospital B
+Representative: ______________________________
+Role: _______________________________________
+Date: _______________________________________
+Signature: __________________________________

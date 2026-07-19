@@ -54,6 +54,7 @@ def _verify_arg():
 class MintReq(BaseModel):
     sub: str
     profile: str
+    envelope_id: str
     nbf: Optional[str] = None
     exp: Optional[str] = None
 
@@ -131,6 +132,7 @@ def mint(req: MintReq):
             json={
                 "holder_pub_b64": holder_pub_b64,
                 "cap_profiles": [cap_profile],
+                "envelope_id": req.envelope_id,
                 "nbf": nbf,
                 "exp": exp,
                 # Optional: if verifier can embed cnf.jkt, pass it through:
