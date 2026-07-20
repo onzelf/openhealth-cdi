@@ -10,5 +10,6 @@ src/vfp-governance/verifier/state/keys/
 src/vfp-governance/verifier/vault/
 LOCAL_GIT_STATUS.txt
 LOCAL_BASE_COMMIT.txt
+src/tests/holder_keys/
 __pycache__/
 *.py[cod]
