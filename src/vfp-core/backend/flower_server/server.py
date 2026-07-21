@@ -12,6 +12,9 @@ Guest/Member/Founder workflows are deliberately absent.
 
 from __future__ import annotations
 
+import base64
+import binascii
+import io
 import csv
 import hashlib
 import json
@@ -28,7 +31,7 @@ import numpy as np
 import requests
 import torch
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from flwr.common import (
     Metrics,
     Parameters,
@@ -37,6 +40,7 @@ from flwr.common import (
 )
 from flwr.server.client_proxy import ClientProxy
 from flwr.server.strategy import FedAvg
+from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 
 from pathmnist.common import (
@@ -49,9 +53,12 @@ from pathmnist.common import (
     STORY_NON_CANCER_CLASSES,
     evaluate_full_test,
     get_parameters,
+    labels_array,
+    load_test_dataset,
     make_test_loader,
     seed_everything,
     set_parameters,
+    transform,
 )
 
 # ---------------------------------------------------------------------
@@ -124,6 +131,31 @@ class EnvelopeBinding(BaseModel):
     scope: Dict[str, Any] = Field(default_factory=dict)
 
 
+class PredictionRequest(BaseModel):
+    envelope_id: str
+    run_id: str
+    requested_tissues: List[str]
+    topk: int = Field(default=3, ge=1, le=9)
+
+
+class ImagePredictionRequest(BaseModel):
+    envelope_id: str
+    run_id: str
+    image_b64: str = Field(..., min_length=1)
+    filename: Optional[str] = None
+    topk: int = Field(default=3, ge=1, le=9)
+
+
+PATHMNIST_TISSUES = (
+    "adipose", "background", "debris", "lymphocytes", "mucus",
+    "smooth_muscle", "normal_colon_mucosa",
+    "cancer_associated_stroma",
+    "colorectal_adenocarcinoma_epithelium",
+)
+
+MAX_IMAGE_BYTES = 5 * 1024 * 1024
+
+
 def model_dict(model: BaseModel) -> Dict[str, Any]:
     if hasattr(model, "model_dump"):
         return model.model_dump()  # type: ignore[attr-defined]
@@ -194,6 +226,163 @@ def bind_envelope(binding: EnvelopeBinding) -> Dict[str, Any]:
         "run_id": RUN_ID,
         "envelope_id": binding.envelope_id,
     }
+
+
+@control_app.post("/predict")
+def predict(req: PredictionRequest) -> Dict[str, Any]:
+    """Predict one backend-selected PathMNIST test sample."""
+
+    if req.run_id != RUN_ID:
+        raise HTTPException(404, f"unknown_run:{req.run_id}")
+    if len(req.requested_tissues) != 1:
+        raise HTTPException(400, "exactly_one_tissue_required")
+
+    tissue = req.requested_tissues[0]
+    try:
+        requested_label = PATHMNIST_TISSUES.index(tissue)
+    except ValueError as exc:
+        raise HTTPException(400, f"unknown_tissue:{tissue}") from exc
+
+    if requested_label in IGNORED_CLASSES:
+        raise HTTPException(403, "reserved_tissue")
+
+    model_path = checkpoint_path()
+    if not model_path.is_file():
+        raise HTTPException(409, "model_not_ready")
+
+    model = Net().to(DEVICE)
+    state = torch.load(model_path, map_location=DEVICE)
+    if isinstance(state, dict) and "model_state_dict" in state:
+        state = state["model_state_dict"]
+    model.load_state_dict(state)
+    model.eval()
+
+    dataset = load_test_dataset()
+    labels = labels_array(dataset)
+    sample_index = int(np.flatnonzero(labels == requested_label)[0])
+    image, actual = dataset[sample_index]
+
+    with torch.no_grad():
+        probabilities = torch.softmax(
+            model(image.unsqueeze(0).to(DEVICE)),
+            dim=1,
+        )[0]
+
+    values, predicted = torch.topk(probabilities, k=req.topk)
+    prediction_label = int(predicted[0].item())
+    result = {
+        "run_id": RUN_ID,
+        "envelope_id": req.envelope_id,
+        "requested_tissue": tissue,
+        "sample_index": sample_index,
+        "actual_label": int(np.asarray(actual).reshape(-1)[0]),
+        "prediction_label": prediction_label,
+        "prediction_tissue": PATHMNIST_TISSUES[prediction_label],
+        "topk": [
+            {
+                "label": int(label.item()),
+                "tissue": PATHMNIST_TISSUES[int(label.item())],
+                "probability": float(value.item()),
+            }
+            for value, label in zip(values, predicted)
+        ],
+    }
+    write_event(
+        "prediction_completed",
+        envelope_id=req.envelope_id,
+        requested_tissue=tissue,
+        prediction_label=prediction_label,
+    )
+    return result
+
+
+@control_app.post("/predict_image")
+def predict_image(req: ImagePredictionRequest) -> Dict[str, Any]:
+    """Predict one caller-supplied PathMNIST image.
+
+    This is an internal inference endpoint. Admission remains the Hub and
+    Gatekeeper responsibility.
+    """
+
+    if req.run_id != RUN_ID:
+        raise HTTPException(404, f"unknown_run:{req.run_id}")
+
+    encoded = req.image_b64.strip()
+    if encoded.startswith("data:"):
+        if "," not in encoded:
+            raise HTTPException(400, "invalid_image_data_url")
+        encoded = encoded.split(",", 1)[1]
+
+    try:
+        raw_image = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(400, "invalid_image_base64") from exc
+
+    if not raw_image:
+        raise HTTPException(400, "empty_image")
+    if len(raw_image) > MAX_IMAGE_BYTES:
+        raise HTTPException(413, "image_too_large")
+
+    try:
+        with Image.open(io.BytesIO(raw_image)) as source:
+            source.load()
+            original_width, original_height = source.size
+            original_mode = source.mode
+            image = source.convert("RGB").resize((28, 28))
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise HTTPException(400, "invalid_image") from exc
+
+    model_path = checkpoint_path()
+    if not model_path.is_file():
+        raise HTTPException(409, "model_not_ready")
+
+    model = Net().to(DEVICE)
+    state = torch.load(model_path, map_location=DEVICE)
+    if isinstance(state, dict) and "model_state_dict" in state:
+        state = state["model_state_dict"]
+    model.load_state_dict(state)
+    model.eval()
+
+    image_tensor = transform()(image).unsqueeze(0).to(DEVICE)
+    with torch.no_grad():
+        probabilities = torch.softmax(model(image_tensor), dim=1)[0]
+
+    values, predicted = torch.topk(probabilities, k=req.topk)
+    prediction_label = int(predicted[0].item())
+    image_sha256 = hashlib.sha256(raw_image).hexdigest()
+
+    result = {
+        "run_id": RUN_ID,
+        "envelope_id": req.envelope_id,
+        "filename": req.filename,
+        "image_sha256": image_sha256,
+        "input_image": {
+            "original_width": original_width,
+            "original_height": original_height,
+            "original_mode": original_mode,
+            "model_width": 28,
+            "model_height": 28,
+            "model_mode": "RGB",
+        },
+        "prediction_label": prediction_label,
+        "prediction_tissue": PATHMNIST_TISSUES[prediction_label],
+        "topk": [
+            {
+                "label": int(label.item()),
+                "tissue": PATHMNIST_TISSUES[int(label.item())],
+                "probability": float(value.item()),
+            }
+            for value, label in zip(values, predicted)
+        ],
+    }
+    write_event(
+        "image_prediction_completed",
+        envelope_id=req.envelope_id,
+        filename=req.filename,
+        image_sha256=image_sha256,
+        prediction_label=prediction_label,
+    )
+    return result
 
 
 def start_control_plane() -> threading.Thread:

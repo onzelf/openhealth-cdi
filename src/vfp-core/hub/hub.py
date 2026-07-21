@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional
 import redis.asyncio as redis
 import requests
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------------
@@ -92,6 +92,14 @@ class ClientRegistration(BaseModel):
     org_label: Optional[str] = None
     data_partition: Optional[int] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class PredictionRequest(BaseModel):
+    envelope_id: str
+    run_id: str = RUN_ID
+    requested_tissues: List[str]
+    jti: str
+    topk: int = Field(default=3, ge=1, le=9)
 
 
 # ---------------------------------------------------------------------
@@ -848,6 +856,93 @@ def experiment_complete(run_id: str) -> Dict[str, Any]:
         "status": "completed",
         "message": "Experiment completed",
         "experiment": current_experiment_status(run_id),
+    }
+
+
+@app.post("/predict")
+def predict(
+    req: PredictionRequest,
+    authorization: str = Header(..., alias="Authorization"),
+    dpop: str = Header(..., alias="DPoP"),
+    dpop_nonce: str = Header(..., alias="X-DPoP-Nonce"),
+) -> Dict[str, Any]:
+    """Admission first; prediction only after ALLOW."""
+
+    if req.run_id != RUN_ID:
+        raise HTTPException(404, f"unknown_run:{req.run_id}")
+    if len(req.requested_tissues) != 1:
+        raise HTTPException(400, "exactly_one_tissue_required")
+
+    admission_request = {
+        "envelope_id": req.envelope_id,
+        "run_id": req.run_id,
+        "resource": "pathmnist-colon-pathology",
+        "action": "query_model",
+        "purpose": "approved_model_query",
+        "requested_tissues": req.requested_tissues,
+        "jti": req.jti,
+    }
+
+    try:
+        verifier = requests.post(
+            os.getenv(
+                "VERIFIER_URL",
+                "https://verifier.local:8443",
+            ).rstrip("/") + "/admission/check",
+            headers={
+                "Authorization": authorization,
+                "DPoP": dpop,
+                "X-DPoP-Nonce": dpop_nonce,
+            },
+            json=admission_request,
+            timeout=15,
+            verify=os.getenv("CA_CRT", "/run/certs/ca.crt"),
+            cert=(
+                os.getenv("HUB_CERT_CRT", "/run/certs/hub.crt"),
+                os.getenv("HUB_CERT_KEY", "/run/certs/hub.key"),
+            ),
+        )
+        verifier.raise_for_status()
+        admission = verifier.json()
+    except Exception as exc:
+        raise HTTPException(502, f"verifier_error:{exc}") from exc
+
+    append_event(
+        "prediction_admission",
+        envelope_id=req.envelope_id,
+        requested_tissues=req.requested_tissues,
+        jti=req.jti,
+        **admission,
+    )
+    if not admission.get("allow", False):
+        return {"admission": admission, "executed": False}
+
+    try:
+        backend = requests.post(
+            FLOWER_BACKEND_URL + "/predict",
+            json={
+                "envelope_id": req.envelope_id,
+                "run_id": req.run_id,
+                "requested_tissues": req.requested_tissues,
+                "topk": req.topk,
+            },
+            timeout=30,
+        )
+        backend.raise_for_status()
+        prediction = backend.json()
+    except Exception as exc:
+        raise HTTPException(502, f"prediction_error:{exc}") from exc
+
+    append_event(
+        "prediction_executed",
+        envelope_id=req.envelope_id,
+        requested_tissues=req.requested_tissues,
+        jti=req.jti,
+    )
+    return {
+        "admission": admission,
+        "executed": True,
+        "prediction": prediction,
     }
 
 
