@@ -1,0 +1,18 @@
+{
+  "name": "vfp-core-frontend",
+  "private": true,
+  "version": "0.3.2-react-vite",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 5173",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0 --port 4173"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^5.0.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "recharts": "^3.8.1",
+    "vite": "7.3.5"
+  }
+}
