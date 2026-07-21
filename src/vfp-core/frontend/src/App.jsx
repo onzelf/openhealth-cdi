@@ -12,7 +12,7 @@ import {
 
 import logoUrl from "../openhealth_logo.avif";
 
-const RUN_ID = import.meta.env.VITE_RUN_ID || "local-medmnist-001";
+const RUN_ID = import.meta.env.VITE_RUN_ID || "local-pathmnist-ab-001";
 const APP_VERSION = "v0.3.2-react-vite";
 const POLL_MS = 2500;
 const TABS = ["metrics", "events", "clients", "configuration", "evidence"];
