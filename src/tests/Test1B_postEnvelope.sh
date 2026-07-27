@@ -44,7 +44,7 @@ container_http() {
   local method="$2"
   local url="$3"
 
-  docker exec "${container}" python - "${method}" "${url}" <<'PYCODE'
+  docker exec -i "${container}" python - "${method}" "${url}" <<'PYCODE'
 import sys
 import urllib.error
 import urllib.request

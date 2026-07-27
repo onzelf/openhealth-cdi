@@ -8,6 +8,7 @@ src/vfp-governance/verifier/state/envelopes/
 src/vfp-governance/verifier/state/events/
 src/vfp-governance/verifier/state/keys/
 src/vfp-governance/verifier/vault/
+src/tools/holder_keys/
 LOCAL_GIT_STATUS.txt
 LOCAL_BASE_COMMIT.txt
 src/tests/holder_keys/

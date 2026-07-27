@@ -181,6 +181,7 @@ resource "docker_container" "verifier_app" {
     "REDIS_URL=redis://redis:6379/0",
     "FCAC_ENVELOPE_CHANNEL=fcac:envelopes:created",
     "REQUIRE_MTLS_HEADERS=true",
+    "SESSION_TTL=18000",
     "BENCH=${var.bench ? "1" : "0"}"
   ]
 
@@ -653,7 +654,7 @@ resource "docker_container" "flower_client_a" {
 
   depends_on = [docker_container.flower_server]
   must_run   = true
-  restart    = "on-failure"
+  restart    = "unless-stopped"
 }
 
 # Flower Client - Hospital B
@@ -683,7 +684,7 @@ resource "docker_container" "flower_client_b" {
 
   depends_on = [docker_container.flower_server]
   must_run   = true
-  restart    = "on-failure"
+  restart    = "unless-stopped"
 }
 
   

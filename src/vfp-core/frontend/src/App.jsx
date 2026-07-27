@@ -11,14 +11,45 @@ import {
 } from "recharts";
 
 import logoUrl from "../openhealth_logo.avif";
-
 const RUN_ID = import.meta.env.VITE_RUN_ID || "local-pathmnist-ab-001";
 const APP_VERSION = "v0.3.2-react-vite";
 const POLL_MS = 2500;
-const TABS = ["metrics", "events", "clients", "configuration", "evidence"];
+const ADMIN_TABS = ["training", "metrics", "clients", "events", "evidence"];
+const USER_TABS = ["model-use", "events", "evidence"];
+const USER_TISSUES = ["lymphocytes", "colorectal_adenocarcinoma_epithelium", "debris"];
+
+const SCENARIOS = [
+  {
+    id: "ab",
+    title: "A+B Baseline",
+    organisations: "Hospital A + Hospital B",
+    actors: "Audrey · Bob",
+    detail: "Founding members · train and query",
+    statement:
+      "Hospitals A and B train the baseline model under the active sovereignty envelope.",
+  },
+  {
+    id: "mode1a",
+    title: "Mode 1A",
+    organisations: "Hospital A + Hospital B + sponsored Hospital C",
+    actors: "Audrey · Bob · Charlie",
+    detail: "Guest contributor · train A+B+C",
+    statement:
+      "Hospital C is admitted as a sponsored training contributor; the A+B+C model remains queryable by A and B.",
+  },
+  {
+    id: "mode1b",
+    title: "Mode 1B",
+    organisations: "Hospital A + Hospital B + AI agent",
+    actors: "Audrey · Bob · Hal",
+    detail: "Bounded AI task · reuse A+B+C",
+    statement:
+      "Hal receives a holder-bound, envelope-bound capability and participates only within its admitted task.",
+  },
+];
 
 async function getJson(path) {
-  const response = await fetch(`/api${path}`);
+  const response = await fetch(`/api${path}`, { cache: "no-store" });
   if (!response.ok) {
     throw new Error(`${path} failed: ${response.status}`);
   }
@@ -32,7 +63,14 @@ async function postJson(path, payload) {
     body: payload ? JSON.stringify(payload) : undefined,
   });
   if (!response.ok) {
-    throw new Error(`${path} failed: ${response.status}`);
+    let detail = "";
+    try {
+      const body = await response.json();
+      detail = body.detail ? ` · ${body.detail}` : "";
+    } catch {
+      detail = "";
+    }
+    throw new Error(`${path} failed: ${response.status}${detail}`);
   }
   return response.json();
 }
@@ -43,7 +81,7 @@ function formatMetric(rows, key) {
     .filter((value) => value !== "" && value !== undefined && value !== null);
 
   if (!values.length) {
-    return "-";
+    return "—";
   }
 
   const numeric = Number(values[values.length - 1]);
@@ -56,6 +94,15 @@ function latestRound(rows) {
     .filter((round) => Number.isFinite(round));
 
   return rounds.length ? Math.max(...rounds) : 0;
+}
+
+function compactIdentifier(value) {
+  if (!value) {
+    return "Not bound";
+  }
+  return value.length > 18
+    ? `${value.slice(0, 8)}…${value.slice(-4)}`
+    : value;
 }
 
 function toMetricNumber(value) {
@@ -112,116 +159,535 @@ function metricChartData(rows, totalRounds = 0) {
   return hasValues ? chartRows : [];
 }
 
-function isTerminalStatus(value) {
-  return ["completed", "stopped", "failed"].includes(value);
+function normaliseScenario(config) {
+  const value = String(
+    config.scenario || config.mode || config.phase || "AB_BASE"
+  ).toUpperCase();
+
+  if (value.includes("1B")) {
+    return "mode1b";
+  }
+  if (value.includes("1A")) {
+    return "mode1a";
+  }
+  return "ab";
 }
 
-function Overview({
-  status,
-  config,
-  metrics,
-  lastRefresh,
-  editableConfig,
-  onEditableConfigChange,
-  configEditable,
-}) {
-  const totalRounds = Number(config.rounds || config.flower_rounds || 0);
-  const currentRound = latestRound(metrics);
-  const localEpochs = config.local_epochs || config.training?.local_epochs || "-";
-  const inputDisabled = !configEditable;
+function scenarioState(scenarioId, activeScenarioId, executionStatus) {
+  if (scenarioId !== activeScenarioId) {
+    return "NOT STARTED";
+  }
+  if (executionStatus === "running") {
+    return "ACTIVE";
+  }
+  if (executionStatus === "completed") {
+    return "COMPLETED";
+  }
+  if (["failed", "error"].includes(executionStatus)) {
+    return "FAILED";
+  }
+  return "NOT STARTED";
+}
 
-  const cards = [
-    ["Run ID", status.run_id || RUN_ID],
-    ["Status", status.status || "-"],
-    ["Dataset", config.dataset_subset || "-"],
-    [
-      "Registered clients",
-      `${status.registered_client_count ?? "-"} / ${status.min_clients ?? "-"}`,
-    ],
-    ["Progress", totalRounds ? `${currentRound} / ${totalRounds}` : "-"],
-    ["Last poll", lastRefresh || "-"],
-    ["Latest loss", formatMetric(metrics, "loss")],
-    ["Latest accuracy", formatMetric(metrics, "accuracy")],
-    ["Train loss", formatMetric(metrics, "train_loss")],
-    ["Train accuracy", formatMetric(metrics, "train_accuracy")],
-  ];
+function admissionSummary(status) {
+  if (status.active_envelope_id && status.backend_bound) {
+    return {
+      value: "ALLOW",
+      detail: "Envelope bound",
+      tone: "success",
+    };
+  }
+  if (status.active_envelope_id) {
+    return {
+      value: "PENDING",
+      detail: "Backend binding",
+      tone: "warning",
+    };
+  }
+  return {
+    value: "PENDING",
+    detail: "No active envelope",
+    tone: "neutral",
+  };
+}
 
+function participantSummary(participants, registeredClients) {
+  const labels = new Map(
+    participants.map((participant) => [
+      participant.org_id,
+      participant.label || participant.org_id,
+    ])
+  );
+  const liveParticipants = registeredClients.map(
+    (orgId) => labels.get(orgId) || orgId
+  );
+
+  if (liveParticipants.length) {
+    return liveParticipants.join(" + ");
+  }
+
+  const configuredParticipants = participants
+    .filter((participant) => participant.enabled !== false)
+    .map((participant) => participant.label || participant.org_id);
+  return configuredParticipants.length ? configuredParticipants.join(" + ") : "—";
+}
+
+function ScenarioStrip({ activeScenarioId, executionStatus }) {
   return (
-    <section className="panel">
-      <h3>Overview</h3>
-      <div className="cards">
-        <div className="card">
-          <span>Rounds</span>
-          <input
-            className="card-input"
-            disabled={inputDisabled}
-            min="1"
-            name="rounds"
-            onChange={onEditableConfigChange}
-            type="number"
-            value={editableConfig.rounds || totalRounds || 1}
-          />
+    <section className="scenario-section" aria-labelledby="scenario-heading">
+      <div className="section-heading">
+        <div>
+          <span className="eyebrow">GOVERNED LIFECYCLE</span>
+          <h2 id="scenario-heading">Collaboration scenario</h2>
         </div>
-        <div className="card">
-          <span>Local epochs</span>
-          <input
-            className="card-input"
-            disabled={inputDisabled}
-            min="1"
-            name="local_epochs"
-            onChange={onEditableConfigChange}
-            type="number"
-            value={editableConfig.local_epochs || localEpochs || 1}
-          />
-        </div>
-        {cards.map(([label, value]) => (
-          <div className="card" key={label}>
-            <span>{label}</span>
-            <strong>{value}</strong>
-          </div>
-        ))}
+        <p>
+          Three bounded contexts, one evidence trail. Mode 2 remains future work.
+        </p>
       </div>
 
-      <div className="scope">
-        This MVP demonstrates FL infrastructure and evidence capture. Governance is
-        pass-through. FCaC-style admission control is not implemented.
+      <div className="scenario-grid">
+        {SCENARIOS.map((scenario, index) => {
+          const isActive = scenario.id === activeScenarioId;
+          const state = scenarioState(
+            scenario.id,
+            activeScenarioId,
+            executionStatus
+          );
+          return (
+            <article
+              aria-current={isActive ? "step" : undefined}
+              className={`scenario-card ${isActive ? "selected" : ""}`}
+              key={scenario.id}
+            >
+              <div className="scenario-card-top">
+                <span className="scenario-number">0{index + 1}</span>
+                <span className={`state-badge ${state.toLowerCase().replace(" ", "-")}`}>
+                  {state}
+                </span>
+              </div>
+              <h3>{scenario.title}</h3>
+              <strong className="scenario-organisations">
+                {scenario.organisations}
+              </strong>
+              <p className="scenario-actors">
+                <span>{scenario.id === "mode1b" ? "People / agent" : "People"}</span>
+                {scenario.actors}
+              </p>
+              <p className="scenario-detail">{scenario.detail}</p>
+            </article>
+          );
+        })}
       </div>
     </section>
   );
 }
 
-function MetricsTable({ rows }) {
-  if (!rows.length) {
-    return <table><tbody><tr><td>No metrics available yet.</td></tr></tbody></table>;
+function Overview({ status, participants, activeScenario, lastRefresh }) {
+  const admission = admissionSummary(status);
+  const registeredClients = status.registered_clients || [];
+  const cards = [
+    {
+      label: "Active scenario",
+      value: activeScenario.title,
+      detail: activeScenario.organisations,
+    },
+    {
+      label: "Envelope ID",
+      value: status.active_envelope_id || "Not bound",
+      detail: status.backend_bound ? "Backend bound" : "Awaiting binding",
+      mono: Boolean(status.active_envelope_id),
+    },
+    {
+      label: "Run / model ID",
+      value: status.model_run_id || "No trained model",
+      detail: status.model_run_id ? "Selected envelope model" : "Training required",
+      mono: true,
+    },
+    {
+      label: "Participants",
+      value: participantSummary(participants, registeredClients),
+      detail: `${status.registered_client_count ?? 0} of ${status.min_clients ?? "—"} registered`,
+    },
+    {
+      label: "Execution status",
+      value: status.status || "Connecting",
+      detail: lastRefresh ? `Updated ${lastRefresh}` : "Waiting for Hub",
+      tone: status.status === "running" ? "active" : undefined,
+    },
+    {
+      label: "Admission decision",
+      value: admission.value,
+      detail: admission.detail,
+      tone: admission.tone,
+    },
+  ];
+
+  return (
+    <section className="overview-section" aria-labelledby="overview-heading">
+      <div className="section-heading compact">
+        <div>
+          <span className="eyebrow">OPERATIONAL VIEW</span>
+          <h2 id="overview-heading">Current governed state</h2>
+        </div>
+      </div>
+
+      <div className="overview-grid">
+        {cards.map((card) => (
+          <article className={`overview-card ${card.tone || ""}`} key={card.label}>
+            <span>{card.label}</span>
+            <strong className={card.mono ? "mono" : ""}>{card.value}</strong>
+            <small>{card.detail}</small>
+          </article>
+        ))}
+      </div>
+
+      <div className="governance-banner">
+        <div className="governance-mark" aria-hidden="true">✓</div>
+        <div>
+          <strong>FCaC admission enabled</strong>
+          <p>{activeScenario.statement}</p>
+        </div>
+        <div className="separation-principle">
+          Admission <b>≠</b> Authentication <b>≠</b> Authorization
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ModeSelector({ mode, onChange }) {
+  return (
+    <section className="mode-selector" aria-label="Operational role">
+      <div>
+        <span className="eyebrow">DASHBOARD ROLE</span>
+        <strong>{mode === "administration" ? "Collaboration administration" : "Participant operations"}</strong>
+      </div>
+      <div className="mode-buttons" role="tablist" aria-label="Dashboard mode">
+        {[
+          ["administration", "Administration"],
+          ["user", "User"],
+        ].map(([id, label]) => (
+          <button
+            aria-selected={mode === id}
+            className={mode === id ? "active" : ""}
+            key={id}
+            onClick={() => onChange(id)}
+            role="tab"
+            type="button"
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function formatEnvelopeTime(value) {
+  if (!value) return "Not reported";
+  const numeric = Number(value);
+  const date = Number.isFinite(numeric)
+    ? new Date(numeric > 1e12 ? numeric : numeric * 1000)
+    : new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+}
+
+function BoundaryControlArea({
+  administration,
+  ceremony,
+  onBegin,
+  onApprove,
+  onSelect,
+  onMint,
+  busy,
+  error,
+}) {
+  const [codes, setCodes] = useState({ "hospital-a": "", "hospital-b": "" });
+  const registry = administration.envelopes || [];
+  const approvals = ceremony.approvals || {};
+  const selectedId = administration.selected_envelope_id;
+  const selected = registry.find((envelope) => envelope.envelope_id === selectedId) || null;
+  const holders = administration.holders || [];
+
+  const organisations = [
+    { id: "hospital-a", uri: "org://HospitalA", label: "Hospital A" },
+    { id: "hospital-b", uri: "org://HospitalB", label: "Hospital B" },
+  ];
+
+  function updateCode(id, value) {
+    setCodes((current) => ({
+      ...current,
+      [id]: value.replace(/\D/g, "").slice(0, 6),
+    }));
   }
 
   return (
-    <table>
-      <thead>
-        <tr>
-          <th>Round</th>
-          <th>Fit clients</th>
-          <th>Eval clients</th>
-          <th>Loss</th>
-          <th>Accuracy</th>
-          <th>Train loss</th>
-          <th>Train accuracy</th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((row, index) => (
-          <tr key={`${row.round || "round"}-${index}`}>
-            <td>{row.round || "-"}</td>
-            <td>{row.fit_client_count || "-"}</td>
-            <td>{row.eval_client_count || "-"}</td>
-            <td>{row.loss || "-"}</td>
-            <td>{row.accuracy || "-"}</td>
-            <td>{row.train_loss || "-"}</td>
-            <td>{row.train_accuracy || "-"}</td>
+    <section className="administration-section" aria-labelledby="envelopes-heading">
+      <div className="section-heading">
+        <div>
+          <span className="eyebrow">ADMINISTRATION · ENVELOPES</span>
+          <h2 id="envelopes-heading">Select the collaboration boundary</h2>
+        </div>
+        <p>Choose an existing active envelope, review its state, and manage the A+B holder capabilities in one compact area.</p>
+      </div>
+
+      <div className="boundary-control-shell">
+        <div className="boundary-selector-row">
+          <label className="compact-select">
+            <span>{registry.length ? "Valid active envelope" : "No active envelopes"}</span>
+            <select onChange={(event) => onSelect(event.target.value)} value={selectedId || ""}>
+              <option disabled value="">Select an envelope</option>
+              {registry.map((envelope) => (
+                <option key={envelope.envelope_id} value={envelope.envelope_id}>
+                  {envelope.envelope_id}
+                </option>
+              ))}
+            </select>
+          </label>
+          <dl className="boundary-facts">
+            <div><dt>Bound</dt><dd>{selected ? (selected.bound ? "Yes" : "No") : "—"}</dd></div>
+            <div><dt>Expiry</dt><dd>{selected ? formatEnvelopeTime(selected.expiry) : "—"}</dd></div>
+            <div><dt>Model</dt><dd>{selected ? (selected.model_available ? "Available" : "Training required") : "—"}</dd></div>
+            <div><dt>Run</dt><dd className="mono">{selected?.model_run_id || "—"}</dd></div>
+          </dl>
+        </div>
+
+        <div className="capability-table-scroll">
+          <table className="capability-table">
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Organization</th>
+                <th>Profile</th>
+                <th>Enrollment</th>
+                <th>ECT</th>
+                <th>Preview</th>
+                <th>Expiry</th>
+                <th aria-label="ECT action" />
+              </tr>
+            </thead>
+            <tbody>
+              {holders.map((holder) => {
+                const enrollmentLabel = holder.enrollment_status === "unavailable"
+                  ? "Issuer unavailable"
+                  : holder.enrolled
+                  ? "Enrolled"
+                  : "Not enrolled";
+                const ectLabel = holder.ect_status === "ready"
+                  ? "Ready"
+                  : holder.ect_status === "expired"
+                  ? "Expired"
+                  : "Not ready";
+                return (
+                  <tr key={holder.principal}>
+                    <td><strong>{holder.principal}</strong></td>
+                    <td>{holder.organization}</td>
+                    <td className="profile-cell">{holder.profile}</td>
+                    <td>{enrollmentLabel}</td>
+                    <td>{ectLabel}</td>
+                    <td className="mono">{holder.ect_preview || "—"}</td>
+                    <td>{holder.expires_at ? formatEnvelopeTime(holder.expires_at) : "—"}</td>
+                    <td>
+                      <button
+                        disabled={busy || holder.enrolled !== true || !selectedId}
+                        onClick={() => onMint(holder.principal)}
+                        type="button"
+                      >
+                        {holder.ect_status === "ready" ? "REMINT ECT" : "MINT ECT"}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <details className="kyo-disclosure">
+        <summary>Create another envelope · KYO</summary>
+        <div className="ceremony-controls">
+          <div className="ceremony-heading">
+            <div>
+              <span className="eyebrow">CREATE ANOTHER ENVELOPE · KYO</span>
+              <h3>Hospital A + Hospital B · quorum 2 of 2</h3>
+            </div>
+            <button
+              className="primary-action"
+              disabled={busy || Boolean(ceremony.bind_id)}
+              onClick={onBegin}
+              type="button"
+            >
+              {ceremony.bind_id ? "CEREMONY IN PROGRESS" : "BEGIN KYO CEREMONY"}
+            </button>
+          </div>
+
+          {ceremony.bind_id ? (
+            <p className="ceremony-bind">Bind evidence <code>{ceremony.bind_id}</code></p>
+          ) : <p className="ceremony-description">Begin only when a new collaboration envelope is required.</p>}
+
+          {ceremony.bind_id && !ceremony.envelope_id ? organisations.map((organisation) => {
+            const approved = approvals[organisation.uri];
+            return (
+              <div className={`organisation-approval ${approved ? "approved" : ""}`} key={organisation.id}>
+                <div>
+                  <strong>{organisation.label} administrator</strong>
+                  <span>{approved ? `${approved.admin_cn || organisation.uri} · verified and approved` : organisation.uri}</span>
+                </div>
+                <input
+                  aria-label={`${organisation.label} six-digit code`}
+                  disabled={busy || Boolean(approved)}
+                  inputMode="numeric"
+                  onChange={(event) => updateCode(organisation.id, event.target.value)}
+                  placeholder="000000"
+                  value={codes[organisation.id]}
+                />
+                <button
+                  disabled={busy || Boolean(approved) || codes[organisation.id].length !== 6}
+                  onClick={() => onApprove(organisation.id, codes[organisation.id])}
+                  type="button"
+                >
+                  {approved ? "APPROVED" : "VERIFY AND APPROVE"}
+                </button>
+              </div>
+            );
+          }) : null}
+
+          {ceremony.envelope_id ? (
+            <div className="ceremony-result">
+              Envelope created: <code>{ceremony.envelope_id}</code>. Registry and backend state are reported above.
+            </div>
+          ) : null}
+          {error ? <div className="ceremony-error">{error}</div> : null}
+        </div>
+      </details>
+    </section>
+  );
+}
+
+function UserModePanel({
+  administration,
+  selectedPrincipal,
+  selectedTissue,
+  onPrincipalChange,
+  onTissueChange,
+  onRunInference,
+  busy,
+  error,
+  result,
+}) {
+  const selectedId = administration.selected_envelope_id;
+  const selectedEnvelope = (administration.envelopes || []).find(
+    (envelope) => envelope.envelope_id === selectedId
+  );
+  const holder = (administration.holders || []).find((item) => item.principal === selectedPrincipal) || null;
+  const prediction = result?.prediction || null;
+  const sampleImage = prediction?.sample_image;
+  const sampleImageSrc = sampleImage?.image_b64
+    ? `data:${sampleImage.mime_type || "image/png"};base64,${sampleImage.image_b64}`
+    : null;
+
+  return (
+    <div className="governed-inference">
+      <div className="user-mode-layout">
+        <div className="workspace-controls">
+          <p>Use the administrator-minted ECT for the selected boundary. Each request generates fresh DPoP before Gatekeeper admission.</p>
+          <label className="compact-select">
+            <span>Holder</span>
+            <select onChange={(event) => onPrincipalChange(event.target.value)} value={selectedPrincipal}>
+              <option value="Audrey">Audrey</option>
+              <option value="Bob">Bob</option>
+            </select>
+          </label>
+          <label className="compact-select">
+            <span>Tissue</span>
+            <select onChange={(event) => onTissueChange(event.target.value)} value={selectedTissue}>
+              {USER_TISSUES.map((tissue) => (
+                <option key={tissue} value={tissue}>{tissue}</option>
+              ))}
+            </select>
+          </label>
+          <button disabled={busy || !selectedId || !holder || holder.ect_status !== "ready"} onClick={onRunInference} type="button">
+            RUN GOVERNED INFERENCE
+          </button>
+        </div>
+
+        <div className="user-mode-result-card">
+          <div><span className="eyebrow">BOUNDARY</span><strong className="mono">{selectedId || "No envelope selected"}</strong></div>
+          <div><span className="eyebrow">ECT STATUS</span><strong>{holder ? (holder.ect_status === "ready" ? "Ready" : holder.ect_status === "expired" ? "Expired" : "Not ready") : "Unavailable"}</strong></div>
+          <div><span className="eyebrow">MODEL RUN</span><strong className="mono">{result?.model_run_id || selectedEnvelope?.model_run_id || "—"}</strong></div>
+          <div><span className="eyebrow">ADMISSION</span><strong>{result ? (result.admission?.allow ? "ALLOW" : "DENY") : "Awaiting request"}</strong></div>
+          {result?.admission?.reason ? (
+            <div><span className="eyebrow">REASON</span><strong>{result.admission.reason}</strong></div>
+          ) : null}
+          {prediction ? (
+            <div className="prediction-result">
+              {sampleImageSrc ? (
+                <img
+                  alt={`PathMNIST sample for ${prediction.requested_tissue}`}
+                  height={sampleImage.height || 28}
+                  src={sampleImageSrc}
+                  width={sampleImage.width || 28}
+                />
+              ) : null}
+              <dl>
+                <div><dt>Requested tissue</dt><dd>{prediction.requested_tissue || "—"}</dd></div>
+                <div><dt>Actual label</dt><dd>{prediction.actual_label ?? "—"}</dd></div>
+                <div><dt>Predicted tissue</dt><dd>{prediction.prediction_tissue || "—"}</dd></div>
+              </dl>
+              {prediction.topk?.length ? (
+                <ol>
+                  {prediction.topk.map((entry) => (
+                    <li key={`${entry.label}-${entry.tissue}`}>
+                      <span>{entry.tissue}</span>
+                      <strong>{Number(entry.probability).toFixed(4)}</strong>
+                    </li>
+                  ))}
+                </ol>
+              ) : null}
+            </div>
+          ) : null}
+          {error ? <div className="ceremony-error">{error}</div> : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MetricsTable({ rows }) {
+  if (!rows.length) {
+    return <div className="empty-state">No metrics available yet.</div>;
+  }
+
+  return (
+    <div className="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Round</th>
+            <th>Clients</th>
+            <th>Failures</th>
+            <th>Loss</th>
+            <th>Accuracy</th>
+            <th>Train loss</th>
+            <th>Train accuracy</th>
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {rows.map((row, index) => (
+            <tr key={`${row.round || "round"}-${index}`}>
+              <td>{row.round || "—"}</td>
+              <td>{row.client_count ?? row.fit_client_count ?? "—"}</td>
+              <td>{row.failure_count ?? "—"}</td>
+              <td>{row.loss || "—"}</td>
+              <td>{row.accuracy || "—"}</td>
+              <td>{row.train_loss || "—"}</td>
+              <td>{row.train_accuracy || "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -237,14 +703,14 @@ function MetricLineChart({ title, data, series }) {
         <div className="chart-frame">
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={data} margin={{ top: 8, right: 20, bottom: 4, left: 0 }}>
-              <CartesianGrid stroke="#e2e8f0" strokeDasharray="3 3" />
+              <CartesianGrid stroke="#dbe5ec" strokeDasharray="3 3" />
               <XAxis
                 dataKey="round"
                 label={{ value: "Round", position: "insideBottom", offset: -2 }}
                 tickLine={false}
-                stroke="#64748b"
+                stroke="#617080"
               />
-              <YAxis tickLine={false} stroke="#64748b" width={46} />
+              <YAxis tickLine={false} stroke="#617080" width={46} />
               <Tooltip />
               <Legend verticalAlign="top" height={32} />
               {series.map(({ key, label, color }) => (
@@ -263,9 +729,7 @@ function MetricLineChart({ title, data, series }) {
           </ResponsiveContainer>
         </div>
       ) : null}
-      {!hasValues ? (
-        <p className="muted">No chartable values yet.</p>
-      ) : null}
+      {!hasValues ? <p className="muted">No chartable values yet.</p> : null}
     </div>
   );
 }
@@ -283,16 +747,16 @@ function MetricsCharts({ rows, totalRounds }) {
         title="Accuracy over rounds"
         data={data}
         series={[
-          { key: "accuracy", label: "Accuracy", color: "#1d4ed8" },
-          { key: "train_accuracy", label: "Train accuracy", color: "#16a34a" },
+          { key: "accuracy", label: "Accuracy", color: "#126782" },
+          { key: "train_accuracy", label: "Train accuracy", color: "#2a9d8f" },
         ]}
       />
       <MetricLineChart
         title="Loss over rounds"
         data={data}
         series={[
-          { key: "loss", label: "Loss", color: "#dc2626" },
-          { key: "train_loss", label: "Train loss", color: "#c026d3" },
+          { key: "loss", label: "Loss", color: "#d1495b" },
+          { key: "train_loss", label: "Train loss", color: "#8b5cf6" },
         ]}
       />
     </div>
@@ -301,16 +765,17 @@ function MetricsCharts({ rows, totalRounds }) {
 
 function EventsTimeline({ events }) {
   if (!events.length) {
-    return <p className="muted">No events available yet.</p>;
+    return <div className="empty-state">No events available yet.</div>;
   }
 
   return (
-    <div>
+    <div className="event-list">
       {[...events].reverse().map((event, index) => (
         <details key={`${event.timestamp || "event"}-${index}`}>
           <summary>
-            {event.event_type || "event"} - {event.component || "component"} -{" "}
-            {event.timestamp || ""}
+            <span className="event-type">{event.event_type || "event"}</span>
+            <span>{event.component || "component"}</span>
+            <time>{event.timestamp || ""}</time>
           </summary>
           <pre>{JSON.stringify(event, null, 2)}</pre>
         </details>
@@ -319,36 +784,70 @@ function EventsTimeline({ events }) {
   );
 }
 
-function ClientsTable({ participants }) {
-  if (!participants.length) {
-    return <table><tbody><tr><td>No clients available.</td></tr></tbody></table>;
+function ClientsTable({ participants, registeredClients }) {
+  const rows = useMemo(() => {
+    const configured = participants.map((participant) => ({
+      ...participant,
+      configured: true,
+    }));
+    const configuredIds = new Set(configured.map((participant) => participant.org_id));
+    const liveOnly = registeredClients
+      .filter((orgId) => !configuredIds.has(orgId))
+      .map((orgId) => ({
+        org_id: orgId,
+        label: orgId,
+        partition: null,
+        enabled: true,
+        configured: false,
+      }));
+    return [...configured, ...liveOnly];
+  }, [participants, registeredClients]);
+
+  if (!rows.length) {
+    return <div className="empty-state">No participants available.</div>;
   }
 
   return (
-    <table>
-      <thead>
-        <tr>
-          <th>Organisation</th>
-          <th>Label</th>
-          <th>Partition</th>
-          <th>Enabled</th>
-        </tr>
-      </thead>
-      <tbody>
-        {participants.map((client) => (
-          <tr key={client.org_id}>
-            <td>{client.org_id}</td>
-            <td>{client.label || "-"}</td>
-            <td>{client.partition ?? "-"}</td>
-            <td>{String(client.enabled)}</td>
+    <div className="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Organisation</th>
+            <th>Participant</th>
+            <th>Partition</th>
+            <th>Configured</th>
+            <th>Registered</th>
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {rows.map((client) => (
+            <tr key={client.org_id}>
+              <td className="mono">{client.org_id}</td>
+              <td>{client.label || "—"}</td>
+              <td>{client.partition ?? "—"}</td>
+              <td>
+                <span className={`status-chip ${client.enabled ? "ok" : "off"}`}>
+                  {client.configured && client.enabled ? "Enabled" : "No"}
+                </span>
+              </td>
+              <td>
+                <span
+                  className={`status-chip ${
+                    registeredClients.includes(client.org_id) ? "ok" : "waiting"
+                  }`}
+                >
+                  {registeredClients.includes(client.org_id) ? "Live" : "Waiting"}
+                </span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
-function EvidenceArtifacts() {
+function EvidenceArtifacts({ status }) {
   const artefacts = [
     "experiment_config.json",
     "participants.json",
@@ -360,75 +859,282 @@ function EvidenceArtifacts() {
   ];
 
   return (
-    <>
-      <p>
-        Expected artefacts under <code>runs/{RUN_ID}/</code>:
-      </p>
-      <ul>
-        {artefacts.map((artefact) => (
-          <li key={artefact}>{artefact}</li>
-        ))}
-      </ul>
-    </>
+    <div className="evidence-layout">
+      <div className="evidence-status">
+        <span className="eyebrow">LIVE GOVERNANCE CONTEXT</span>
+        <dl>
+          <div>
+            <dt>Envelope</dt>
+            <dd className="mono">{status.active_envelope_id || "Not bound"}</dd>
+          </div>
+          <div>
+            <dt>Backend binding</dt>
+            <dd>{status.backend_bound ? "Bound" : "Pending"}</dd>
+          </div>
+          <div>
+            <dt>Start decision</dt>
+            <dd>{status.can_start ? "Ready" : "Conditions incomplete"}</dd>
+          </div>
+        </dl>
+        <p>
+          ECT, DPoP and admission decisions belong in the governed event trail;
+          this view does not manufacture evidence that the Hub has not reported.
+        </p>
+      </div>
+      <div>
+        <h4>Run artefacts</h4>
+        <p className="muted">
+          {status.model_run_id
+            ? <>Current model under <code>runs/{status.model_run_id}/</code></>
+            : "No completed model run is associated with this envelope."}
+        </p>
+        <ul className="artefact-list">
+          {artefacts.map((artefact) => (
+            <li key={artefact}><code>{artefact}</code></li>
+          ))}
+        </ul>
+      </div>
+    </div>
   );
 }
 
-function TabPanel({ activeTab, metrics, events, participants, config, chartRounds }) {
+function ConfigurationPanel({
+  config,
+  editableConfig,
+  onEditableConfigChange,
+  configEditable,
+  onStartExperiment,
+  starting,
+  canStart,
+  scenarioId,
+  modelRunId,
+}) {
+  const trainingEnabled = scenarioId !== "mode1b";
+  const actionLabel = modelRunId
+    ? "RETRAIN MODEL"
+    : "START TRAINING";
+
+  return (
+    <div className="configuration-layout">
+      <section className="control-card">
+        <span className="eyebrow">TRAINING CONTROLS</span>
+        <h4>Federated run</h4>
+        {trainingEnabled ? (
+          <p>
+            {modelRunId
+              ? <>This envelope currently uses <code>{modelRunId}</code>. The model can be reused, or retrained to create the next run.</>
+              : "This envelope has no trained model. Training is required before model use."}
+          </p>
+        ) : (
+          <p>
+            Mode 1B reuses the A+B+C model. Hal participates only in its bounded task;
+            no training START is available in this mode.
+          </p>
+        )}
+        <div className="control-grid">
+          <label>
+            <span>Rounds</span>
+            <input
+              disabled={!configEditable || !trainingEnabled}
+              min="1"
+              name="rounds"
+              onChange={onEditableConfigChange}
+              type="number"
+              value={editableConfig.rounds || 1}
+            />
+          </label>
+          <label>
+            <span>Local epochs</span>
+            <input
+              disabled={!configEditable || !trainingEnabled}
+              min="1"
+              name="local_epochs"
+              onChange={onEditableConfigChange}
+              type="number"
+              value={editableConfig.local_epochs || 1}
+            />
+          </label>
+        </div>
+        <button
+          id="startButton"
+          type="button"
+          onClick={onStartExperiment}
+          disabled={starting || !canStart || !trainingEnabled}
+        >
+          {starting ? "STARTING…" : trainingEnabled ? actionLabel : "MODEL REUSE · NO START"}
+        </button>
+        {trainingEnabled && !canStart ? (
+          <small className="control-note">
+            Waiting for the envelope, backend binding and required clients.
+          </small>
+        ) : null}
+      </section>
+
+      <section className="config-card">
+        <div className="config-card-heading">
+          <div>
+            <span className="eyebrow">HUB RESPONSE</span>
+            <h4>Active experiment configuration</h4>
+          </div>
+          <span className="status-chip ok">
+            {config.governance?.pass_through === false ? "FCaC enforced" : "Reported state"}
+          </span>
+        </div>
+        <pre>{JSON.stringify(config, null, 2)}</pre>
+      </section>
+    </div>
+  );
+}
+
+function TabPanel({
+  activeTab,
+  metrics,
+  events,
+  participants,
+  registeredClients,
+  config,
+  chartRounds,
+  status,
+  editableConfig,
+  onEditableConfigChange,
+  configEditable,
+  onStartExperiment,
+  starting,
+  scenarioId,
+  canTrain,
+  modelRunId,
+  userModePanel,
+}) {
   const totalRounds = Number(chartRounds || config.rounds || config.flower_rounds || 0);
+  const trainingRound = toMetricNumber(status.training?.round);
+  const reportedRound = status.status === "running" && trainingRound !== null
+    ? trainingRound
+    : latestRound(metrics);
+  const liveAccuracy = toMetricNumber(status.training?.overall_accuracy);
+  const reportedAccuracy = status.status === "running" && liveAccuracy !== null
+    ? liveAccuracy.toFixed(4)
+    : formatMetric(metrics, "accuracy");
 
   return (
     <>
       <section className={`panel ${activeTab === "metrics" ? "" : "hidden"}`}>
-        <h3>Metrics</h3>
+        <div className="panel-heading">
+          <div>
+            <span className="eyebrow">TRAINING AND EVALUATION</span>
+            <h3>Metrics</h3>
+          </div>
+          <span className="metric-summary">
+            Envelope{" "}
+            <code title={status.active_envelope_id || ""}>
+              {compactIdentifier(status.active_envelope_id)}
+            </code>
+            {" "}· Round {reportedRound} · Accuracy {reportedAccuracy}
+          </span>
+        </div>
         <MetricsCharts rows={metrics} totalRounds={totalRounds} />
         <MetricsTable rows={metrics} />
       </section>
 
       <section className={`panel ${activeTab === "events" ? "" : "hidden"}`}>
-        <h3>Event timeline</h3>
+        <div className="panel-heading">
+          <div>
+            <span className="eyebrow">EVIDENCE TRAIL</span>
+            <h3>Events</h3>
+          </div>
+          <span className="metric-summary">{events.length} reported</span>
+        </div>
         <EventsTimeline events={events} />
       </section>
 
       <section className={`panel ${activeTab === "clients" ? "" : "hidden"}`}>
-        <h3>Clients</h3>
-        <ClientsTable participants={participants} />
+        <div className="panel-heading">
+          <div>
+            <span className="eyebrow">FEDERATION STATE</span>
+            <h3>Clients</h3>
+          </div>
+          <span className="metric-summary">Configured and live registration</span>
+        </div>
+        <ClientsTable
+          participants={participants}
+          registeredClients={registeredClients}
+        />
       </section>
 
-      <section className={`panel ${activeTab === "configuration" ? "" : "hidden"}`}>
-        <h3>Configuration</h3>
-        <pre>{JSON.stringify(config, null, 2)}</pre>
+      <section className={`panel ${activeTab === "training" ? "" : "hidden"}`}>
+        <div className="panel-heading">
+          <div>
+            <span className="eyebrow">ADMINISTRATION OPERATION</span>
+            <h3>Training</h3>
+          </div>
+        </div>
+        <ConfigurationPanel
+          config={config}
+          editableConfig={editableConfig}
+          onEditableConfigChange={onEditableConfigChange}
+          configEditable={configEditable}
+          onStartExperiment={onStartExperiment}
+          starting={starting}
+          canStart={canTrain}
+          scenarioId={scenarioId}
+          modelRunId={modelRunId}
+        />
+      </section>
+
+      <section className={`panel ${activeTab === "model-use" ? "" : "hidden"}`}>
+        <div className="panel-heading">
+          <div>
+            <span className="eyebrow">PARTICIPANT OPERATION</span>
+            <h3>Model use</h3>
+          </div>
+        </div>
+        {userModePanel}
       </section>
 
       <section className={`panel ${activeTab === "evidence" ? "" : "hidden"}`}>
-        <h3>Evidence artefacts</h3>
-        <EvidenceArtifacts />
+        <div className="panel-heading">
+          <div>
+            <span className="eyebrow">REPRODUCIBILITY</span>
+            <h3>Evidence</h3>
+          </div>
+        </div>
+        <EvidenceArtifacts status={status} />
       </section>
     </>
   );
 }
 
-function Header() {
+function Header({ lastRefresh }) {
   return (
-    <header>
-      <div className="brand">
-        <img className="logo-img" src={logoUrl} alt="OpenHealth logo" />
-        <div>
-          <h1>OpenHealth</h1>
-          <div className="muted">VFP Federated Computing MVP</div>
+    <header className="app-header">
+      <div className="header-inner">
+        <div className="brand">
+          <img className="logo-img" src={logoUrl} alt="OpenHealth logo" />
+          <div>
+            <h1>OpenHealth</h1>
+            <div className="brand-subtitle">Governed Federated Computing</div>
+          </div>
         </div>
-      </div>
-      <div className="badges">
-        <span className="badge blue">vfp-core</span>
-        <span className="badge orange">vfp-governance: pass-through</span>
-        <span className="badge gray">FCaC not enabled</span>
-        <span className="badge green">{APP_VERSION}</span>
+        <div className="header-status">
+          <div className="header-principle">
+            Admission <b>≠</b> Authentication <b>≠</b> Authorization
+          </div>
+          <div className="badges">
+            <span className="badge navy">vfp-core</span>
+            <span className="badge teal">FCaC admission enabled</span>
+            <span className="badge outline">{APP_VERSION}</span>
+            <span className="live-indicator">
+              <i aria-hidden="true" /> {lastRefresh ? "Hub connected" : "Connecting"}
+            </span>
+          </div>
+        </div>
       </div>
     </header>
   );
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState("metrics");
+  const [dashboardMode, setDashboardMode] = useState("administration");
+  const [activeTab, setActiveTab] = useState("training");
   const [status, setStatus] = useState({});
   const [experiment, setExperiment] = useState({});
   const [metrics, setMetrics] = useState([]);
@@ -436,6 +1142,18 @@ export default function App() {
   const [lastRefresh, setLastRefresh] = useState("");
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(false);
+  const [administration, setAdministration] = useState({
+    envelopes: [],
+    holders: [],
+  });
+  const [ceremony, setCeremony] = useState({ approvals: {} });
+  const [administrationBusy, setAdministrationBusy] = useState(false);
+  const [administrationError, setAdministrationError] = useState("");
+  const [userPrincipal, setUserPrincipal] = useState("Audrey");
+  const [userTissue, setUserTissue] = useState("lymphocytes");
+  const [userBusy, setUserBusy] = useState(false);
+  const [userError, setUserError] = useState("");
+  const [userInferenceResult, setUserInferenceResult] = useState(null);
   const [editableConfig, setEditableConfig] = useState({
     rounds: 1,
     local_epochs: 1,
@@ -444,16 +1162,49 @@ export default function App() {
   const configDirtyRef = useRef(false);
 
   const config = experiment.experiment_config || {};
-  const configEditable = status.status === "waiting" && !starting;
+  const canTrain = Boolean(
+    status.active_envelope_id
+    && status.backend_bound
+    && (status.registered_client_count || 0) >= (status.min_clients || 0)
+    && status.status !== "running"
+    && !starting
+  );
+  const configEditable = canTrain;
   const participants = useMemo(
     () => experiment.participants?.participants || [],
     [experiment.participants]
   );
+  const registeredClients = status.registered_clients || [];
+  const activeScenarioId = normaliseScenario(config);
+  const activeScenario =
+    SCENARIOS.find((scenario) => scenario.id === activeScenarioId) || SCENARIOS[0];
+  const selectedModelRunId = (administration.envelopes || []).find(
+    (envelope) => envelope.envelope_id === administration.selected_envelope_id
+  )?.model_run_id;
+  const displayedModelRunId = status.status === "running"
+    ? status.model_run_id
+    : selectedModelRunId || status.model_run_id;
+  const displayedStatus = {
+    ...status,
+    model_run_id: displayedModelRunId,
+  };
+  const visibleTabs = dashboardMode === "administration" ? ADMIN_TABS : USER_TABS;
 
   function clearPollInterval() {
     if (pollIntervalRef.current !== null) {
       window.clearInterval(pollIntervalRef.current);
       pollIntervalRef.current = null;
+    }
+  }
+
+  async function refreshAdministration() {
+    try {
+      const boundary = await getJson("/administration/boundary");
+      setAdministration(boundary);
+      setAdministrationError("");
+    } catch (err) {
+      setAdministrationError(err.message);
+      console.error(err);
     }
   }
 
@@ -469,7 +1220,9 @@ export default function App() {
 
       setStatus(statusPayload);
       setExperiment(experimentPayload);
-      setMetrics(metricsPayload.metrics || []);
+      const metricsMatchActiveRun = Boolean(statusPayload.model_run_id)
+        && metricsPayload.model_run_id === statusPayload.model_run_id;
+      setMetrics(metricsMatchActiveRun ? metricsPayload.metrics || [] : []);
       setEvents(eventsPayload.events || []);
       if (!configDirtyRef.current) {
         setEditableConfig({
@@ -479,10 +1232,8 @@ export default function App() {
       }
       setLastRefresh(new Date().toLocaleTimeString());
       setError("");
+      await refreshAdministration();
 
-      if (isTerminalStatus(statusPayload.status)) {
-        clearPollInterval();
-      }
     } catch (err) {
       setStatus((current) => ({ ...current, status: "error" }));
       setError(err.message);
@@ -490,13 +1241,111 @@ export default function App() {
     }
   }
 
+  async function beginKyoCeremony() {
+    setAdministrationBusy(true);
+    setAdministrationError("");
+    try {
+      const result = await postJson("/administration/kyo/binds");
+      setCeremony({
+        bind_id: result.bind_id,
+        policy_hash: result.policy_hash,
+        approvals: {},
+      });
+    } catch (err) {
+      setAdministrationError(err.message);
+      console.error(err);
+    } finally {
+      setAdministrationBusy(false);
+    }
+  }
+
+  async function approveKyoOrganisation(organisation, code) {
+    setAdministrationBusy(true);
+    setAdministrationError("");
+    try {
+      const result = await postJson(`/administration/kyo/${organisation}/approve`, {
+        bind_id: ceremony.bind_id,
+        code,
+      });
+      const approval = result.approval || {};
+      setCeremony((current) => ({
+        ...current,
+        approvals: {
+          ...current.approvals,
+          [result.organization]: {
+            admin_cn: result.admin_cn,
+            approved: true,
+          },
+        },
+        envelope_id: approval.envelope_id || current.envelope_id,
+      }));
+      await refreshAdministration();
+    } catch (err) {
+      setAdministrationError(err.message);
+      console.error(err);
+    } finally {
+      setAdministrationBusy(false);
+    }
+  }
+
+  async function selectEnvelope(envelopeId) {
+    setAdministrationBusy(true);
+    setAdministrationError("");
+    try {
+      await postJson(`/administration/envelopes/${envelopeId}/select`);
+      await refreshAll();
+    } catch (err) {
+      setAdministrationError(err.message);
+      console.error(err);
+    } finally {
+      setAdministrationBusy(false);
+    }
+  }
+
+  async function mintHolderEct(principal) {
+    setAdministrationBusy(true);
+    setAdministrationError("");
+    try {
+      await postJson(`/administration/holders/${principal}/mint-ect`, {
+        envelope_id: administration.selected_envelope_id,
+      });
+      await refreshAll();
+    } catch (err) {
+      setAdministrationError(err.message);
+      console.error(err);
+    } finally {
+      setAdministrationBusy(false);
+    }
+  }
+
+  async function runUserInference() {
+    setUserBusy(true);
+    setUserError("");
+    setUserInferenceResult(null);
+    try {
+      const result = await postJson("/user/inference", {
+        principal: userPrincipal,
+        envelope_id: administration.selected_envelope_id,
+        requested_tissue: userTissue,
+        topk: 3,
+      });
+      setUserInferenceResult(result);
+    } catch (err) {
+      setUserError(err.message);
+      console.error(err);
+    } finally {
+      setUserBusy(false);
+    }
+  }
+
   async function startExperiment() {
     setStarting(true);
+    setMetrics([]);
     try {
       await postJson(`/experiments/initialise`, {
         run_id: RUN_ID,
         dataset: config.dataset || "medmnist",
-        dataset_subset: config.dataset_subset || "pneumoniamnist",
+        dataset_subset: config.dataset_subset || "pathmnist",
         rounds: Math.max(1, Number(editableConfig.rounds) || 1),
         min_clients: status.min_clients || config.min_clients || 2,
         local_epochs: Math.max(1, Number(editableConfig.local_epochs) || 1),
@@ -520,6 +1369,11 @@ export default function App() {
     }));
   }
 
+  function changeDashboardMode(mode) {
+    setDashboardMode(mode);
+    setActiveTab(mode === "administration" ? "training" : "model-use");
+  }
+
   useEffect(() => {
     refreshAll();
     pollIntervalRef.current = window.setInterval(refreshAll, POLL_MS);
@@ -528,60 +1382,116 @@ export default function App() {
 
   return (
     <>
-      <Header />
+      <Header lastRefresh={lastRefresh} />
 
       <main>
-        <div className="top-row">
+        <section className="hero">
           <div>
-            <h2>Experiment dashboard</h2>
-            <div className="muted">Reproducible FL infrastructure scaffold</div>
+            <span className="eyebrow">PATHMNIST · GOVERNED COLLABORATION</span>
+            <h2>Federated learning with explicit admission boundaries</h2>
+            <p>
+              Follow training, sponsored contribution and bounded AI participation
+              without collapsing identity, admission and permission into one decision.
+            </p>
           </div>
-          <div>
-            <button
-              id="startButton"
-              type="button"
-              onClick={startExperiment}
-              disabled={starting || !status.can_start}
-            >
-              START EXPERIMENT
-            </button>
+          <div className="run-chip">
+            <span>SELECTED MODEL RUN</span>
+            <strong>
+              {displayedModelRunId
+                || (status.status === "running" ? "Allocating run…" : "No trained model")}
+            </strong>
           </div>
-        </div>
+        </section>
 
-        {error ? <div className="error-banner">{error}</div> : null}
+        {error ? <div className="error-banner">Hub connection: {error}</div> : null}
 
-        <Overview
-          status={status}
-          config={config}
-          metrics={metrics}
-          lastRefresh={lastRefresh}
-          editableConfig={editableConfig}
-          onEditableConfigChange={handleEditableConfigChange}
-          configEditable={configEditable}
+        <ModeSelector mode={dashboardMode} onChange={changeDashboardMode} />
+
+        <ScenarioStrip
+          activeScenarioId={activeScenarioId}
+          executionStatus={status.status}
         />
 
-        <div className="tabs">
-          {TABS.map((tab) => (
+        <Overview
+          status={displayedStatus}
+          participants={participants}
+          activeScenario={activeScenario}
+          lastRefresh={lastRefresh}
+        />
+
+        {dashboardMode === "administration" ? (
+          <BoundaryControlArea
+            administration={administration}
+            busy={administrationBusy}
+            ceremony={ceremony}
+            error={administrationError}
+            onApprove={approveKyoOrganisation}
+            onBegin={beginKyoCeremony}
+            onMint={mintHolderEct}
+            onSelect={selectEnvelope}
+          />
+        ) : null}
+
+        <nav className="tabs" aria-label="Dashboard views">
+          {visibleTabs.map((tab) => (
             <button
+              aria-selected={activeTab === tab}
               className={`tab ${activeTab === tab ? "active" : ""}`}
               key={tab}
+              role="tab"
               type="button"
               onClick={() => setActiveTab(tab)}
             >
-              {tab === "clients" ? "Clients" : tab.charAt(0).toUpperCase() + tab.slice(1)}
+              {tab === "model-use" ? "Model use" : tab.charAt(0).toUpperCase() + tab.slice(1)}
             </button>
           ))}
-        </div>
+        </nav>
 
         <TabPanel
           activeTab={activeTab}
           metrics={metrics}
           events={events}
           participants={participants}
+          registeredClients={registeredClients}
           config={config}
           chartRounds={configEditable ? editableConfig.rounds : undefined}
+          status={displayedStatus}
+          editableConfig={editableConfig}
+          onEditableConfigChange={handleEditableConfigChange}
+          configEditable={configEditable}
+          onStartExperiment={startExperiment}
+          starting={starting}
+          scenarioId={activeScenarioId}
+          canTrain={canTrain}
+          modelRunId={selectedModelRunId}
+          userModePanel={(
+            <UserModePanel
+              administration={administration}
+              busy={userBusy}
+              error={userError}
+              onPrincipalChange={(principal) => {
+                setUserPrincipal(principal);
+                setUserInferenceResult(null);
+                setUserError("");
+              }}
+              onRunInference={runUserInference}
+              onTissueChange={(tissue) => {
+                setUserTissue(tissue);
+                setUserInferenceResult(null);
+                setUserError("");
+              }}
+              result={userInferenceResult}
+              selectedPrincipal={userPrincipal}
+              selectedTissue={userTissue}
+            />
+          )}
         />
       </main>
+
+      <footer>
+        <span>OpenHealth · vfp-core</span>
+        <span>Mode 2 is documented as future work and is not executable here.</span>
+      </footer>
     </>
   );
 }

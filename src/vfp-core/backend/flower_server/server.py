@@ -19,7 +19,9 @@ import csv
 import hashlib
 import json
 import os
+import re
 import socket
+import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -104,6 +106,8 @@ PHASE = "AB_BASE"
 control_app = FastAPI(title="OpenHealth Flower backend control plane")
 bound_envelope: Optional[Dict[str, Any]] = None
 bound_envelope_lock = threading.Lock()
+active_artifact_run_id: Optional[str] = None
+artifact_run_lock = threading.Lock()
 
 training_state: Dict[str, Any] = {
     "status": "waiting",
@@ -141,7 +145,8 @@ class PredictionRequest(BaseModel):
 class ImagePredictionRequest(BaseModel):
     envelope_id: str
     run_id: str
-    image_b64: str = Field(..., min_length=1)
+    image_b64: Optional[str] = None
+    requested_tissue: Optional[str] = None
     filename: Optional[str] = None
     topk: int = Field(default=3, ge=1, le=9)
 
@@ -193,6 +198,7 @@ def control_status() -> Dict[str, Any]:
     return {
         "backend_id": BACKEND_ID,
         "run_id": RUN_ID,
+        "model_run_id": current_artifact_run_id(),
         "bound_envelope": envelope,
         "training": training,
     }
@@ -202,7 +208,7 @@ def control_status() -> Dict[str, Any]:
 def bind_envelope(binding: EnvelopeBinding) -> Dict[str, Any]:
     """Record a Hub-approved binding without starting Flower training."""
 
-    global bound_envelope
+    global bound_envelope, active_artifact_run_id
 
     payload = model_dict(binding)
     payload["bound_at"] = utc_now()
@@ -210,7 +216,21 @@ def bind_envelope(binding: EnvelopeBinding) -> Dict[str, Any]:
     with bound_envelope_lock:
         bound_envelope = payload
 
-    (run_dir() / "bound_envelope.json").write_text(
+    manifest_path = VAULT_ROOT / binding.envelope_id / "run.json"
+    latest_run_id = None
+    if manifest_path.is_file():
+        try:
+            latest_run_id = json.loads(
+                manifest_path.read_text(encoding="utf-8")
+            ).get("run_id")
+        except (OSError, ValueError):
+            latest_run_id = None
+    with artifact_run_lock:
+        active_artifact_run_id = str(latest_run_id) if latest_run_id else None
+
+    envelope_root = VAULT_ROOT / binding.envelope_id
+    envelope_root.mkdir(parents=True, exist_ok=True)
+    (envelope_root / "bound_envelope.json").write_text(
         json.dumps(payload, indent=2),
         encoding="utf-8",
     )
@@ -225,6 +245,7 @@ def bind_envelope(binding: EnvelopeBinding) -> Dict[str, Any]:
         "backend_id": BACKEND_ID,
         "run_id": RUN_ID,
         "envelope_id": binding.envelope_id,
+        "model_run_id": latest_run_id,
     }
 
 
@@ -271,7 +292,7 @@ def predict(req: PredictionRequest) -> Dict[str, Any]:
     values, predicted = torch.topk(probabilities, k=req.topk)
     prediction_label = int(predicted[0].item())
     result = {
-        "run_id": RUN_ID,
+        "run_id": current_artifact_run_id() or RUN_ID,
         "envelope_id": req.envelope_id,
         "requested_tissue": tissue,
         "sample_index": sample_index,
@@ -298,7 +319,7 @@ def predict(req: PredictionRequest) -> Dict[str, Any]:
 
 @control_app.post("/predict_image")
 def predict_image(req: ImagePredictionRequest) -> Dict[str, Any]:
-    """Predict one caller-supplied PathMNIST image.
+    """Predict a caller image or a deterministic governed PathMNIST sample.
 
     This is an internal inference endpoint. Admission remains the Hub and
     Gatekeeper responsibility.
@@ -307,30 +328,79 @@ def predict_image(req: ImagePredictionRequest) -> Dict[str, Any]:
     if req.run_id != RUN_ID:
         raise HTTPException(404, f"unknown_run:{req.run_id}")
 
-    encoded = req.image_b64.strip()
-    if encoded.startswith("data:"):
-        if "," not in encoded:
-            raise HTTPException(400, "invalid_image_data_url")
-        encoded = encoded.split(",", 1)[1]
+    sample_index: Optional[int] = None
+    actual_label: Optional[int] = None
+    requested_tissue = req.requested_tissue
 
-    try:
-        raw_image = base64.b64decode(encoded, validate=True)
-    except (binascii.Error, ValueError) as exc:
-        raise HTTPException(400, "invalid_image_base64") from exc
+    if req.image_b64:
+        encoded = req.image_b64.strip()
+        if encoded.startswith("data:"):
+            if "," not in encoded:
+                raise HTTPException(400, "invalid_image_data_url")
+            encoded = encoded.split(",", 1)[1]
 
-    if not raw_image:
-        raise HTTPException(400, "empty_image")
-    if len(raw_image) > MAX_IMAGE_BYTES:
-        raise HTTPException(413, "image_too_large")
+        try:
+            raw_image = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise HTTPException(400, "invalid_image_base64") from exc
 
-    try:
-        with Image.open(io.BytesIO(raw_image)) as source:
-            source.load()
-            original_width, original_height = source.size
-            original_mode = source.mode
-            image = source.convert("RGB").resize((28, 28))
-    except (UnidentifiedImageError, OSError, ValueError) as exc:
-        raise HTTPException(400, "invalid_image") from exc
+        if not raw_image:
+            raise HTTPException(400, "empty_image")
+        if len(raw_image) > MAX_IMAGE_BYTES:
+            raise HTTPException(413, "image_too_large")
+
+        try:
+            with Image.open(io.BytesIO(raw_image)) as source:
+                source.load()
+                original_width, original_height = source.size
+                original_mode = source.mode
+                image = source.convert("RGB").resize((28, 28))
+        except (UnidentifiedImageError, OSError, ValueError) as exc:
+            raise HTTPException(400, "invalid_image") from exc
+        image_tensor = transform()(image).unsqueeze(0).to(DEVICE)
+        filename = req.filename
+        input_source = "caller_image"
+    else:
+        if not requested_tissue:
+            raise HTTPException(400, "image_or_requested_tissue_required")
+        try:
+            requested_label = PATHMNIST_TISSUES.index(requested_tissue)
+        except ValueError as exc:
+            raise HTTPException(
+                400,
+                f"unknown_tissue:{requested_tissue}",
+            ) from exc
+        if requested_label in IGNORED_CLASSES:
+            raise HTTPException(403, "reserved_tissue")
+
+        dataset = load_test_dataset()
+        labels = labels_array(dataset)
+        sample_index = int(np.flatnonzero(labels == requested_label)[0])
+        dataset_image, actual = dataset[sample_index]
+        actual_label = int(np.asarray(actual).reshape(-1)[0])
+        image_tensor = dataset_image.unsqueeze(0).to(DEVICE)
+
+        preview_array = (
+            dataset_image.detach()
+            .cpu()
+            .permute(1, 2, 0)
+            .mul(0.5)
+            .add(0.5)
+            .clamp(0, 1)
+            .mul(255)
+            .to(torch.uint8)
+            .numpy()
+        )
+        image = Image.fromarray(preview_array, mode="RGB")
+        original_width, original_height = image.size
+        original_mode = image.mode
+        filename = req.filename or f"pathmnist-test-{sample_index}.png"
+        input_source = "governed_test_sample"
+
+    preview_buffer = io.BytesIO()
+    image.save(preview_buffer, format="PNG")
+    preview_bytes = preview_buffer.getvalue()
+    image_sha256 = hashlib.sha256(preview_bytes).hexdigest()
 
     model_path = checkpoint_path()
     if not model_path.is_file():
@@ -343,20 +413,27 @@ def predict_image(req: ImagePredictionRequest) -> Dict[str, Any]:
     model.load_state_dict(state)
     model.eval()
 
-    image_tensor = transform()(image).unsqueeze(0).to(DEVICE)
     with torch.no_grad():
         probabilities = torch.softmax(model(image_tensor), dim=1)[0]
 
     values, predicted = torch.topk(probabilities, k=req.topk)
     prediction_label = int(predicted[0].item())
-    image_sha256 = hashlib.sha256(raw_image).hexdigest()
-
     result = {
-        "run_id": RUN_ID,
+        "run_id": current_artifact_run_id() or RUN_ID,
         "envelope_id": req.envelope_id,
-        "filename": req.filename,
+        "filename": filename,
+        "requested_tissue": requested_tissue,
+        "sample_index": sample_index,
+        "actual_label": actual_label,
         "image_sha256": image_sha256,
+        "sample_image": {
+            "mime_type": "image/png",
+            "image_b64": base64.b64encode(preview_bytes).decode("ascii"),
+            "width": 28,
+            "height": 28,
+        },
         "input_image": {
+            "source": input_source,
             "original_width": original_width,
             "original_height": original_height,
             "original_mode": original_mode,
@@ -378,7 +455,9 @@ def predict_image(req: ImagePredictionRequest) -> Dict[str, Any]:
     write_event(
         "image_prediction_completed",
         envelope_id=req.envelope_id,
-        filename=req.filename,
+        filename=filename,
+        requested_tissue=requested_tissue,
+        sample_index=sample_index,
         image_sha256=image_sha256,
         prediction_label=prediction_label,
     )
@@ -417,10 +496,76 @@ def wait_for_control_plane() -> None:
 # Evidence and artifact paths
 # ---------------------------------------------------------------------
 
-def run_dir() -> Path:
+def control_run_dir() -> Path:
     path = RUNS_DIR / RUN_ID
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def current_artifact_run_id() -> Optional[str]:
+    with artifact_run_lock:
+        return active_artifact_run_id
+
+
+def run_dir() -> Path:
+    run_id = current_artifact_run_id()
+    if not run_id:
+        return control_run_dir()
+    path = RUNS_DIR / run_id
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def allocate_training_run() -> str:
+    global active_artifact_run_id
+
+    session_id = current_session_id()
+    if not session_id:
+        raise RuntimeError("Cannot allocate a run without a bound envelope")
+
+    match = re.fullmatch(r"(.*-)(\d+)", RUN_ID)
+    if match is None:
+        raise RuntimeError(f"RUN_ID lacks numeric suffix: {RUN_ID}")
+    prefix, initial_digits = match.groups()
+    width = len(initial_digits)
+    initial_number = int(initial_digits)
+    numbers = []
+    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    for candidate in RUNS_DIR.iterdir():
+        if not candidate.is_dir():
+            continue
+        candidate_match = re.fullmatch(
+            re.escape(prefix) + r"(\d+)",
+            candidate.name,
+        )
+        if candidate_match and (
+            candidate.name != RUN_ID
+            or (candidate / "run_allocation.json").exists()
+            or (candidate / "final_model_metadata.json").exists()
+            or (candidate / "model.pt").exists()
+        ):
+            numbers.append(int(candidate_match.group(1)))
+
+    next_number = max(numbers, default=initial_number - 1) + 1
+    run_id = f"{prefix}{next_number:0{width}d}"
+    with artifact_run_lock:
+        active_artifact_run_id = run_id
+    (RUNS_DIR / run_id).mkdir(
+        parents=True,
+        exist_ok=(run_id == RUN_ID),
+    )
+    (RUNS_DIR / run_id / "run_allocation.json").write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "session_id": session_id,
+                "allocated_at": utc_now(),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return run_id
 
 
 def events_path() -> Path:
@@ -436,7 +581,7 @@ def participants_path() -> Path:
 
 
 def experiment_config_path() -> Path:
-    return run_dir() / "experiment_config.json"
+    return control_run_dir() / "experiment_config.json"
 
 
 def checkpoint_path() -> Path:
@@ -479,7 +624,7 @@ def json_safe(value: Any) -> Any:
 def write_event(event_type: str, **kwargs: Any) -> None:
     event = {
         "timestamp": utc_now(),
-        "run_id": RUN_ID,
+        "run_id": current_artifact_run_id() or RUN_ID,
         "component": "vfp-core/flower_server",
         "event_type": event_type,
         **kwargs,
@@ -616,8 +761,20 @@ def notify_hub_completed() -> None:
 
 
 def keep_control_plane_alive() -> None:
+    """Remain queryable, then restart cleanly when another START arrives."""
     write_event("server_control_plane_idle")
-    threading.Event().wait()
+    while True:
+        try:
+            response = requests.get(
+                f"{HUB_URL}/experiments/{RUN_ID}/status",
+                timeout=5,
+            )
+            response.raise_for_status()
+            if response.json().get("status") == "running":
+                os.execv(sys.executable, [sys.executable, *sys.argv])
+        except Exception as exc:
+            write_event("server_restart_poll_error", error=str(exc))
+        time.sleep(SERVER_POLL_SECONDS)
 
 
 # ---------------------------------------------------------------------
@@ -898,7 +1055,7 @@ class EvidenceFedAvg(FedAvg):
         participants_path().write_text(
             json.dumps(
                 {
-                    "run_id": RUN_ID,
+                    "run_id": current_artifact_run_id() or RUN_ID,
                     "participants": [
                         self.participants[participant_id]
                         for participant_id in sorted(self.participants)
@@ -985,7 +1142,7 @@ def write_final_metadata(
 ) -> None:
     artifact = checkpoint_path()
     metadata = {
-        "run_id": RUN_ID,
+        "run_id": current_artifact_run_id() or RUN_ID,
         "session_id": current_session_id(),
         "phase": PHASE,
         "timestamp": utc_now(),
@@ -1020,16 +1177,23 @@ def write_envelope_run_summary(
     session_id = current_session_id()
     if not session_id:
         return
+    if status == "completed" and not checkpoint_path().is_file():
+        raise RuntimeError(
+            "Completed training did not produce a model artefact"
+        )
 
     target = VAULT_ROOT / session_id
     target.mkdir(parents=True, exist_ok=True)
     payload = {
-        "run_id": RUN_ID,
+        "run_id": current_artifact_run_id() or RUN_ID,
         "session_id": session_id,
         "phase": PHASE,
         "status": status,
         "rounds_completed": rounds_completed,
         "artifacts": {
+            "experiment_config": str(run_dir() / "experiment_config.json"),
+            "events": str(events_path()),
+            "participants": str(participants_path()),
             "metrics": str(metrics_path()),
             "model": str(checkpoint_path()),
             "class_metrics": str(class_metrics_path()),
@@ -1040,16 +1204,18 @@ def write_envelope_run_summary(
         },
         "error": error,
     }
-    (target / "run.json").write_text(
+    pointer_path = target / "run.json"
+    temporary_path = target / "run.json.tmp"
+    temporary_path.write_text(
         json.dumps(payload, indent=2),
         encoding="utf-8",
     )
+    temporary_path.replace(pointer_path)
 
 
 def main() -> None:
     seed_everything()
-    run_dir()
-    ensure_metrics_header()
+    control_run_dir()
     update_training_state(status="waiting")
 
     write_event(
@@ -1076,7 +1242,13 @@ def main() -> None:
         write_event("server_failed", error=error)
         raise RuntimeError(error)
 
+    allocated_run_id = allocate_training_run()
     config = load_experiment_config()
+    (run_dir() / "experiment_config.json").write_text(
+        json.dumps({**config, "run_id": allocated_run_id}, indent=2),
+        encoding="utf-8",
+    )
+    ensure_metrics_header()
     rounds = positive_int(config, "rounds", DEFAULT_ROUNDS)
     min_clients = positive_int(
         config,
@@ -1124,7 +1296,7 @@ def main() -> None:
         ) as handle:
             csv.writer(handle).writerow(
                 [
-                    RUN_ID,
+                    current_artifact_run_id() or RUN_ID,
                     current_session_id(),
                     PHASE,
                     server_round,
@@ -1246,11 +1418,6 @@ def main() -> None:
             config=config,
             rounds_completed=0,
             status="failed",
-            error=str(exc),
-        )
-        write_envelope_run_summary(
-            status="failed",
-            rounds_completed=0,
             error=str(exc),
         )
         write_event("server_failed", error=str(exc))

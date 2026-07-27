@@ -43,6 +43,7 @@ class DPoPSignReq(BaseModel):
     htu: str
     htm: str = "POST"
     jti: str
+    envelope_id: str
     nonce: Optional[str] = None
     iat: Optional[int] = None
 
@@ -62,6 +63,7 @@ def dpop_sign(req: DPoPSignReq):
         "htm": req.htm,
         "iat": iat,
         "jti": req.jti,
+        "envelope_id": req.envelope_id,
     }
     if req.nonce:
         payload["nonce"] = req.nonce
