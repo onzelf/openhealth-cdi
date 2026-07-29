@@ -1,62 +1,91 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# before using containerized system, members must be enrolled and registered by their organizations
+# Before using the containerized system, active human actors must be enrolled
+# by their organizations and their private keys placed in holder-signer custody.
 
-# generate locally on disk
-# -------------------------------------------------------
-echo "------------------------->"
-echo "(1) register member Audrey"
-python3 gen_member_keys.py  --org org://HospitalA --who Audrey
+ACTOR_CATALOG="${ACTOR_CATALOG:-../vfp-core/issuers/config/actors.json}"
+VAULT_HOLDER_KEYS_DIR="../vfp-governance/verifier/vault/holder_keys"
 
-DATA=$(jq 'del(.created_at)' holder_keys/Audrey.register.json)
-echo $DATA
+if [[ ! -r "${ACTOR_CATALOG}" ]]; then
+  echo "Actor catalog not found: ${ACTOR_CATALOG}" >&2
+  exit 1
+fi
 
-curl -vk \
-  --resolve issuer-hospitala.local:9443:192.168.1.25 \
-  --cacert ../vfp-governance/verifier/certs/ca.crt \
-  --cert  ../vfp-governance/verifier/certs/HospitalA-admin.crt \
-  --key   ../vfp-governance/verifier/certs/HospitalA-admin.key \
-  -H "Content-Type: application/json" \
-  --data "$DATA" https://issuer-hospitala.local:9443/members/register
+mapfile -t ACTIVE_MEMBERS < <(
+  jq -r '
+    to_entries[]
+    | .key as $organization
+    | .value[]
+    | select(
+        .status == "active"
+        and .actor_type == "human"
+      )
+    | [$organization, .principal]
+    | @tsv
+  ' "${ACTOR_CATALOG}"
+)
 
-# ---------------------------------
-echo ""
-echo "-------------------> "
-echo "register member Bob"
-python3 gen_member_keys.py  --org org://HospitalB --who Bob
+if (( ${#ACTIVE_MEMBERS[@]} == 0 )); then
+  echo "No active human members are defined in ${ACTOR_CATALOG}" >&2
+  exit 1
+fi
 
-DATA=$(jq 'del(.created_at)' holder_keys/Bob.register.json)
-echo $DATA
+declare -A REGISTERED_ORGANIZATIONS=()
 
-curl -vk \
-  --resolve issuer-hospitalb.local:9443:192.168.1.25 \
-  --cacert ../vfp-governance/verifier/certs/ca.crt \
-  --cert  ../vfp-governance/verifier/certs/HospitalB-admin.crt \
-  --key   ../vfp-governance/verifier/certs/HospitalB-admin.key \
-  -H "Content-Type: application/json" \
-  --data "$DATA" https://issuer-hospitalb.local:9443/members/register
+configure_issuer() {
+  local organization="$1"
 
+  case "${organization}" in
+    "org://HospitalA")
+      ISSUER_HOST="issuer-hospitala.local"
+      ADMIN_CERT_NAME="HospitalA-admin"
+      ;;
+    "org://HospitalB")
+      ISSUER_HOST="issuer-hospitalb.local"
+      ADMIN_CERT_NAME="HospitalB-admin"
+      ;;
+    *)
+      echo "No demo issuer connector for active organization ${organization}" >&2
+      exit 1
+      ;;
+  esac
+}
 
-# -----------------------------------------
-# check register in HospistA
-curl -sk --resolve issuer-hospitala.local:9443:192.168.1.25   \
-         --cacert ../vfp-governance/verifier/certs/ca.crt   \
-         --cert  ../vfp-governance/verifier/certs/HospitalA-admin.crt   \
-         --key   ../vfp-governance/verifier/certs/HospitalA-admin.key  \
-          https://issuer-hospitala.local:9443/members | jq .
+for member in "${ACTIVE_MEMBERS[@]}"; do
+  IFS=$'\t' read -r organization principal <<< "${member}"
+  configure_issuer "${organization}"
 
-curl -sk --resolve issuer-hospitalb.local:9443:192.168.1.25   \
-         --cacert ../vfp-governance/verifier/certs/ca.crt   \
-         --cert  ../vfp-governance/verifier/certs/HospitalB-admin.crt   \
-         --key   ../vfp-governance/verifier/certs/HospitalB-admin.key  \
-          https://issuer-hospitalb.local:9443/members | jq .
+  echo "------------------------->"
+  echo "Register member ${principal} for ${organization}"
+  python3 gen_member_keys.py --org "${organization}" --who "${principal}"
+
+  DATA=$(jq 'del(.created_at)' "holder_keys/${principal}.register.json")
+  echo "${DATA}"
+
+  curl -vk \
+    --resolve "${ISSUER_HOST}:9443:192.168.1.25" \
+    --cacert ../vfp-governance/verifier/certs/ca.crt \
+    --cert "../vfp-governance/verifier/certs/${ADMIN_CERT_NAME}.crt" \
+    --key "../vfp-governance/verifier/certs/${ADMIN_CERT_NAME}.key" \
+    -H "Content-Type: application/json" \
+    --data "${DATA}" "https://${ISSUER_HOST}:9443/members/register"
+
+  REGISTERED_ORGANIZATIONS["${organization}"]=1
+done
+
+for organization in "${!REGISTERED_ORGANIZATIONS[@]}"; do
+  configure_issuer "${organization}"
+  curl -sk \
+    --resolve "${ISSUER_HOST}:9443:192.168.1.25" \
+    --cacert ../vfp-governance/verifier/certs/ca.crt \
+    --cert "../vfp-governance/verifier/certs/${ADMIN_CERT_NAME}.crt" \
+    --key "../vfp-governance/verifier/certs/${ADMIN_CERT_NAME}.key" \
+    "https://${ISSUER_HOST}:9443/members" | jq .
+done
 
 echo "done"
 echo " "
-# -----------------------------------------
-# save private keys in the simulated secure vault mounted by holder-signer
-VAULT_HOLDER_KEYS_DIR="../vfp-governance/verifier/vault/holder_keys"
 
 mkdir -p "${VAULT_HOLDER_KEYS_DIR}"
 
@@ -68,10 +97,9 @@ fi
 
 chmod 700 "${VAULT_HOLDER_KEYS_DIR}"
 
-install -v -m 600 \
-  holder_keys/Audrey.privhex \
-  "${VAULT_HOLDER_KEYS_DIR}/Audrey.privhex"
-
-install -v -m 600 \
-  holder_keys/Bob.privhex \
-  "${VAULT_HOLDER_KEYS_DIR}/Bob.privhex"
+for member in "${ACTIVE_MEMBERS[@]}"; do
+  IFS=$'\t' read -r _ principal <<< "${member}"
+  install -v -m 600 \
+    "holder_keys/${principal}.privhex" \
+    "${VAULT_HOLDER_KEYS_DIR}/${principal}.privhex"
+done

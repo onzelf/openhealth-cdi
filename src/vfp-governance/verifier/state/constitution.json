@@ -179,7 +179,8 @@
       "other_tissue_reader": {
         "description": "Research role limited to explicitly granted other-tissue classes.",
         "minimal_poc_query_scope": [
-          "background",
+          "mucus",
+          "normal_colon_mucosa",
           "lymphocytes"
         ],
         "does_not_imply_access_to": [

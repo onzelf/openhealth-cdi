@@ -67,6 +67,18 @@ variable "cancer_samples_per_ab_hospital" {
   default     = 100
 }
 
+variable "pathmnist_partition_profile" {
+  description = "Named PathMNIST partition profile selected by all Flower participants"
+  type        = string
+  default     = "COMPLEMENTARY_ABC_V1"
+}
+
+variable "pathmnist_partition_seed" {
+  description = "Deterministic seed used to allocate disjoint PathMNIST class slices"
+  type        = number
+  default     = 20260728
+}
+
 variable "org_a_id" { 
   type    = string 
   default = "org://HospitalA" 
@@ -331,7 +343,7 @@ resource "docker_container" "issuer_hospitala" {
     "ADMIN_CRT=/run/certs/admin.crt",
     "ADMIN_KEY=/run/certs/admin.key",
     "REGISTRY_DIR=/vault/registry",
-
+    "MEMBER_ENTITLEMENTS_PATH=/app/config/member_entitlements.json",
   ]
 
 
@@ -341,6 +353,12 @@ resource "docker_container" "issuer_hospitala" {
   read_only      = false
  }
 
+
+  volumes {
+    host_path      = abspath("${local.repo_root}/vfp-core/issuers/config/hospital_a_entitlements.json")
+    container_path = "/app/config/member_entitlements.json"
+    read_only      = true
+  }
 
   volumes {
     host_path      = abspath("${local.repo_root}/vfp-governance/verifier/certs/ca.crt")
@@ -378,7 +396,8 @@ resource "docker_container" "issuer_hospitalb" {
     "VERIFY_TLS=1",
     "ADMIN_CRT=/run/certs/admin.crt",
     "ADMIN_KEY=/run/certs/admin.key",
-    "REGISTRY_DIR=/vault/registry"
+    "REGISTRY_DIR=/vault/registry",
+    "MEMBER_ENTITLEMENTS_PATH=/app/config/member_entitlements.json"
   ]
 
   volumes {
@@ -387,6 +406,12 @@ resource "docker_container" "issuer_hospitalb" {
   read_only      = false
  }
 
+
+  volumes {
+    host_path      = abspath("${local.repo_root}/vfp-core/issuers/config/hospital_b_entitlements.json")
+    container_path = "/app/config/member_entitlements.json"
+    read_only      = true
+  }
 
   volumes {
     host_path      = abspath("${local.repo_root}/vfp-governance/verifier/certs/ca.crt")
@@ -452,6 +477,7 @@ resource "docker_container" "hub" {
     "HUB_CERT_CRT=/run/certs/hub.crt",
     "HUB_CERT_KEY=/run/certs/hub.key",
     "VERIFIER_URL=https://verifier.local:8443",
+    "ACTOR_CATALOG_PATH=/app/config/actors.json",
   ]
 
 
@@ -477,6 +503,12 @@ resource "docker_container" "hub" {
     host_path      = abspath("${local.repo_root}/vfp-governance/verifier/vault")
     container_path = "/vault"
     read_only      = false
+  }
+
+  volumes {
+    host_path      = abspath("${local.repo_root}/vfp-core/issuers/config/actors.json")
+    container_path = "/app/config/actors.json"
+    read_only      = true
   }
 
 
@@ -578,6 +610,8 @@ resource "docker_container" "flower_server" {
     "DEVICE=cpu",
     "TRAIN_FRACTION=${var.train_fraction}",
     "CANCER_SAMPLES_PER_AB_HOSPITAL=${var.cancer_samples_per_ab_hospital}",
+    "PATHMNIST_PARTITION_PROFILE=${var.pathmnist_partition_profile}",
+    "PATHMNIST_PARTITION_SEED=${var.pathmnist_partition_seed}",
     "BATCH_SIZE=${var.batch_size}",
     "LOCAL_EPOCHS=${var.local_epochs}",
     "LEARNING_RATE=${var.learning_rate}",
@@ -648,6 +682,8 @@ resource "docker_container" "flower_client_a" {
     "BATCH_SIZE=${var.batch_size}",
     "TRAIN_FRACTION=${var.train_fraction}",
     "CANCER_SAMPLES_PER_AB_HOSPITAL=${var.cancer_samples_per_ab_hospital}",
+    "PATHMNIST_PARTITION_PROFILE=${var.pathmnist_partition_profile}",
+    "PATHMNIST_PARTITION_SEED=${var.pathmnist_partition_seed}",
     "MEDMNIST_ROOT=/tmp/medmnist",
     "DEVICE=cuda",
   ]
@@ -678,6 +714,8 @@ resource "docker_container" "flower_client_b" {
     "BATCH_SIZE=${var.batch_size}",
     "TRAIN_FRACTION=${var.train_fraction}",
     "CANCER_SAMPLES_PER_AB_HOSPITAL=${var.cancer_samples_per_ab_hospital}",
+    "PATHMNIST_PARTITION_PROFILE=${var.pathmnist_partition_profile}",
+    "PATHMNIST_PARTITION_SEED=${var.pathmnist_partition_seed}",
     "MEDMNIST_ROOT=/tmp/medmnist",
     "DEVICE=cuda",
   ]

@@ -125,7 +125,7 @@ AB-QUERY-03
 A researcher authorized as an OTHER TISSUE READER may query only the other-tissue classes explicitly granted to that role.
 
 AB-QUERY-04
-For the minimal proof-of-concept case, an OTHER TISSUE READER may be authorized to query background and lymphocytes.
+For the minimal proof-of-concept case, an OTHER TISSUE READER may be authorized to query mucus, normal colon mucosa, and lymphocytes.
 
 AB-QUERY-05
 Cancer-associated stroma and colorectal adenocarcinoma epithelium require a separate CANCER-ASSOCIATED TISSUE READER authorization.

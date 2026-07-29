@@ -51,6 +51,8 @@ from pathmnist.common import (
     DEVICE,
     IGNORED_CLASSES,
     Net,
+    PATHMNIST_PARTITION_PROFILE,
+    PATHMNIST_PARTITION_SEED,
     STORY_CANCER_CLASSES,
     STORY_NON_CANCER_CLASSES,
     evaluate_full_test,
@@ -112,6 +114,8 @@ artifact_run_lock = threading.Lock()
 training_state: Dict[str, Any] = {
     "status": "waiting",
     "phase": PHASE,
+    "data_partition_profile": PATHMNIST_PARTITION_PROFILE,
+    "data_partition_seed": PATHMNIST_PARTITION_SEED,
     "round": 0,
     "rounds": DEFAULT_ROUNDS,
     "overall_accuracy": None,
@@ -664,6 +668,8 @@ def register_with_hub() -> None:
             "min_clients": DEFAULT_MIN_CLIENTS,
             "phase": PHASE,
             "central_evaluation": True,
+            "data_partition_profile": PATHMNIST_PARTITION_PROFILE,
+            "data_partition_seed": PATHMNIST_PARTITION_SEED,
         },
     }
 
@@ -1160,6 +1166,14 @@ def write_final_metadata(
         ),
         "ignored_labels": sorted(IGNORED_CLASSES),
         "active_labels": ACTIVE_CLASSES,
+        "data_partition_profile": config.get(
+            "data_partition_profile",
+            PATHMNIST_PARTITION_PROFILE,
+        ),
+        "data_partition_seed": config.get(
+            "data_partition_seed",
+            PATHMNIST_PARTITION_SEED,
+        ),
         "error": error,
     }
     final_model_metadata_path().write_text(
@@ -1243,7 +1257,11 @@ def main() -> None:
         raise RuntimeError(error)
 
     allocated_run_id = allocate_training_run()
-    config = load_experiment_config()
+    config = {
+        **load_experiment_config(),
+        "data_partition_profile": PATHMNIST_PARTITION_PROFILE,
+        "data_partition_seed": PATHMNIST_PARTITION_SEED,
+    }
     (run_dir() / "experiment_config.json").write_text(
         json.dumps({**config, "run_id": allocated_run_id}, indent=2),
         encoding="utf-8",

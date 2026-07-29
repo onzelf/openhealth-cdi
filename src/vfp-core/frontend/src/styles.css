@@ -457,6 +457,11 @@ main {
   padding: 9px 10px;
 }
 
+.compact-select select:disabled {
+  background: #eef3f5;
+  color: var(--muted);
+}
+
 .boundary-facts {
   display: grid;
   gap: 12px;
@@ -516,11 +521,12 @@ main {
   font-size: 10px;
 }
 
-.capability-table .profile-cell {
+.capability-table .actor-meta {
   color: var(--muted);
-  font-size: 9px;
-  max-width: 210px;
-  overflow-wrap: anywhere;
+  display: block;
+  font-size: 8px;
+  margin-top: 2px;
+  text-transform: capitalize;
 }
 
 .capability-table td:last-child {

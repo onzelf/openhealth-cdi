@@ -58,6 +58,9 @@ FCAC_ENVELOPE_CHANNEL = os.getenv(
 BIND_RETRY_SECONDS = float(os.getenv("BIND_RETRY_SECONDS", "2"))
 
 ORGS_JSON = os.getenv("ORGS_JSON", "{}")
+ACTOR_CATALOG_PATH = Path(
+    os.getenv("ACTOR_CATALOG_PATH", "/app/config/actors.json")
+)
 
 ISSUER_A_URL = os.getenv(
     "ISSUER_A_URL",
@@ -121,22 +124,79 @@ PATHMNIST_QUERY_TISSUES = [
     "colorectal_adenocarcinoma_epithelium",
 ]
 
+ORGANISATION_LABELS = {
+    "org://HospitalA": "Hospital A",
+    "org://HospitalB": "Hospital B",
+    "org://HospitalC": "Hospital C",
+    "sponsor://HospitalA+HospitalB": "Hospital A + Hospital B",
+}
+
+ISSUER_URLS = {
+    "org://HospitalA": ISSUER_A_URL,
+    "org://HospitalB": ISSUER_B_URL,
+}
+
+
+
+def load_actor_catalog(path: Path) -> Dict[str, Dict[str, Any]]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RuntimeError(f"actor_catalog_unavailable:{path}:{exc}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("actor_catalog_invalid:root_must_be_object")
+
+    actors: Dict[str, Dict[str, Any]] = {}
+    for organisation, entries in payload.items():
+        if not isinstance(entries, list):
+            raise RuntimeError(
+                f"actor_catalog_invalid:{organisation}:actors_must_be_array"
+            )
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise RuntimeError(
+                    f"actor_catalog_invalid:{organisation}:actor_must_be_object"
+                )
+            principal = str(entry.get("principal", "")).strip()
+            if not principal:
+                raise RuntimeError(
+                    f"actor_catalog_invalid:{organisation}:missing_principal"
+                )
+            if principal in actors:
+                raise RuntimeError(
+                    f"actor_catalog_invalid:duplicate_principal:{principal}"
+                )
+            actors[principal] = {
+                **entry,
+                "principal": principal,
+                "organization": str(organisation),
+                "organisation": ORGANISATION_LABELS.get(
+                    str(organisation),
+                    str(organisation),
+                ),
+                "issuer_url": ISSUER_URLS.get(str(organisation)),
+                "modes": list(entry.get("modes") or []),
+            }
+    return actors
+
+
+ACTOR_CONTEXTS = load_actor_catalog(ACTOR_CATALOG_PATH)
+
+
+def actor_is_operational(context: Dict[str, Any]) -> bool:
+    return bool(
+        context.get("status") == "active"
+        and context.get("issuer_url")
+    )
+
+
+# Generated from the actor catalogue so the legacy endpoint keeps its current
+# request and response semantics without retaining a second actor registry.
 AB_PRINCIPALS: Dict[str, Dict[str, Any]] = {
-    "Audrey": {
-        "organisation": "Hospital A",
-        "issuer_url": ISSUER_A_URL,
-        "profile": "PATHMNIST_OTHER_TISSUE_READER",
-        "allowed_tissues": ["background", "lymphocytes"],
-    },
-    "Bob": {
-        "organisation": "Hospital B",
-        "issuer_url": ISSUER_B_URL,
-        "profile": "PATHMNIST_CANCER_ASSOCIATED_READER",
-        "allowed_tissues": [
-            "cancer_associated_stroma",
-            "colorectal_adenocarcinoma_epithelium",
-        ],
-    },
+    principal: dict(context)
+    for principal, context in ACTOR_CONTEXTS.items()
+    if "ab" in context.get("modes", [])
+    and actor_is_operational(context)
 }
 
 # ---------------------------------------------------------------------
@@ -442,7 +502,6 @@ def mint_principal_ect(
             principal_context["issuer_url"] + "/mint",
             json={
                 "sub": principal,
-                "profile": principal_context["profile"],
                 "envelope_id": envelope_id,
             },
             timeout=15,
@@ -1129,11 +1188,16 @@ def administration_boundary() -> Dict[str, Any]:
 
     holders_payload = []
     now = int(time.time())
-    for principal, context in AB_PRINCIPALS.items():
+    for principal, context in ACTOR_CONTEXTS.items():
+        operational = actor_is_operational(context)
         credential_key = principal_runtime_key(str(selected_id or ""), principal)
-        credential = holder_runtime_credentials.get(credential_key)
+        credential = (
+            holder_runtime_credentials.get(credential_key)
+            if operational
+            else None
+        )
         expires_at = credential.get("expires_at") if credential else None
-        ect_status = "missing"
+        ect_status = "missing" if operational else "unavailable"
         ect_preview = ""
         if credential:
             expired = bool(expires_at and int(expires_at) <= now)
@@ -1143,14 +1207,24 @@ def administration_boundary() -> Dict[str, Any]:
             else:
                 ect_status = "ready"
                 ect_preview = compact_ect_preview(credential.get("ect", ""))
-        enrollment = issuer_member_lookup(context["issuer_url"], principal)
+        enrollment = (
+            issuer_member_lookup(context["issuer_url"], principal)
+            if operational
+            else None
+        )
         holders_payload.append(
             {
                 "principal": principal,
                 "organization": context["organisation"],
-                "profile": context["profile"],
+                "organization_id": context["organization"],
+                "actor_type": context.get("actor_type"),
+                "actor_status": context.get("status"),
+                "modes": context.get("modes", []),
                 "enrolled": enrollment,
                 "enrollment_status": (
+                    "planned"
+                    if not operational
+                    else
                     "enrolled"
                     if enrollment is True
                     else "not_enrolled"
@@ -1162,6 +1236,12 @@ def administration_boundary() -> Dict[str, Any]:
                 "envelope_id": selected_id,
                 "expires_at": expires_at,
                 "model_run_id": selected_model_run_id,
+                "can_mint": bool(
+                    operational
+                    and enrollment is True
+                    and selected_id
+                    and binding_state.get("bound", False)
+                ),
             }
         )
 
@@ -1169,6 +1249,15 @@ def administration_boundary() -> Dict[str, Any]:
         "selected_envelope_id": selected_id,
         "envelopes": envelopes_payload,
         "holders": holders_payload,
+        "inference_actors": [
+            {
+                "principal": principal,
+                "organization": context["organisation"],
+                "actor_type": context.get("actor_type"),
+            }
+            for principal, context in ACTOR_CONTEXTS.items()
+            if actor_is_operational(context)
+        ],
         "can_train": current_experiment_status(RUN_ID).get("can_start", False),
     }
 
@@ -1203,9 +1292,11 @@ def administration_mint_holder_ect(
     req: HolderEctMintRequest,
 ) -> Dict[str, Any]:
     """Mint and store a short-lived ECT for a holder for the selected envelope."""
-    principal_context = AB_PRINCIPALS.get(principal)
+    principal_context = ACTOR_CONTEXTS.get(principal)
     if principal_context is None:
         raise HTTPException(400, f"unknown_principal:{principal}")
+    if not actor_is_operational(principal_context):
+        raise HTTPException(409, f"actor_not_operational:{principal}")
 
     binding_state = selected_envelope_binding_state()
     selected_id = binding_state.get("selected_envelope_id")
@@ -1663,8 +1754,6 @@ def ab_prediction_options() -> Dict[str, Any]:
             {
                 "sub": principal,
                 "organisation": context["organisation"],
-                "profile": context["profile"],
-                "allowed_tissues": context["allowed_tissues"],
             }
             for principal, context in AB_PRINCIPALS.items()
         ],
@@ -1717,7 +1806,6 @@ def ab_prediction(req: ABPredictionRequest) -> Dict[str, Any]:
         "principal": {
             "sub": req.principal,
             "organisation": principal_context["organisation"],
-            "profile": principal_context["profile"],
         },
         "request": {
             "envelope_id": req.envelope_id,
@@ -1777,9 +1865,11 @@ def user_inference(req: UserInferenceRequest) -> Dict[str, Any]:
     if not binding_state.get("bound", False):
         raise HTTPException(409, "envelope_not_bound")
 
-    principal_context = AB_PRINCIPALS.get(req.principal)
+    principal_context = ACTOR_CONTEXTS.get(req.principal)
     if principal_context is None:
         raise HTTPException(400, f"unknown_principal:{req.principal}")
+    if not actor_is_operational(principal_context):
+        raise HTTPException(409, f"actor_not_operational:{req.principal}")
 
     credential_key = principal_runtime_key(selected_id, req.principal)
     credential = holder_runtime_credentials.get(credential_key)

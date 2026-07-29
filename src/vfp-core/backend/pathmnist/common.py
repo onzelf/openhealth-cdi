@@ -6,7 +6,7 @@ from __future__ import annotations
 import os
 import random
 from pathlib import Path
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -33,10 +33,66 @@ TRAIN_FRACTION = float(os.getenv("TRAIN_FRACTION", "0.80"))
 CANCER_SAMPLES_PER_AB_HOSPITAL = int(
     os.getenv("CANCER_SAMPLES_PER_AB_HOSPITAL", "100")
 )
+PATHMNIST_PARTITION_PROFILE = os.getenv(
+    "PATHMNIST_PARTITION_PROFILE",
+    "LEGACY_AB",
+).strip().upper()
+PATHMNIST_PARTITION_SEED = int(
+    os.getenv("PATHMNIST_PARTITION_SEED", "20260728")
+)
 if not 0.0 < TRAIN_FRACTION <= 1.0:
     raise ValueError("TRAIN_FRACTION must be in (0, 1]")
 if CANCER_SAMPLES_PER_AB_HOSPITAL < 1:
     raise ValueError("CANCER_SAMPLES_PER_AB_HOSPITAL must be positive")
+
+PARTITION_HOSPITALS = ("A", "B", "C")
+PARTITION_PROFILES: Dict[str, Dict[int, Dict[str, int]]] = {
+    "COMPLEMENTARY_ABC_V1": {
+        0: {"A": 25, "B": 25, "C": 50},
+        1: {"A": 25, "B": 25, "C": 50},
+        2: {"A": 0, "B": 0, "C": 0},
+        3: {"A": 10, "B": 10, "C": 80},
+        4: {"A": 25, "B": 25, "C": 50},
+        5: {"A": 25, "B": 25, "C": 50},
+        6: {"A": 25, "B": 25, "C": 50},
+        7: {"A": 5, "B": 5, "C": 90},
+        8: {"A": 5, "B": 5, "C": 90},
+    },
+}
+
+
+def validate_partition_profile(profile_name: str) -> None:
+    if profile_name == "LEGACY_AB":
+        return
+    profile = PARTITION_PROFILES.get(profile_name)
+    if profile is None:
+        raise ValueError(
+            f"Unknown PATHMNIST_PARTITION_PROFILE {profile_name!r}"
+        )
+    if set(profile) != set(range(NUM_CLASSES)):
+        raise ValueError(
+            f"Partition profile {profile_name!r} must define classes 0-8"
+        )
+    for label, shares in profile.items():
+        if set(shares) != set(PARTITION_HOSPITALS):
+            raise ValueError(
+                f"Partition profile {profile_name!r}, class {label} "
+                "must define hospitals A, B, and C"
+            )
+        if any(share < 0 for share in shares.values()):
+            raise ValueError(
+                f"Partition profile {profile_name!r}, class {label} "
+                "contains a negative share"
+            )
+        expected_total = 0 if label in IGNORED_CLASSES else 100
+        if sum(shares.values()) != expected_total:
+            raise ValueError(
+                f"Partition profile {profile_name!r}, class {label} "
+                f"shares must total {expected_total}"
+            )
+
+
+validate_partition_profile(PATHMNIST_PARTITION_PROFILE)
 
 HERE = Path(__file__).resolve().parent
 DATA_ROOT = Path(os.getenv("MEDMNIST_ROOT", str(HERE / "data")))
@@ -101,6 +157,8 @@ def cancer_samples_for_c(labels: np.ndarray) -> int:
 
 def expected_partition_size(dataset: Dataset) -> int:
     labels = labels_array(dataset)
+    if PATHMNIST_PARTITION_PROFILE != "LEGACY_AB":
+        return int(np.count_nonzero(~np.isin(labels, list(IGNORED_CLASSES))))
     non_cancer = sum(
         retained_count(labels, label) for label in STORY_NON_CANCER_CLASSES
     )
@@ -110,12 +168,81 @@ def expected_partition_size(dataset: Dataset) -> int:
     return non_cancer + len(STORY_CANCER_CLASSES) * cancer_per_class
 
 
-def partition_indices(dataset: Dataset, hospital: str, seed: int = SEED) -> List[int]:
-    """Create deterministic, disjoint hospital partitions by class."""
+def allocation_counts(
+    total: int,
+    shares: Dict[str, int],
+) -> Dict[str, int]:
+    """Convert percentages into exact deterministic allocation counts."""
+
+    counts = {
+        hospital: total * shares[hospital] // 100
+        for hospital in PARTITION_HOSPITALS
+    }
+    remaining = total - sum(counts.values())
+    ranked = sorted(
+        PARTITION_HOSPITALS,
+        key=lambda hospital: (
+            -(total * shares[hospital] % 100),
+            PARTITION_HOSPITALS.index(hospital),
+        ),
+    )
+    for hospital in ranked[:remaining]:
+        counts[hospital] += 1
+    return counts
+
+
+def hospital_partition_shares(hospital: str) -> Dict[int, int]:
+    """Return configured class percentages for participant evidence."""
 
     hospital = hospital.upper()
-    if hospital not in {"A", "B", "C"}:
+    if hospital not in PARTITION_HOSPITALS:
         raise ValueError("hospital must be A, B, or C")
+    profile = PARTITION_PROFILES.get(PATHMNIST_PARTITION_PROFILE)
+    if profile is None:
+        return {}
+    return {
+        label: shares[hospital]
+        for label, shares in profile.items()
+    }
+
+
+def _profile_partition_indices(
+    dataset: Dataset,
+    hospital: str,
+    seed: int,
+) -> List[int]:
+    labels = labels_array(dataset)
+    profile = PARTITION_PROFILES[PATHMNIST_PARTITION_PROFILE]
+    selected: List[int] = []
+
+    for label in ACTIVE_CLASSES:
+        class_indices = np.flatnonzero(labels == label)
+        rng = np.random.default_rng(seed + label)
+        shuffled = rng.permutation(class_indices)
+        counts = allocation_counts(
+            len(class_indices),
+            profile[label],
+        )
+
+        offset = 0
+        for participant in PARTITION_HOSPITALS:
+            end = offset + counts[participant]
+            if participant == hospital:
+                selected.extend(
+                    int(index) for index in shuffled[offset:end]
+                )
+            offset = end
+
+    selected.sort()
+    return selected
+
+
+def _legacy_partition_indices(
+    dataset: Dataset,
+    hospital: str,
+    seed: int,
+) -> List[int]:
+    """Preserve the validated pre-profile partition behavior."""
 
     labels = labels_array(dataset)
     c_cancer_count = cancer_samples_for_c(labels)
@@ -157,6 +284,30 @@ def partition_indices(dataset: Dataset, hospital: str, seed: int = SEED) -> List
 
     selected.sort()
     return selected
+
+
+def partition_indices(
+    dataset: Dataset,
+    hospital: str,
+    seed: Optional[int] = None,
+) -> List[int]:
+    """Create deterministic, disjoint hospital partitions by class."""
+
+    hospital = hospital.upper()
+    if hospital not in PARTITION_HOSPITALS:
+        raise ValueError("hospital must be A, B, or C")
+
+    if PATHMNIST_PARTITION_PROFILE == "LEGACY_AB":
+        return _legacy_partition_indices(
+            dataset,
+            hospital,
+            SEED if seed is None else seed,
+        )
+    return _profile_partition_indices(
+        dataset,
+        hospital,
+        PATHMNIST_PARTITION_SEED if seed is None else seed,
+    )
 
 
 def hospital_counts(dataset: Dataset, indices: Sequence[int]) -> Dict[int, int]:

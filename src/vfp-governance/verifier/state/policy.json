@@ -95,7 +95,8 @@
       "purpose": "approved_model_query",
       "scope": {
         "pathology_labels": [
-          "background",
+          "mucus",
+          "normal_colon_mucosa",
           "lymphocytes"
         ]
       },

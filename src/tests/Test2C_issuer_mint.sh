@@ -1,33 +1,17 @@
 #!/usr/bin/env bash
 # Test2C_issuer_mint.sh
 #
-# Issuer-side smoke test only.
+# Issuer-side mint smoke test.
 #
 # Path under test:
-#   issuer cap_profiles.json alias
-#       -> holder registry lookup
-#       -> POST issuer /mint
-#       -> issuer forwards envelope_id to gatekeeper /mint_ect
+#   issuer member registry lookup
+#       -> issuer-owned member entitlement resolution
+#       -> issuer cap_profiles.json alias
+#       -> POST Gatekeeper /mint_ect
 #       -> issuer returns ECT
-#       -> inspect_ect.py verifies the returned capability
-#
-# This test does not call /mint_ect directly and does not call
-# /admission/check. Those belong to Test2B and Test2A respectively.
 #
 # Usage:
 #   ./Test2C_issuer_mint.sh <valid-envelope-id>
-#
-# Optional environment overrides:
-#   ISSUER_HOST=issuer-hospitala.local
-#   ISSUER_PORT=9443
-#   ISSUER_IP=192.168.1.25
-#   ORG_ID=org://HospitalA
-#   PROFILE_NAME=PATHMNIST_OTHER_TISSUE_READER
-#   EXPECTED_CAPSET=capset:pathmnist_other_tissue_reader
-#   SUBJECT=Martinez-Test2C
-#
-# If issuer-hospitala.local already resolves correctly, ISSUER_IP is not
-# required. Otherwise set ISSUER_IP to the host address bound by OpenTofu.
 
 set -euo pipefail
 
@@ -43,11 +27,11 @@ ISSUER_URL="https://${ISSUER_HOST}:${ISSUER_PORT}"
 ORG_ID="${ORG_ID:-org://HospitalA}"
 PROFILE_NAME="${PROFILE_NAME:-PATHMNIST_OTHER_TISSUE_READER}"
 EXPECTED_CAPSET="${EXPECTED_CAPSET:-capset:pathmnist_other_tissue_reader}"
-SUBJECT="${SUBJECT:-Martinez-Test2C-$(date +%s)}"
-
+SUBJECT="${SUBJECT:-Audrey}"
 ENVELOPE_ID="${1:-}"
 
 CAP_PROFILES_JSON="${SRC_DIR}/vfp-core/issuers/config/cap_profiles.json"
+ENTITLEMENTS_JSON="${ENTITLEMENTS_JSON:-${SRC_DIR}/vfp-core/issuers/config/hospital_a_entitlements.json}"
 INSPECT_ECT="${TOOLS_DIR}/inspect_ect.py"
 
 CAC="${SRC_DIR}/vfp-governance/verifier/certs/ca.crt"
@@ -83,8 +67,7 @@ require_command() {
   command -v "${cmd}" >/dev/null 2>&1 || fail "Missing command: ${cmd}"
 }
 
-[[ -n "${ENVELOPE_ID}" ]] || fail \
-  "Usage: $0 <valid-envelope-id>"
+[[ -n "${ENVELOPE_ID}" ]] || fail "Usage: $0 <valid-envelope-id>"
 
 for cmd in curl jq python3; do
   require_command "${cmd}"
@@ -92,8 +75,8 @@ done
 
 for path in \
   "${CAP_PROFILES_JSON}" \
+  "${ENTITLEMENTS_JSON}" \
   "${INSPECT_ECT}" \
-  "${TOOLS_DIR}/gen_member_keys.py" \
   "${CAC}" \
   "${CLIENT_CRT}" \
   "${CLIENT_KEY}"; do
@@ -108,9 +91,7 @@ CURL_ISSUER=(
 )
 
 if [[ -n "${ISSUER_IP}" ]]; then
-  CURL_ISSUER+=(
-    --resolve "${ISSUER_HOST}:${ISSUER_PORT}:${ISSUER_IP}"
-  )
+  CURL_ISSUER+=(--resolve "${ISSUER_HOST}:${ISSUER_PORT}:${ISSUER_IP}")
 fi
 
 issuer_request() {
@@ -143,10 +124,18 @@ issuer_request() {
   printf '%s' "${status}"
 }
 
-section "0. Validate issuer profile mapping"
+section "0. Validate issuer-owned entitlement"
 
-jq -e . "${CAP_PROFILES_JSON}" >/dev/null \
-  || fail "cap_profiles.json is invalid JSON"
+PROFILE_FROM_ENTITLEMENT="$(
+  jq -r \
+    --arg org "${ORG_ID}" \
+    --arg sub "${SUBJECT}" \
+    'select(.org == $org) | .members[$sub] // empty' \
+    "${ENTITLEMENTS_JSON}"
+)"
+
+[[ "${PROFILE_FROM_ENTITLEMENT}" == "${PROFILE_NAME}" ]] || fail \
+  "${ORG_ID}/${SUBJECT} is assigned '${PROFILE_FROM_ENTITLEMENT}', expected '${PROFILE_NAME}'"
 
 ACTUAL_CAPSET="$(
   jq -r \
@@ -159,76 +148,13 @@ ACTUAL_CAPSET="$(
 [[ "${ACTUAL_CAPSET}" == "${EXPECTED_CAPSET}" ]] || fail \
   "${ORG_ID}/${PROFILE_NAME} maps to '${ACTUAL_CAPSET}', expected '${EXPECTED_CAPSET}'"
 
-pass "Issuer alias maps to ${EXPECTED_CAPSET}"
+pass "Issuer owns ${SUBJECT} -> ${PROFILE_NAME} -> ${EXPECTED_CAPSET}"
 
-section "1. Check issuer /rights"
-
-RIGHTS_FILE="${TMP_DIR}/rights.json"
-RIGHTS_STATUS="$(
-  issuer_request GET /rights "" "${RIGHTS_FILE}"
-)"
-
-cat "${RIGHTS_FILE}" | jq .
-
-[[ "${RIGHTS_STATUS}" == "200" ]] || fail \
-  "Issuer /rights returned HTTP ${RIGHTS_STATUS}"
-
-jq -e \
-  --arg org "${ORG_ID}" \
-  --arg profile "${PROFILE_NAME}" \
-  '
-    .org == $org
-    and (.profiles | index($profile) != null)
-  ' \
-  "${RIGHTS_FILE}" >/dev/null \
-  || fail "Issuer did not load ${PROFILE_NAME} for ${ORG_ID}"
-
-pass "Issuer is running with the expected profile configuration"
-
-section "2. Generate and register a unique holder"
-
-cd "${SCRIPT_DIR}"
-
-python3 "${TOOLS_DIR}/gen_member_keys.py" \
-  --org "${ORG_ID}" \
-  --who "${SUBJECT}" \
-  >/dev/null
-
-REGISTER_SOURCE="holder_keys/${SUBJECT}.register.json"
-require_file "${REGISTER_SOURCE}"
-
-REGISTER_REQUEST="$(
-  jq -c \
-    '{
-      org_id,
-      member_id,
-      sub,
-      pub_b64,
-      jkt
-    }' \
-    "${REGISTER_SOURCE}"
-)"
-
-REGISTER_FILE="${TMP_DIR}/register.json"
-REGISTER_STATUS="$(
-  issuer_request POST /members/register "${REGISTER_REQUEST}" "${REGISTER_FILE}"
-)"
-
-cat "${REGISTER_FILE}" | jq .
-
-[[ "${REGISTER_STATUS}" == "200" ]] || fail \
-  "Holder registration returned HTTP ${REGISTER_STATUS}"
-
-jq -e \
-  --arg sub "${SUBJECT}" \
-  '.status == "ok" and .sub == $sub' \
-  "${REGISTER_FILE}" >/dev/null \
-  || fail "Issuer did not confirm holder registration"
+section "1. Verify holder enrollment"
 
 MEMBERS_FILE="${TMP_DIR}/members.json"
-MEMBERS_STATUS="$(
-  issuer_request GET /members "" "${MEMBERS_FILE}"
-)"
+MEMBERS_STATUS="$(issuer_request GET /members "" "${MEMBERS_FILE}")"
+cat "${MEMBERS_FILE}" | jq .
 
 [[ "${MEMBERS_STATUS}" == "200" ]] || fail \
   "Issuer /members returned HTTP ${MEMBERS_STATUS}"
@@ -237,35 +163,28 @@ jq -e \
   --arg sub "${SUBJECT}" \
   '.members[] | select(.sub == $sub)' \
   "${MEMBERS_FILE}" >/dev/null \
-  || fail "Registered holder cannot be resolved from the issuer registry"
+  || fail "${SUBJECT} is not enrolled with ${ORG_ID}"
 
 pass "Issuer registry resolves ${SUBJECT}"
 
-section "3. Mint through issuer /mint"
+section "2. Mint without a caller-selected profile"
 
 MINT_REQUEST="$(
   jq -nc \
     --arg sub "${SUBJECT}" \
-    --arg profile "${PROFILE_NAME}" \
     --arg envelope "${ENVELOPE_ID}" \
     --arg nbf "${NBF}" \
     --arg exp "${EXP}" \
     '{
       sub: $sub,
-      profile: $profile,
       envelope_id: $envelope,
       nbf: $nbf,
       exp: $exp
     }'
 )"
 
-printf '%s\n' "${MINT_REQUEST}" | jq .
-
 MINT_FILE="${TMP_DIR}/mint.json"
-MINT_STATUS="$(
-  issuer_request POST /mint "${MINT_REQUEST}" "${MINT_FILE}"
-)"
-
+MINT_STATUS="$(issuer_request POST /mint "${MINT_REQUEST}" "${MINT_FILE}")"
 cat "${MINT_FILE}" | jq .
 
 [[ "${MINT_STATUS}" == "200" ]] || fail \
@@ -274,10 +193,6 @@ cat "${MINT_FILE}" | jq .
 ECT="$(jq -r '.ect // empty' "${MINT_FILE}")"
 [[ -n "${ECT}" ]] || fail "Issuer /mint did not return an ECT"
 
-pass "Issuer resolved the holder and returned an ECT"
-
-section "4. Verify profile resolution and envelope_id propagation"
-
 printf '%s' "${ECT}" |
   python3 "${INSPECT_ECT}" \
     --stdin \
@@ -285,45 +200,41 @@ printf '%s' "${ECT}" |
     --expected-resource "pathmnist-colon-pathology" \
     --expected-action "query_model" \
     --expected-purpose "approved_model_query" \
-    --require-tissue "background" \
+    --require-tissue "mucus" \
+    --require-tissue "normal_colon_mucosa" \
     --require-tissue "lymphocytes" \
+    --forbid-tissue "background" \
     --forbid-tissue "debris"
 
-pass "Issuer forwarded envelope_id and selected the expected policy capset"
+pass "Issuer resolved the assigned profile and returned the expected ECT"
 
-section "5. Reject an unknown issuer profile"
+section "3. Reject caller-selected authorization"
 
-UNKNOWN_PROFILE="PATHMNIST_PROFILE_NOT_ALLOWED"
-
-BAD_PROFILE_REQUEST="$(
+FORGED_REQUEST="$(
   jq -nc \
     --arg sub "${SUBJECT}" \
-    --arg profile "${UNKNOWN_PROFILE}" \
     --arg envelope "${ENVELOPE_ID}" \
     '{
       sub: $sub,
-      profile: $profile,
+      profile: "PATHMNIST_CANCER_ASSOCIATED_READER",
       envelope_id: $envelope
     }'
 )"
 
-BAD_PROFILE_FILE="${TMP_DIR}/bad-profile.json"
-BAD_PROFILE_STATUS="$(
-  issuer_request POST /mint "${BAD_PROFILE_REQUEST}" "${BAD_PROFILE_FILE}"
-)"
+FORGED_FILE="${TMP_DIR}/forged.json"
+FORGED_STATUS="$(issuer_request POST /mint "${FORGED_REQUEST}" "${FORGED_FILE}")"
+cat "${FORGED_FILE}" | jq .
 
-cat "${BAD_PROFILE_FILE}" | jq .
+[[ "${FORGED_STATUS}" == "422" ]] || fail \
+  "Caller-supplied profile should return HTTP 422, got ${FORGED_STATUS}"
 
-[[ "${BAD_PROFILE_STATUS}" == "403" ]] || fail \
-  "Unknown profile should return HTTP 403, got ${BAD_PROFILE_STATUS}"
+jq -e '
+  .detail[]
+  | select((.loc[-1] // "") == "profile")
+' "${FORGED_FILE}" >/dev/null \
+  || fail "Issuer did not identify profile as a forbidden request field"
 
-jq -e \
-  --arg profile "${UNKNOWN_PROFILE}" \
-  '.detail == ("profile_not_allowed:" + $profile)' \
-  "${BAD_PROFILE_FILE}" >/dev/null \
-  || fail "Unknown profile denial reason is incorrect"
-
-pass "Issuer rejects a profile absent from its organization-scoped mapping"
+pass "Issuer rejects caller-selected authorization"
 
 printf '\n'
-pass "Test2C passed: issuer profile resolution, registry lookup, envelope forwarding, and minting are operational"
+pass "Test2C passed: issuer-owned entitlement minting is operational"

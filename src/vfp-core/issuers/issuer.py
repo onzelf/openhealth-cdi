@@ -43,8 +43,17 @@ def _save_registry(org: str, data: Dict[str, dict]) -> None:
     tmp.write_text(json.dumps(data, indent=2, sort_keys=True))
     os.replace(tmp, p)  # atomic
 
-# Organization-scoped requestable profile -> policy capset mapping
-CAP_PROFILE_BY_ORG = json.load(open(os.getenv("CAP_PROFILE_PATH", "config/cap_profiles.json")))
+# Organization-scoped issuer profile -> policy capset mapping.
+CAP_PROFILE_BY_ORG = json.load(
+    open(os.getenv("CAP_PROFILE_PATH", "config/cap_profiles.json"))
+)
+
+# Issuer-owned member entitlement assignment. The caller cannot select it.
+MEMBER_ENTITLEMENTS_PATH = os.getenv(
+    "MEMBER_ENTITLEMENTS_PATH",
+    "/app/config/member_entitlements.json",
+)
+MEMBER_ENTITLEMENTS = json.load(open(MEMBER_ENTITLEMENTS_PATH))
 
 def _verify_arg():
     if VERIFY_TLS in ("0", "false", "False", ""):
@@ -53,10 +62,12 @@ def _verify_arg():
 
 class MintReq(BaseModel):
     sub: str
-    profile: str
     envelope_id: str
     nbf: Optional[str] = None
     exp: Optional[str] = None
+
+    class Config:
+        extra = "forbid"
 
 class MemberRegReq(BaseModel):
     org_id: str
@@ -109,15 +120,32 @@ def mint(req: MintReq):
     if not ORG:
         raise HTTPException(500, "issuer_not_configured:missing_ORG")
 
-    cap_profile = CAP_PROFILE_BY_ORG.get(ORG, {}).get(req.profile)
-    if not cap_profile:
-        raise HTTPException(403, f"profile_not_allowed:{req.profile}")
+    subject = req.sub.strip()
 
-    # resolve sub -> holder_pub_b64 (and jkt is available for later use)
+    # Membership authenticates the holder.
     db = _load_registry(ORG)
-    m = db.get(req.sub.strip())
+    m = db.get(subject)
     if not m:
-        raise HTTPException(404, f"unknown_sub:{req.sub}")
+        raise HTTPException(404, f"unknown_sub:{subject}")
+
+    # The issuer, not the caller, assigns the authorization profile.
+    entitlement_org = str(MEMBER_ENTITLEMENTS.get("org", "")).strip()
+    if entitlement_org != ORG:
+        raise HTTPException(
+            500,
+            f"entitlement_org_mismatch:{entitlement_org}",
+        )
+
+    profile = (MEMBER_ENTITLEMENTS.get("members") or {}).get(subject)
+    if not profile:
+        raise HTTPException(403, f"no_entitlement_for_sub:{subject}")
+
+    cap_profile = CAP_PROFILE_BY_ORG.get(ORG, {}).get(profile)
+    if not cap_profile:
+        raise HTTPException(
+            500,
+            f"entitlement_profile_not_configured:{profile}",
+        )
 
     holder_pub_b64 = m["pub_b64"]
 

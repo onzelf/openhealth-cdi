@@ -1,0 +1,44 @@
+{
+  "org://HospitalA": [
+    {
+      "principal": "Audrey",
+      "actor_type": "human",
+      "status": "active",
+      "modes": [
+        "ab",
+        "mode1a"
+      ]
+    }
+  ],
+  "org://HospitalB": [
+    {
+      "principal": "Bob",
+      "actor_type": "human",
+      "status": "active",
+      "modes": [
+        "ab",
+        "mode1a"
+      ]
+    }
+  ],
+  "org://HospitalC": [
+    {
+      "principal": "Charlie",
+      "actor_type": "human",
+      "status": "planned",
+      "modes": [
+        "mode1a"
+      ]
+    }
+  ],
+  "sponsor://HospitalA+HospitalB": [
+    {
+      "principal": "Hal",
+      "actor_type": "agent",
+      "status": "planned",
+      "modes": [
+        "mode1b"
+      ]
+    }
+  ]
+}

@@ -16,7 +16,17 @@ const APP_VERSION = "v0.3.2-react-vite";
 const POLL_MS = 2500;
 const ADMIN_TABS = ["training", "metrics", "clients", "events", "evidence"];
 const USER_TABS = ["model-use", "events", "evidence"];
-const USER_TISSUES = ["lymphocytes", "colorectal_adenocarcinoma_epithelium", "debris"];
+const USER_TISSUES = [
+  "adipose",
+  "background",
+  "debris",
+  "lymphocytes",
+  "mucus",
+  "smooth_muscle",
+  "normal_colon_mucosa",
+  "cancer_associated_stroma",
+  "colorectal_adenocarcinoma_epithelium",
+];
 
 const SCENARIOS = [
   {
@@ -392,6 +402,13 @@ function formatEnvelopeTime(value) {
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
 }
 
+function formatActorMode(mode) {
+  if (mode === "ab") return "A+B";
+  if (mode === "mode1a") return "Mode 1A";
+  if (mode === "mode1b") return "Mode 1B";
+  return mode;
+}
+
 function BoundaryControlArea({
   administration,
   ceremony,
@@ -428,7 +445,7 @@ function BoundaryControlArea({
           <span className="eyebrow">ADMINISTRATION · ENVELOPES</span>
           <h2 id="envelopes-heading">Select the collaboration boundary</h2>
         </div>
-        <p>Choose an existing active envelope, review its state, and manage the A+B holder capabilities in one compact area.</p>
+        <p>Choose an existing active envelope, review its state, and inspect the actors and capabilities reported by the Hub.</p>
       </div>
 
       <div className="boundary-control-shell">
@@ -458,7 +475,6 @@ function BoundaryControlArea({
               <tr>
                 <th>User</th>
                 <th>Organization</th>
-                <th>Profile</th>
                 <th>Enrollment</th>
                 <th>ECT</th>
                 <th>Preview</th>
@@ -468,7 +484,9 @@ function BoundaryControlArea({
             </thead>
             <tbody>
               {holders.map((holder) => {
-                const enrollmentLabel = holder.enrollment_status === "unavailable"
+                const enrollmentLabel = holder.enrollment_status === "planned"
+                  ? "Planned"
+                  : holder.enrollment_status === "unavailable"
                   ? "Issuer unavailable"
                   : holder.enrolled
                   ? "Enrolled"
@@ -477,23 +495,36 @@ function BoundaryControlArea({
                   ? "Ready"
                   : holder.ect_status === "expired"
                   ? "Expired"
+                  : holder.ect_status === "unavailable"
+                  ? "Not operational"
                   : "Not ready";
                 return (
                   <tr key={holder.principal}>
-                    <td><strong>{holder.principal}</strong></td>
+                    <td>
+                      <strong>{holder.principal}</strong>
+                      <span className="actor-meta">
+                        {holder.actor_type || "actor"} · {holder.actor_status || "unknown"}
+                        {holder.modes?.length
+                          ? ` · ${holder.modes.map(formatActorMode).join(", ")}`
+                          : ""}
+                      </span>
+                    </td>
                     <td>{holder.organization}</td>
-                    <td className="profile-cell">{holder.profile}</td>
                     <td>{enrollmentLabel}</td>
                     <td>{ectLabel}</td>
                     <td className="mono">{holder.ect_preview || "—"}</td>
                     <td>{holder.expires_at ? formatEnvelopeTime(holder.expires_at) : "—"}</td>
                     <td>
                       <button
-                        disabled={busy || holder.enrolled !== true || !selectedId}
+                        disabled={busy || holder.can_mint !== true}
                         onClick={() => onMint(holder.principal)}
                         type="button"
                       >
-                        {holder.ect_status === "ready" ? "REMINT ECT" : "MINT ECT"}
+                        {holder.actor_status !== "active"
+                          ? "PLANNED"
+                          : holder.ect_status === "ready"
+                          ? "REMINT ECT"
+                          : "MINT ECT"}
                       </button>
                     </td>
                   </tr>
@@ -580,6 +611,7 @@ function UserModePanel({
   const selectedEnvelope = (administration.envelopes || []).find(
     (envelope) => envelope.envelope_id === selectedId
   );
+  const inferenceActors = administration.inference_actors || [];
   const holder = (administration.holders || []).find((item) => item.principal === selectedPrincipal) || null;
   const prediction = result?.prediction || null;
   const sampleImage = prediction?.sample_image;
@@ -594,9 +626,19 @@ function UserModePanel({
           <p>Use the administrator-minted ECT for the selected boundary. Each request generates fresh DPoP before Gatekeeper admission.</p>
           <label className="compact-select">
             <span>Holder</span>
-            <select onChange={(event) => onPrincipalChange(event.target.value)} value={selectedPrincipal}>
-              <option value="Audrey">Audrey</option>
-              <option value="Bob">Bob</option>
+            <select
+              disabled={!inferenceActors.length}
+              onChange={(event) => onPrincipalChange(event.target.value)}
+              value={selectedPrincipal}
+            >
+              {!inferenceActors.length ? (
+                <option value="">No operational holders</option>
+              ) : null}
+              {inferenceActors.map((actor) => (
+                <option key={actor.principal} value={actor.principal}>
+                  {actor.principal} · {actor.organization}
+                </option>
+              ))}
             </select>
           </label>
           <label className="compact-select">
@@ -1145,6 +1187,7 @@ export default function App() {
   const [administration, setAdministration] = useState({
     envelopes: [],
     holders: [],
+    inference_actors: [],
   });
   const [ceremony, setCeremony] = useState({ approvals: {} });
   const [administrationBusy, setAdministrationBusy] = useState(false);
@@ -1379,6 +1422,21 @@ export default function App() {
     pollIntervalRef.current = window.setInterval(refreshAll, POLL_MS);
     return clearPollInterval;
   }, []);
+
+  useEffect(() => {
+    const actors = administration.inference_actors || [];
+    if (!actors.length) {
+      if (userPrincipal) {
+        setUserPrincipal("");
+        setUserInferenceResult(null);
+      }
+      return;
+    }
+    if (!actors.some((actor) => actor.principal === userPrincipal)) {
+      setUserPrincipal(actors[0].principal);
+      setUserInferenceResult(null);
+    }
+  }, [administration.inference_actors, userPrincipal]);
 
   return (
     <>

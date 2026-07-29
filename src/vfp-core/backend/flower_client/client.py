@@ -23,9 +23,12 @@ from pathmnist.common import (
     IGNORED_CLASSES,
     LOCAL_EPOCHS,
     Net,
+    PATHMNIST_PARTITION_PROFILE,
+    PATHMNIST_PARTITION_SEED,
     STORY_CANCER_CLASSES,
     STORY_NON_CANCER_CLASSES,
     get_parameters,
+    hospital_partition_shares,
     make_hospital_loader,
     seed_everything,
     set_parameters,
@@ -103,6 +106,12 @@ def partition_metadata(counts: Dict[int, int]) -> Dict[str, Any]:
         "cancer_samples_per_ab_hospital": (
             CANCER_SAMPLES_PER_AB_HOSPITAL
         ),
+        "data_partition_profile": PATHMNIST_PARTITION_PROFILE,
+        "data_partition_seed": PATHMNIST_PARTITION_SEED,
+        "class_share_percent": {
+            str(key): value
+            for key, value in hospital_partition_shares(HOSPITAL).items()
+        },
         "class_counts": {str(key): value for key, value in counts.items()},
         "flower_server": SERVER,
         "phase": "AB_BASE",
@@ -145,6 +154,8 @@ class FlowerClient(fl.client.NumPyClient):
 
         log(
             f"validated AB_BASE partition loaded: device={DEVICE} "
+            f"profile={PATHMNIST_PARTITION_PROFILE} "
+            f"seed={PATHMNIST_PARTITION_SEED} "
             f"samples={len(self.train_loader.dataset)} "
             f"class_counts={self.counts}"
         )
@@ -169,6 +180,7 @@ class FlowerClient(fl.client.NumPyClient):
                 "hospital": HOSPITAL,
                 "org_id": ORG_ID,
                 "phase": "AB_BASE",
+                "data_partition_profile": PATHMNIST_PARTITION_PROFILE,
                 "train_loss": float(loss),
                 "train_accuracy": float(accuracy),
             },
