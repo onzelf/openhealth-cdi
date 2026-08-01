@@ -9,18 +9,42 @@ import redis.asyncio as redis
 from fastapi import FastAPI, Header, HTTPException, Request, APIRouter
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
+from contextvars import ContextVar
 
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ec, rsa
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
 
-from nacl.signing import SigningKey
-from nacl.encoding import HexEncoder
 from nacl import signing
 
-from benchmark import BENCH, BENCH_OUT, _ms, _ns, _bench_add, _bench_flush, _bench_reset
+import benchmark as benchmark_store
+from benchmark import BENCH, BENCH_OUT, _ms, _ns, _bench_flush, _bench_reset
 import logging
 
 log = logging.getLogger("verifier")
+_bench_current = ContextVar("bench_current", default=None)
+
+def _bench_begin_request() -> None:
+    if BENCH:
+        _bench_current.set(None)
+
+def _bench_add(sample: dict) -> None:
+    benchmark_store._bench_add(sample)
+    if BENCH:
+        _bench_current.set(sample)
+
+def _bench_finalize_request(values: dict) -> None:
+    """Complete the current request sample after evidence emission."""
+    if not BENCH:
+        return
+
+    sample = _bench_current.get()
+    with benchmark_store._bench_lock:
+        if sample is None:
+            sample = {}
+            benchmark_store._bench_buf.append(sample)
+        sample.update(values)
+    _bench_current.set(None)
+
 log.warning("BENCH_BOOT v3: BENCH=%d BENCH_OUT=%s", BENCH, BENCH_OUT)
 # =============================================================================
 # Configuration (paths + env)
@@ -37,8 +61,9 @@ ENVS_DIR    = STATE_DIR / "envelopes"
 BINDS_DIR   = STATE_DIR / "binds"
 POLICY_PATH = STATE_DIR / "policy.json"
 EVENTS_DIR  = STATE_DIR / "events"
+DECISIONS_DIR = EVENTS_DIR / "decisions"
 
-for d in (STATE_DIR, ENVS_DIR, BINDS_DIR, EVENTS_DIR):
+for d in (STATE_DIR, ENVS_DIR, BINDS_DIR, EVENTS_DIR, DECISIONS_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
@@ -54,11 +79,22 @@ AUD_FALLBACK = os.environ.get("AUD", "svc:fl-gateway:eu")
 ORG_KEY_KID = os.environ.get("ORG_KEY_KID", "HospitalA-key")
 ORG_KEY_FILE = os.environ.get("ORG_KEY_FILE", str(FCAC_CERTS_DIR / "HospitalA-admin.key"))  # PEM EC/RSA
 
+EVIDENCE_PRIVATE_KEY_FILE = Path(os.environ.get(
+    "EVIDENCE_PRIVATE_KEY_FILE",
+    str(FCAC_CERTS_DIR / "fcac-evidence.key"),
+)).resolve()
+EVIDENCE_PUBLIC_KEY_FILE = Path(os.environ.get(
+    "EVIDENCE_PUBLIC_KEY_FILE",
+    str(FCAC_CERTS_DIR / "fcac-evidence.pub"),
+)).resolve()
+EVIDENCE_KEY_KID = os.environ.get("EVIDENCE_KEY_KID", "fcac-evidence-key-1")
+
 # Optional allowlist (comma-separated sha256_b64u policy hashes from compute_policy_hash)
 POLICY_ALLOWLIST = {x.strip() for x in os.environ.get("ALLOWED_POLICY_HASHES", "").split(",") if x.strip()}
 
 # KYO
-SESSION_TTL = int(os.environ.get("SESSION_TTL", "600"))  # seconds
+KYO_SESSION_TTL = int(os.environ.get("KYO_SESSION_TTL", "600"))  # seconds
+ENVELOPE_TTL = int(os.environ.get("ENVELOPE_TTL", "1209600"))    # temporary extended values for testing purposes (2 weeks)
 SESS: dict[str, dict] = {}  # session_id -> {code, exp, claimed, org, admin_cn}
 _lock = threading.Lock()
 
@@ -111,6 +147,11 @@ def _read_json(p: Path, default=None):
 def _write_json(p: Path, obj: dict):
     p.write_text(json.dumps(obj, indent=2), encoding="utf-8")
 
+def _write_json_atomic(p: Path, obj: dict):
+    tmp = p.with_name(f".{p.name}.{uuid.uuid4().hex}.tmp")
+    tmp.write_text(json.dumps(obj, indent=2), encoding="utf-8")
+    os.replace(tmp, p)
+
 def bind_path(bind_id: str) -> Path:
     return BINDS_DIR / f"{bind_id}.json"
 
@@ -131,27 +172,82 @@ def env_save(e: dict):
 
 
 # =============================================================================
-# Envelope decision key (attestation) -  
+# Anchored evidence signing for envelopes and admission decisions
 # =============================================================================
 
-def load_decision_keys():
-    kdir = STATE_DIR / "keys"
-    kdir.mkdir(exist_ok=True)
-    sk_path = kdir / "decision.sk"
-    pk_path = kdir / "decision.pk"
-    if sk_path.exists():
-        sk = SigningKey(bytes.fromhex(sk_path.read_text().strip()))
-    else:
-        sk = SigningKey.generate()
-        sk_path.write_text(sk.encode(HexEncoder).decode())
-        pk_path.write_text(sk.verify_key.encode(HexEncoder).decode())
-    return sk, sk.verify_key
+def load_evidence_keys():
+    if not EVIDENCE_PRIVATE_KEY_FILE.is_file():
+        raise RuntimeError(
+            f"FCaC evidence private key missing: {EVIDENCE_PRIVATE_KEY_FILE}"
+        )
+    if not EVIDENCE_PUBLIC_KEY_FILE.is_file():
+        raise RuntimeError(
+            f"FCaC evidence public key missing: {EVIDENCE_PUBLIC_KEY_FILE}"
+        )
 
-SK, VK = load_decision_keys()
+    private_key = serialization.load_pem_private_key(
+        EVIDENCE_PRIVATE_KEY_FILE.read_bytes(),
+        password=None,
+    )
+    public_key = serialization.load_pem_public_key(
+        EVIDENCE_PUBLIC_KEY_FILE.read_bytes()
+    )
+    if not isinstance(private_key, ed25519.Ed25519PrivateKey):
+        raise RuntimeError("FCaC evidence private key must be Ed25519")
+    if not isinstance(public_key, ed25519.Ed25519PublicKey):
+        raise RuntimeError("FCaC evidence public key must be Ed25519")
+
+    private_public = private_key.public_key().public_bytes(
+        serialization.Encoding.Raw,
+        serialization.PublicFormat.Raw,
+    )
+    pinned_public = public_key.public_bytes(
+        serialization.Encoding.Raw,
+        serialization.PublicFormat.Raw,
+    )
+    if private_public != pinned_public:
+        raise RuntimeError("FCaC evidence private/public key mismatch")
+    return private_key, public_key
+
+
+EVIDENCE_SK, EVIDENCE_PK = load_evidence_keys()
+
+
+def sign_artifact(payload: dict) -> dict:
+    unsigned = dict(payload)
+    unsigned.pop("evidence", None)
+    signature = EVIDENCE_SK.sign(jcs_bytes(unsigned))
+    artifact = dict(unsigned)
+    artifact["evidence"] = {
+        "alg": "Ed25519",
+        "kid": EVIDENCE_KEY_KID,
+        "signature": b64u(signature),
+    }
+    return artifact
+
+
+def verify_artifact(artifact: dict, expected_type: Optional[str] = None) -> None:
+    evidence = artifact.get("evidence")
+    if not isinstance(evidence, dict):
+        raise ValueError("evidence_missing")
+    if evidence.get("alg") != "Ed25519":
+        raise ValueError("evidence_alg_invalid")
+    if evidence.get("kid") != EVIDENCE_KEY_KID:
+        raise ValueError("evidence_kid_invalid")
+    if expected_type and artifact.get("artifact_type") != expected_type:
+        raise ValueError("artifact_type_invalid")
+
+    unsigned = dict(artifact)
+    unsigned.pop("evidence", None)
+    signature = b64u_to_bytes(str(evidence.get("signature") or ""))
+    EVIDENCE_PK.verify(signature, jcs_bytes(unsigned))
+
 
 def attest(decision: str, reason: str, version: str, phash: str, request_body: dict) -> dict:
     ts = int(time.time())
     payload = {
+        "artifact_type": "fcac_attestation",
+        "schema_version": "1.0",
         "ts": ts,
         "decision": decision,
         "reason": reason,
@@ -159,10 +255,7 @@ def attest(decision: str, reason: str, version: str, phash: str, request_body: d
         "policy_hash": phash,
         "input": request_body,
     }
-    sig = SK.sign(json.dumps(payload, sort_keys=True).encode("utf-8")).signature.hex()
-    payload["signature"] = sig
-    payload["pubkey"] = VK.encode(HexEncoder).decode()
-    return payload
+    return sign_artifact(payload)
 
 
 # =============================================================================
@@ -306,6 +399,7 @@ class ProbeReq(BaseModel):
 class ProbeResp(BaseModel):
     allow: bool
     reason: Optional[str] = None
+    decision_id: Optional[str] = None
 
 
 # =============================================================================
@@ -331,6 +425,7 @@ def _hdr(req: Request, name: str) -> str:
 def _load_env_summary(p: Path):
     try:
         e = json.loads(p.read_text(encoding="utf-8"))
+        verify_artifact(e, "fcac_envelope")
         return {
             "envelope_id": e.get("envelope_id"),
             "state": e.get("state"),
@@ -395,7 +490,7 @@ async def verify_start(req: Request):
 
     sid = secrets.token_urlsafe(16)
     code = f"{secrets.randbelow(1_000_000):06d}"
-    exp = now_epoch() + SESSION_TTL
+    exp = now_epoch() + KYO_SESSION_TTL
     with _lock:
         SESS[sid] = {"code": code, "exp": exp, "claimed": False, "org": org_uri, "admin_cn": admin_cn}
 
@@ -442,9 +537,8 @@ async def bind_init(req: Request):
     b = await req.json()
     bid = "b" + uuid.uuid4().hex[:12]
 
-    # NOTE: envelope side uses policy_hash for binding evidence. Keep it aligned with the current policy.json on disk.
-    pol = load_policy()
-    ph = "sha256:" + hashlib.sha256(json.dumps(pol, sort_keys=True).encode("utf-8")).hexdigest()
+    # Bind the ceremony to the exact policy loaded by this Gatekeeper process.
+    ph = _policy_hash
 
     rec = {
         "bind_id": bid,
@@ -529,11 +623,14 @@ async def bind_approve(req: Request):
     # Quorum met: create envelope
     eid = str(uuid.uuid4())
     env = {
+        "artifact_type": "fcac_envelope",
+        "schema_version": "1.0",
+        "bind_id": bind_id,
         "envelope_id": eid,
         "state": "ACTIVE",
         "created_at": now_epoch(),
         "activated_at": now_epoch(),
-        "valid_until": now_epoch() + SESSION_TTL,
+        "valid_until": now_epoch() + ENVELOPE_TTL,
         "scope": b["scope"],
         "allowed_ops": b["allowed_ops"],
         "participants": b["participants"],
@@ -542,6 +639,7 @@ async def bind_approve(req: Request):
         "lineage": [],
         "initiators": [{"session_id": a["session_id"], "org": a["org"]} for a in b["approvals"]],
     }
+    env = sign_artifact(env)
     env_save(env)
     b["state"] = "COMPLETED"
     bind_save(b)
@@ -567,9 +665,13 @@ async def bind_approve(req: Request):
         print(f"[gatekeeper] Warning: failed to publish backend assignment: {ex}", flush=True)
 
     # Attestation (envelope evidence)
-    pol = load_policy()
-    ph = "sha256:" + hashlib.sha256(json.dumps(pol, sort_keys=True).encode("utf-8")).hexdigest()
-    att = attest("PERMIT", "envelope_active", pol.get("version", "1.00"), ph, {"envelope_id": eid, "bind_id": bind_id})
+    att = attest(
+        "PERMIT",
+        "envelope_active",
+        _policy.get("version", "1.00"),
+        _policy_hash,
+        {"envelope_id": eid, "bind_id": bind_id},
+    )
 
     return JSONResponse({
         "state": "ACTIVE",
@@ -606,19 +708,41 @@ def load_active_envelope(envelope_id: str) -> Dict[str, Any]:
     envelope = _read_json(env_path(envelope_id))
     if not envelope:
         raise HTTPException(400, "unknown_envelope")
+    if not isinstance(envelope.get("evidence"), dict):
+        raise HTTPException(400, "envelope_signature_missing")
+    try:
+        verify_artifact(envelope, "fcac_envelope")
+    except Exception:
+        raise HTTPException(400, "envelope_signature_invalid")
+
     if envelope.get("state") != "ACTIVE":
         raise HTTPException(400, "envelope_not_active")
 
     valid_until = envelope.get("valid_until") or envelope.get("exp")
-    if valid_until is not None and int(valid_until) <= now_epoch():
+    if valid_until is None:
+        raise HTTPException(400, "envelope_missing_expiry")
+    if int(valid_until) <= now_epoch():
         raise HTTPException(400, "envelope_expired")
+
+    envelope_policy_hash = str(envelope.get("policy_hash") or "")
+    if not envelope_policy_hash:
+        raise HTTPException(400, "envelope_missing_policy_hash")
+    if envelope_policy_hash != _policy_hash:
+        raise HTTPException(400, "envelope_current_policy_mismatch")
 
     return envelope
 
 
 @app.post("/mint_ect", response_model=MintResp)
 def mint_ect(req: MintReq):
-    load_active_envelope(req.envelope_id)
+    envelope = load_active_envelope(req.envelope_id)
+
+    nbf = iso_to_epoch(req.nbf)
+    requested_exp = iso_to_epoch(req.exp)
+    envelope_exp = int(envelope.get("valid_until") or envelope.get("exp"))
+    exp = min(requested_exp, envelope_exp)
+    if nbf > exp:
+        raise HTTPException(400, "ect_invalid_time_window")
 
     caps = pick_caps(_policy, req.cap_profiles)
     if not caps:
@@ -629,8 +753,8 @@ def mint_ect(req: MintReq):
         "iss": ISS,
         "aud": _aud,
         "iat": now_epoch(),
-        "nbf": iso_to_epoch(req.nbf),
-        "exp": iso_to_epoch(req.exp),
+        "nbf": nbf,
+        "exp": exp,
         "policy": {
             "policy_id": _policy["meta"]["policy_id"],
             "manifest_id": _policy["meta"]["manifest_id"],
@@ -648,6 +772,80 @@ def mint_ect(req: MintReq):
 # POST /admission/check
 # ----------------------------------------------
 
+def _requester_binding_result(allow: bool, reason: Optional[str]) -> str:
+    if allow or reason in {
+        "reserved_tissue",
+        "capability_violation",
+        "capability_scope_exceeded",
+    }:
+        return "verified"
+    if reason in {"missing_dpop", "missing_jti"} or str(reason or "").startswith("dpop_"):
+        return "failed"
+    return "not_evaluated"
+
+
+def _ect_fingerprint(authorization: Optional[str]) -> Optional[str]:
+    if not authorization or not authorization.startswith("ECT "):
+        return None
+    token = authorization.split(" ", 1)[1].strip()
+    return sha256_b64u(token.encode("utf-8")) if token else None
+
+
+def emit_decision_record(
+    body: ProbeReq,
+    result: ProbeResp,
+    authorization: Optional[str],
+) -> tuple[str, float, float, float]:
+    decision_id = "decision-" + uuid.uuid4().hex
+    reason = result.reason or "capability_match"
+    record = {
+        "artifact_type": "fcac_admission_decision",
+        "schema_version": "1.0",
+        "decision_id": decision_id,
+        "timestamp": now_epoch(),
+        "allow_or_deny": "ALLOW" if result.allow else "DENY",
+        "decision_reason": reason,
+        "requester_binding_result": _requester_binding_result(
+            result.allow,
+            result.reason,
+        ),
+        "requested_action": body.action,
+        "requested_purpose": body.purpose,
+        "requested_tissue_classes": body.requested_tissues,
+        "approved_research_collaboration": body.envelope_id,
+        "related_model_run_when_applicable": body.run_id,
+        "policy_hash": _policy_hash,
+        "request_jti": body.jti,
+        "request": {
+            "envelope_id": body.envelope_id,
+            "run_id": body.run_id,
+            "resource": body.resource,
+            "action": body.action,
+            "purpose": body.purpose,
+            "requested_tissues": body.requested_tissues,
+            "cohort": body.cohort,
+            "agg": body.agg,
+            "pii": body.pii,
+            "contact": body.contact,
+        },
+        "presented_ect_sha256": _ect_fingerprint(authorization),
+    }
+
+    emit_start = _ns()
+    sign_start = _ns()
+    signed_record = sign_artifact(record)
+    sign_ms = _ms(_ns() - sign_start)
+
+    persist_start = _ns()
+    _write_json_atomic(
+        DECISIONS_DIR / f"{decision_id}.json",
+        signed_record,
+    )
+    persist_ms = _ms(_ns() - persist_start)
+    emit_ms = _ms(_ns() - emit_start)
+    return decision_id, sign_ms, persist_ms, emit_ms
+
+
 def _bench_return(token_ms, pop_start_ns, full_start_ns, allow: bool, reason: str):
     pop_ms  = _ms(_ns() - pop_start_ns) if pop_start_ns is not None else None
     full_ms = _ms(_ns() - full_start_ns)
@@ -656,7 +854,9 @@ def _bench_return(token_ms, pop_start_ns, full_start_ns, allow: bool, reason: st
             "token_verify_ms": token_ms,
             "pop_verify_ms": pop_ms,
             "cap_match_ms": None,
-            "emit_record_ms": 0.0,
+            "sign_record_ms": None,
+            "persist_record_ms": None,
+            "emit_record_ms": None,
             "full_check_ms": full_ms,
             "allow": allow,
             "reason": reason,
@@ -708,13 +908,37 @@ def _probe_impl(
 
     now = now_epoch()
     if not (ect["nbf"] <= now <= ect["exp"]):
-        return ProbeResp(allow=False, reason="ect_time_window")
+        return _bench_return(token_ms, None, t0, False, "ect_time_window")
 
-    if POLICY_ALLOWLIST and ect["policy"].get("policy_hash") not in POLICY_ALLOWLIST:
-        return ProbeResp(allow=False, reason="policy_hash_not_allowed")
+    ect_policy = ect.get("policy")
+    if not isinstance(ect_policy, dict):
+        return _bench_return(token_ms, None, t0, False, "ect_policy_invalid")
+
+    if POLICY_ALLOWLIST and ect_policy.get("policy_hash") not in POLICY_ALLOWLIST:
+        return _bench_return(token_ms, None, t0, False, "policy_hash_not_allowed")
 
     if ect.get("envelope_id") != body.envelope_id:
         return _bench_return(token_ms, None, t0, False, "envelope_mismatch")
+
+    # The ECT remains valid only while its governing envelope remains active.
+    try:
+        envelope = load_active_envelope(body.envelope_id)
+    except HTTPException as exc:
+        return _bench_return(token_ms, None, t0, False, str(exc.detail))
+
+    ect_policy_hash = str(ect_policy.get("policy_hash") or "")
+    if ect_policy_hash != envelope.get("policy_hash"):
+        return _bench_return(
+            token_ms, None, t0, False,
+            "ect_envelope_policy_mismatch",
+        )
+
+    envelope_exp = int(envelope.get("valid_until") or envelope.get("exp"))
+    if int(ect.get("exp", 0)) > envelope_exp:
+        return _bench_return(
+            token_ms, None, t0, False,
+            "ect_exp_exceeds_envelope",
+        )
 
     # 2) DPoP
     if not dpop_header:
@@ -846,13 +1070,38 @@ async def admission_check(
     dpop_header: Optional[str] = Header(None, alias="DPoP"),
     dpop_nonce: Optional[str] = Header(None, alias="X-DPoP-Nonce"),
 ):
+    full_start = _ns()
+    _bench_begin_request()
     
     try:
         body_json = await request.json()
         body_model = ProbeReq(**body_json)
     except Exception as e:
         raise HTTPException(400, f"invalid_probe_request:{e}")
-    return _probe_impl(request, body_model, authorization, dpop_header, dpop_nonce)
+
+    result = _probe_impl(
+        request,
+        body_model,
+        authorization,
+        dpop_header,
+        dpop_nonce,
+    )
+    decision_id, sign_ms, persist_ms, emit_ms = emit_decision_record(
+        body_model,
+        result,
+        authorization,
+    )
+    result.decision_id = decision_id
+
+    _bench_finalize_request({
+        "decision_id": decision_id,
+        "record_emitted": True,
+        "sign_record_ms": sign_ms,
+        "persist_record_ms": persist_ms,
+        "emit_record_ms": emit_ms,
+        "full_check_ms": _ms(_ns() - full_start),
+    })
+    return result
 
 
 # =============================================================================

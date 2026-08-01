@@ -193,7 +193,8 @@ resource "docker_container" "verifier_app" {
     "REDIS_URL=redis://redis:6379/0",
     "FCAC_ENVELOPE_CHANNEL=fcac:envelopes:created",
     "REQUIRE_MTLS_HEADERS=true",
-    "SESSION_TTL=18000",
+    "KYO_SESSION_TTL=1200",
+    "ENVELOPE_TTL=1209600",    
     "BENCH=${var.bench ? "1" : "0"}"
   ]
 

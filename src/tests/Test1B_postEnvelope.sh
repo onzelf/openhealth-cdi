@@ -43,16 +43,25 @@ container_http() {
   local container="$1"
   local method="$2"
   local url="$3"
+  local data="${4:-}"
 
-  docker exec -i "${container}" python - "${method}" "${url}" <<'PYCODE'
+  docker exec -i "${container}" python - \
+    "${method}" "${url}" "${data}" <<'PYCODE'
 import sys
 import urllib.error
 import urllib.request
 
 method = sys.argv[1]
 url = sys.argv[2]
+data = sys.argv[3].encode("utf-8") if sys.argv[3] else None
+headers = {"Content-Type": "application/json"} if data is not None else {}
 
-req = urllib.request.Request(url, method=method)
+req = urllib.request.Request(
+    url,
+    data=data,
+    headers=headers,
+    method=method,
+)
 try:
     with urllib.request.urlopen(req, timeout=5) as response:
         body = response.read().decode("utf-8", errors="replace")
@@ -82,6 +91,14 @@ require_json() {
 hub_status() {
   container_http fc-hub GET \
     "http://127.0.0.1:8080/experiments/${RUN_ID}/status"
+}
+
+hub_initialise() {
+  local payload
+  payload="$(jq -nc --arg run "${RUN_ID}" '{run_id: $run}')"
+  container_http fc-hub POST \
+    "http://127.0.0.1:8080/experiments/initialise" \
+    "${payload}"
 }
 
 hub_start() {
@@ -131,7 +148,9 @@ wait_until_ready() {
 }
 
 wait_training_done() {
-  local start now payload state round rounds error
+  local previous_model_run_id="$1"
+  local start now payload state round rounds error model_run_id bound_envelope
+  local manifest manifest_run_id manifest_session_id
   start="$(date +%s)"
 
   while true; do
@@ -142,13 +161,46 @@ wait_training_done() {
       round="$(jq -r '.training.round // 0' <<<"${payload}")"
       rounds="$(jq -r '.training.rounds // 0' <<<"${payload}")"
       error="$(jq -r '.training.error // empty' <<<"${payload}")"
+      model_run_id="$(jq -r '.model_run_id // empty' <<<"${payload}")"
+      bound_envelope="$(
+        jq -r '.bound_envelope.envelope_id // empty' <<<"${payload}"
+      )"
 
-      printf 'Training: status=%s round=%s/%s\n' \
-        "${state:-unknown}" "${round}" "${rounds}"
+      printf 'Training: status=%s round=%s/%s model_run=%s\n' \
+        "${state:-unknown}" \
+        "${round}" \
+        "${rounds}" \
+        "${model_run_id:-none}"
+
+      if [[ -n "${bound_envelope}" && "${bound_envelope}" != "${ENVELOPE_ID}" ]]; then
+        echo "Flower is bound to ${bound_envelope}, not ${ENVELOPE_ID}" >&2
+        return 1
+      fi
 
       case "${state}" in
         done)
-          return 0
+          if [[ -z "${model_run_id}" ]]; then
+            warn "Ignoring done state without an allocated model run"
+          elif [[ "${model_run_id}" == "${previous_model_run_id}" ]]; then
+            warn "Ignoring stale done state for ${model_run_id}"
+          else
+            manifest="$(
+              docker exec flower-server \
+                cat "/vault/${ENVELOPE_ID}/run.json" 2>/dev/null || true
+            )"
+            if jq . >/dev/null 2>&1 <<<"${manifest}"; then
+              manifest_run_id="$(jq -r '.run_id // empty' <<<"${manifest}")"
+              manifest_session_id="$(
+                jq -r '.session_id // empty' <<<"${manifest}"
+              )"
+              if [[ "${manifest_run_id}" == "${model_run_id}" \
+                 && "${manifest_session_id}" == "${ENVELOPE_ID}" ]]; then
+                COMPLETED_MODEL_RUN_ID="${model_run_id}"
+                return 0
+              fi
+            fi
+            warn "Waiting for envelope manifest for ${model_run_id}"
+          fi
           ;;
         error)
           [[ -n "${error}" ]] && echo "Server error: ${error}" >&2
@@ -178,7 +230,24 @@ need_running_container flower-client-b
 pass "Hub, server, and A/B clients are running"
 
 hr
-bold "Step 2: Wait for bound envelope and START readiness"
+bold "Step 2: Reinitialise the existing run lifecycle"
+INITIALISE_RESPONSE="$(hub_initialise)"
+require_json "Hub initialise endpoint" "${INITIALISE_RESPONSE}" ||
+  fail "Initialise returned non-JSON"
+echo "${INITIALISE_RESPONSE}" | jq .
+
+INITIALISE_STATUS="$(jq -r '.status // empty' <<<"${INITIALISE_RESPONSE}")"
+INITIALISE_ENVELOPE="$(
+  jq -r '.active_envelope_id // empty' <<<"${INITIALISE_RESPONSE}"
+)"
+[[ "${INITIALISE_STATUS}" == "initialised" ]] ||
+  fail "Initialise failed: status=${INITIALISE_STATUS:-missing}"
+[[ "${INITIALISE_ENVELOPE}" == "${ENVELOPE_ID}" ]] ||
+  fail "Initialise did not preserve envelope ${ENVELOPE_ID}"
+pass "Run returned to waiting while preserving the selected envelope"
+
+hr
+bold "Step 3: Wait for bound envelope and START readiness"
 if wait_until_ready; then
   pass "Envelope is bound and experiment can start"
 else
@@ -187,21 +256,41 @@ else
   fail "Experiment did not become start-ready within 120 seconds"
 fi
 
+# Capture the previous artefact pointer so a stale Flower "done" state cannot
+# satisfy this invocation.
+FLOWER_BEFORE_START="$(flower_status)"
+require_json "Flower status endpoint" "${FLOWER_BEFORE_START}" ||
+  fail "Flower status returned non-JSON before START"
+PREVIOUS_MODEL_RUN_ID="$(
+  jq -r '.model_run_id // empty' <<<"${FLOWER_BEFORE_START}"
+)"
+PREVIOUS_TRAINING_STATUS="$(
+  jq -r '.training.status // empty' <<<"${FLOWER_BEFORE_START}"
+)"
+PREVIOUS_BOUND_ENVELOPE="$(
+  jq -r '.bound_envelope.envelope_id // empty' <<<"${FLOWER_BEFORE_START}"
+)"
+[[ "${PREVIOUS_BOUND_ENVELOPE}" == "${ENVELOPE_ID}" ]] ||
+  fail "Flower is not bound to envelope ${ENVELOPE_ID} before START"
+[[ "${PREVIOUS_TRAINING_STATUS}" != "running" ]] ||
+  fail "Flower already reports a running training job before START"
+
 hr
-bold "Step 3: Simulate the START button"
+bold "Step 4: Simulate the START button"
 START_RESPONSE="$(hub_start)"
 require_json "Hub START endpoint" "${START_RESPONSE}" || fail "START returned non-JSON"
 echo "${START_RESPONSE}" | jq .
 
 START_STATUS="$(jq -r '.status // empty' <<<"${START_RESPONSE}")"
-[[ "${START_STATUS}" == "running" || "${START_STATUS}" == "completed" ]] \
-  || fail "START failed: status=${START_STATUS:-missing}"
-pass "Experiment START accepted"
+[[ "${START_STATUS}" == "running" ]] ||
+  fail "START did not create a new running lifecycle: status=${START_STATUS:-missing}"
+pass "Experiment START accepted as a new running lifecycle"
 
 hr
-bold "Step 4: Wait for Flower training completion"
-if wait_training_done; then
-  pass "Training completed"
+bold "Step 5: Wait for correlated Flower training completion"
+COMPLETED_MODEL_RUN_ID=""
+if wait_training_done "${PREVIOUS_MODEL_RUN_ID}"; then
+  pass "Training completed as new model run ${COMPLETED_MODEL_RUN_ID}"
 else
   payload="$(flower_status 2>/dev/null || true)"
   [[ -n "${payload}" ]] && echo "${payload}" | jq . 2>/dev/null || echo "${payload}"
@@ -209,14 +298,23 @@ else
 fi
 
 hr
-bold "Step 5: Verify envelope-bound run evidence"
+bold "Step 6: Verify envelope-bound run evidence"
 EVIDENCE_PATH="/vault/${ENVELOPE_ID}/run.json"
-if docker exec flower-server test -s "${EVIDENCE_PATH}"; then
-  pass "Found ${EVIDENCE_PATH}"
-  docker exec flower-server sh -lc "head -80 '${EVIDENCE_PATH}'"
-else
-  fail "Missing or empty ${EVIDENCE_PATH}"
-fi
+EVIDENCE_JSON="$(
+  docker exec flower-server cat "${EVIDENCE_PATH}" 2>/dev/null || true
+)"
+require_json "Envelope run manifest" "${EVIDENCE_JSON}" ||
+  fail "Missing or invalid ${EVIDENCE_PATH}"
+
+EVIDENCE_RUN_ID="$(jq -r '.run_id // empty' <<<"${EVIDENCE_JSON}")"
+EVIDENCE_SESSION_ID="$(jq -r '.session_id // empty' <<<"${EVIDENCE_JSON}")"
+[[ "${EVIDENCE_RUN_ID}" == "${COMPLETED_MODEL_RUN_ID}" ]] ||
+  fail "Manifest run_id does not match the completed model run"
+[[ "${EVIDENCE_SESSION_ID}" == "${ENVELOPE_ID}" ]] ||
+  fail "Manifest session_id does not match the envelope"
+
+echo "${EVIDENCE_JSON}" | jq .
+pass "Envelope manifest binds ${COMPLETED_MODEL_RUN_ID} to ${ENVELOPE_ID}"
 
 hr
 bold "=== PASS ==="
