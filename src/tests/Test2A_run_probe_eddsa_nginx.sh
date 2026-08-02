@@ -144,7 +144,8 @@ jq -e \
     .ops[$op].resource == "pathmnist-colon-pathology"
     and .ops[$op].action == "query_model"
     and .ops[$op].purpose == "approved_model_query"
-    and (.ops[$op].scope.pathology_labels | index("background") != null)
+    and (.ops[$op].scope.pathology_labels | index("mucus") != null)
+    and (.ops[$op].scope.pathology_labels | index("normal_colon_mucosa") != null)
     and (.ops[$op].scope.pathology_labels | index("lymphocytes") != null)
     and (.ops[$op].scope.pathology_labels | index("debris") == null)
   ' \
@@ -213,12 +214,16 @@ MINT_REQUEST="$(
     --arg pub "${PUB_B64}" \
     --arg profile "${CAP_PROFILE}" \
     --arg envelope "${ENVELOPE_ID}" \
+    --arg sub "Martinez" \
+    --arg actor_type "human" \
     --arg nbf "${NBF}" \
     --arg exp "${EXP}" \
     '{
       holder_pub_b64: $pub,
       cap_profiles: [$profile],
       envelope_id: $envelope,
+      sub: $sub,
+      actor_type: $actor_type,
       nbf: $nbf,
       exp: $exp
     }'
@@ -252,7 +257,8 @@ if [[ "${INSPECT_MINTED_ECT:-false}" == "true" ]]; then
       --stdin \
       --expected-envelope-id "${ENVELOPE_ID}" \
       --expected-jkt-file "holder_keys/Martinez.jkt" \
-      --require-tissue background \
+      --require-tissue mucus \
+      --require-tissue normal_colon_mucosa \
       --require-tissue lymphocytes \
       --forbid-tissue debris
  
@@ -362,7 +368,7 @@ run_probe \
   "" \
   "${ENVELOPE_ID}" \
   "${ENVELOPE_ID}" \
-  '["background","lymphocytes"]' \
+  '["mucus","normal_colon_mucosa","lymphocytes"]' \
   "${PRIV_HEX}" \
   "${PUB_B64}"
 

@@ -33,6 +33,7 @@ ISSUER_PORT="${ISSUER_PORT:-9443}"
 ISSUER_IP="${ISSUER_IP:-}"
 ISSUER_URL="https://${ISSUER_HOST}:${ISSUER_PORT}"
 SUBJECT="${SUBJECT:-Audrey}"
+EXPECTED_ORG_ISS="${EXPECTED_ORG_ISS:-org://HospitalA}"
 RUN_ID="${RUN_ID:-local-pathmnist-ab-001}"
 VERIFIER_URL="${VERIFIER_URL:-https://verifier.local:8443}"
 DPOP_HTU="${DPOP_HTU:-https://verifier.local/admission/check}"
@@ -295,6 +296,9 @@ PY
 ECT_ENVELOPE_ID="$(jq -r '.envelope_id // empty' "${CLAIMS_FILE}")"
 ECT_POLICY_HASH="$(jq -r '.policy.policy_hash // empty' "${CLAIMS_FILE}")"
 ECT_EXP="$(jq -r '.exp // empty' "${CLAIMS_FILE}")"
+ECT_SUB="$(jq -r '.sub // empty' "${CLAIMS_FILE}")"
+ECT_ACTOR_TYPE="$(jq -r '.actor_type // empty' "${CLAIMS_FILE}")"
+ECT_ORG_ISS="$(jq -r '.org_iss // empty' "${CLAIMS_FILE}")"
 
 [[ "${ECT_ENVELOPE_ID}" == "${ENVELOPE_ID}" ]] ||
     fail "ECT envelope_id does not match the requested envelope"
@@ -304,8 +308,14 @@ ECT_EXP="$(jq -r '.exp // empty' "${CLAIMS_FILE}")"
     fail "ECT expiry is missing or invalid"
 (( ECT_EXP <= ENVELOPE_EXP )) ||
     fail "ECT expiry exceeds the envelope expiry"
+[[ "${ECT_SUB}" == "${SUBJECT}" ]] ||
+    fail "ECT sub does not identify ${SUBJECT}"
+[[ "${ECT_ACTOR_TYPE}" == "human" ]] ||
+    fail "ECT actor_type is not human"
+[[ "${ECT_ORG_ISS}" == "${EXPECTED_ORG_ISS}" ]] ||
+    fail "ECT org_iss does not match ${EXPECTED_ORG_ISS}"
 
-pass "ECT is envelope-bound, policy-bound, and time-bounded"
+pass "ECT is envelope-bound, policy-bound, time-bounded, and accountable"
 
 section "4. Signed ALLOW and DENY decision evidence"
 
@@ -414,6 +424,9 @@ run_decision_case() {
         --arg expected "$(
             [[ "${expected_allow}" == "true" ]] && printf ALLOW || printf DENY
         )" \
+        --arg sub "${SUBJECT}" \
+        --arg actor_type "human" \
+        --arg org_iss "${EXPECTED_ORG_ISS}" \
         '
         .decision_id == $decision
         and .policy_hash == $policy
@@ -423,6 +436,9 @@ run_decision_case() {
         and .requested_purpose == "approved_model_query"
         and .requested_tissue_classes == [$tissue]
         and .allow_or_deny == $expected
+        and .sub == $sub
+        and .actor_type == $actor_type
+        and .org_iss == $org_iss
         and (.timestamp | type == "number")
         and (.requester_binding_result | type == "string")
         and (.evidence.signature | type == "string" and length > 0)
@@ -430,6 +446,23 @@ run_decision_case() {
         ' "${record_path}" >/dev/null ||
         fail "${label} signed decision record is incomplete"
 
+    printf '\nSigned %s decision identity:\n' "${label}"
+    jq '{
+        decision_id,
+        allow_or_deny,
+        decision_reason,
+        sub,
+        actor_type,
+        org_iss,
+        requester_binding_result,
+        approved_research_collaboration,
+        presented_ect_sha256,
+        evidence: {
+            alg: .evidence.alg,
+            kid: .evidence.kid
+        }
+    }' "${record_path}"
+    
     pass "${label} produced independently verifiable ${expected_allow} evidence"
 }
 
@@ -448,4 +481,4 @@ run_decision_case \
 pass "Gatekeeper produced signed ALLOW and DENY decision records"
 
 printf '\n'
-pass "Test2E Phases 1+2 passed: binding and signed evidence are operational"
+pass "Test2E passed: binding, signed evidence, and ECT accountability are operational"

@@ -163,12 +163,16 @@ MINT_REQUEST="$(
     --arg pub "${PUB_B64}" \
     --arg profile "${CAP_PROFILE}" \
     --arg envelope "${ENVELOPE_ID}" \
+    --arg sub "Martinez" \
+    --arg actor_type "human" \
     --arg nbf "${NBF}" \
     --arg exp "${EXP}" \
     '{
       holder_pub_b64: $pub,
       cap_profiles: [$profile],
       envelope_id: $envelope,
+      sub: $sub,
+      actor_type: $actor_type,
       nbf: $nbf,
       exp: $exp
     }'
@@ -205,7 +209,8 @@ printf '%s' "${ECT}" |
     --expected-resource "pathmnist-colon-pathology" \
     --expected-action "query_model" \
     --expected-purpose "approved_model_query" \
-    --require-tissue "background" \
+    --require-tissue "mucus" \
+    --require-tissue "normal_colon_mucosa" \
     --require-tissue "lymphocytes" \
     --forbid-tissue "debris"
 

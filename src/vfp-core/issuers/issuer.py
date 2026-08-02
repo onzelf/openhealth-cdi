@@ -99,6 +99,11 @@ def register_member(req: MemberRegReq):
     # Registry is keyed by sub (issuer-namespace identity)
     with _registry_lock:
         reg = _load_registry(ORG)
+        if entry["sub"] in reg:
+            raise HTTPException(
+                409,
+                f"sub_already_registered:{entry['sub']}",
+            )
         reg[entry["sub"]] = entry
         _save_registry(ORG, reg)
 
@@ -161,12 +166,10 @@ def mint(req: MintReq):
                 "holder_pub_b64": holder_pub_b64,
                 "cap_profiles": [cap_profile],
                 "envelope_id": req.envelope_id,
+                "sub": m["sub"],
+                "actor_type": "human",
                 "nbf": nbf,
                 "exp": exp,
-                # Optional: if verifier can embed cnf.jkt, pass it through:
-                # "holder_jkt": m["jkt"],
-                # "sub": m["sub"],
-                # "issuer": ORG,
             },
             timeout=15,
             verify=_verify_arg(),

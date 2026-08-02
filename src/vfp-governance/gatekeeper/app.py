@@ -22,6 +22,7 @@ import logging
 
 log = logging.getLogger("verifier")
 _bench_current = ContextVar("bench_current", default=None)
+_verified_ect_identity = ContextVar("verified_ect_identity", default=None)
 
 def _bench_begin_request() -> None:
     if BENCH:
@@ -374,6 +375,8 @@ class MintReq(BaseModel):
     holder_pub_b64: str = Field(..., description="Ed25519 public key, base64url (from gen_member_keys.py)")
     cap_profiles: List[str] = Field(..., description="cap profile ids to grant (must exist in policy.cap_profiles)")
     envelope_id: str = Field(..., min_length=1, description="Active federation envelope bound into the ECT")
+    sub: str = Field(..., min_length=1)
+    actor_type: str = Field(..., min_length=1)
     nbf: str
     exp: str
 
@@ -421,6 +424,19 @@ _aud = _policy.get("caveats", {}).get("audience", AUD_FALLBACK)
 def _hdr(req: Request, name: str) -> str:
     v = req.headers.get(name)
     return v if v is not None else ""
+
+def _minting_org(req: Request) -> str:
+    if _hdr(req, "X-SSL-Client-Verify") != "SUCCESS":
+        raise HTTPException(401, "client cert required")
+
+    dn = _hdr(req, "X-SSL-Client-S-DN")
+    match = re.search(
+        r"CN=org_([A-Za-z0-9][A-Za-z0-9._-]*)_admin",
+        dn,
+    )
+    if not match:
+        raise HTTPException(403, "minting_org_not_resolved")
+    return f"org://{match.group(1)}"
 
 def _load_env_summary(p: Path):
     try:
@@ -734,7 +750,16 @@ def load_active_envelope(envelope_id: str) -> Dict[str, Any]:
 
 
 @app.post("/mint_ect", response_model=MintResp)
-def mint_ect(req: MintReq):
+def mint_ect(request: Request, req: MintReq):
+    org_iss = _minting_org(request)
+
+    sub = req.sub.strip()
+    actor_type = req.actor_type.strip()
+    if not sub:
+        raise HTTPException(400, "invalid_sub")
+    if actor_type != "human":
+        raise HTTPException(400, "unsupported_actor_type")
+
     envelope = load_active_envelope(req.envelope_id)
 
     nbf = iso_to_epoch(req.nbf)
@@ -755,6 +780,9 @@ def mint_ect(req: MintReq):
         "iat": now_epoch(),
         "nbf": nbf,
         "exp": exp,
+        "sub": sub,
+        "actor_type": actor_type,
+        "org_iss": org_iss,
         "policy": {
             "policy_id": _policy["meta"]["policy_id"],
             "manifest_id": _policy["meta"]["manifest_id"],
@@ -790,7 +818,6 @@ def _ect_fingerprint(authorization: Optional[str]) -> Optional[str]:
     token = authorization.split(" ", 1)[1].strip()
     return sha256_b64u(token.encode("utf-8")) if token else None
 
-
 def emit_decision_record(
     body: ProbeReq,
     result: ProbeResp,
@@ -798,6 +825,7 @@ def emit_decision_record(
 ) -> tuple[str, float, float, float]:
     decision_id = "decision-" + uuid.uuid4().hex
     reason = result.reason or "capability_match"
+    identity = _verified_ect_identity.get() or {}
     record = {
         "artifact_type": "fcac_admission_decision",
         "schema_version": "1.0",
@@ -809,6 +837,9 @@ def emit_decision_record(
             result.allow,
             result.reason,
         ),
+        "sub": identity.get("sub"),
+        "actor_type": identity.get("actor_type"),
+        "org_iss": identity.get("org_iss"),
         "requested_action": body.action,
         "requested_purpose": body.purpose,
         "requested_tissue_classes": body.requested_tissues,
@@ -872,6 +903,7 @@ def _probe_impl(
     dpop_nonce: Optional[str],
 ) -> ProbeResp:
     
+    _verified_ect_identity.set(None)
     t0 = _ns()
     token_ms = pop_ms = cap_ms = None
 
@@ -889,7 +921,10 @@ def _probe_impl(
             _org_pub,
             algorithms=["ES256", "ES384", "ES512", "RS256"],
             options={
-                "require": ["iss", "nbf", "exp", "policy", "cnf", "cap", "envelope_id"],
+                "require": [
+                    "iss", "nbf", "exp", "policy", "cnf", "cap",
+                    "envelope_id", "sub", "actor_type", "org_iss",
+                ],
                 "verify_aud": False,
             },
         )
@@ -939,6 +974,15 @@ def _probe_impl(
             token_ms, None, t0, False,
             "ect_exp_exceeds_envelope",
         )
+
+    # Preserve identity only after the ECT has passed the complete governed
+    # validation path. Decision evidence consumes these already-verified claims
+    # and must not perform a second token verification.
+    _verified_ect_identity.set({
+        "sub": ect.get("sub"),
+        "actor_type": ect.get("actor_type"),
+        "org_iss": ect.get("org_iss"),
+    })
 
     # 2) DPoP
     if not dpop_header:
