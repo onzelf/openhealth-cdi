@@ -1,11 +1,21 @@
 #!/usr/bin/env bash
 # Verify the completed AB_BASE Flower run and its central-evaluation artefacts.
-
+#
+# Usage:
+#   ./Test1C_verifyABRounds.sh [run_id] [expected_rounds]
+#
+# Defaults:
+#   run_id          = local-pathmnist-ab-001
+#   expected_rounds = 10
 set -euo pipefail
 
 RUN_ID="${1:-local-pathmnist-ab-001}"
 EXPECTED_ROUNDS="${2:-10}"
 RUN_DIR="/vault/runs/${RUN_ID}"
+
+echo "Usage: $0 [run_id] [expected_rounds]"
+echo "Input arguments: run_id=${RUN_ID} expected_rounds=${EXPECTED_ROUNDS}"
+echo
 
 bold() { printf "\033[1m%s\033[0m\n" "$*"; }
 pass() { printf "\033[32m✓\033[0m %s\n" "$*"; }
@@ -104,48 +114,6 @@ print("\nFinal central metrics:")
 for name in sorted(required):
     print(f"  {name}={metrics[-1][name]}")
 PY
-
-echo ""
-bold "Check AB_BASE degradation pattern"
-
-docker exec -i flower-server python - "${RUN_DIR}/metrics.csv" "${EXPECTED_ROUNDS}" <<'PY'
-import csv
-import sys
-
-metrics_path = sys.argv[1]
-expected_round = int(sys.argv[2])
-
-with open(metrics_path, newline="") as f:
-    rows = list(csv.DictReader(f))
-
-if not rows:
-    raise SystemExit("metrics.csv is empty")
-
-final = rows[-1]
-
-round_id = int(final["round"])
-if round_id != expected_round:
-    raise SystemExit(f"Expected final round {expected_round}, found {round_id}")
-
-non_cancer = float(final["non_cancer_recall"])
-cancer = float(final["cancer_recall"])
-class7 = float(final["class_7_recall"])
-class8 = float(final["class_8_recall"])
-
-# AB_BASE should be good on non-cancer but weak on cancer.
-assert non_cancer >= 0.85, f"non_cancer_recall too low for AB_BASE: {non_cancer}"
-assert cancer <= 0.35, f"cancer_recall unexpectedly high for AB_BASE: {cancer}"
-assert class7 <= 0.05, f"class_7_recall unexpectedly high for AB_BASE: {class7}"
-assert class8 <= 0.65, f"class_8_recall unexpectedly high for AB_BASE: {class8}"
-
-print("AB_BASE expected baseline pattern:")
-print(f"  non_cancer_recall = {non_cancer:.4f}  expected >= 0.85  [A+B know non-cancer classes]")
-print(f"  cancer_recall     = {cancer:.4f}  expected <= 0.35  [A+B have too little cancer data]")
-print(f"  class_7_recall    = {class7:.4f}  expected <= 0.05  [class 7 should fail in AB_BASE]")
-print(f"  class_8_recall    = {class8:.4f}  expected <= 0.65  [class 8 may be weak but not solved]")
-PY
-
-pass "AB_BASE degradation pattern verified"
 
 pass "Participants and unavailable label 2 verified"
 

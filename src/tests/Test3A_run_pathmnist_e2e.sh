@@ -8,6 +8,7 @@ set -euo pipefail
 
 ENVELOPE_ID="${1:-}"
 RUN_ID="${RUN_ID:-local-pathmnist-ab-001}"
+ARTIFACT_RUN_ID="${ARTIFACT_RUN_ID:-}"
 
 HUB_URL="${HUB_URL:-http://127.0.0.1:8080}"
 HTU="${HTU:-https://verifier.local/admission/check}"
@@ -25,6 +26,8 @@ ADMIN_B_CRT="${ADMIN_B_CRT:-../vfp-governance/verifier/certs/HospitalB-admin.crt
 ADMIN_B_KEY="${ADMIN_B_KEY:-../vfp-governance/verifier/certs/HospitalB-admin.key}"
 
 POLICY_JSON="${POLICY_JSON:-../vfp-governance/verifier/state/policy.json}"
+HOLDER_KEYS_DIR="${HOLDER_KEYS_DIR:-../vfp-governance/verifier/vault/holder_keys}"
+GEN_MEMBER_KEYS="${GEN_MEMBER_KEYS:-../tools/gen_member_keys.py}"
 
 [[ -n "${ENVELOPE_ID}" ]] || {
   echo "Usage: $0 <active-envelope-id>" >&2
@@ -64,9 +67,20 @@ for container in fc-hub flower-server issuer-hospitala issuer-hospitalb; do
     || fail "Container is not running: ${container}"
 done
 
+if [[ -z "${ARTIFACT_RUN_ID}" ]]; then
+  ARTIFACT_RUN_ID="$(
+    docker exec flower-server \
+      cat "/vault/${ENVELOPE_ID}/run.json" \
+      | jq -er '.run_id'
+  )" || fail "Unable to resolve artifact run for envelope ${ENVELOPE_ID}"
+fi
+
 docker exec flower-server \
-  test -s "/vault/runs/${RUN_ID}/model.pt" \
-  || fail "Missing model: /vault/runs/${RUN_ID}/model.pt"
+  test -s "/vault/runs/${ARTIFACT_RUN_ID}/model.pt" \
+  || fail "Missing model: /vault/runs/${ARTIFACT_RUN_ID}/model.pt"
+
+printf 'Logical Hub run : %s\n' "${RUN_ID}"
+printf 'Artifact run    : %s\n' "${ARTIFACT_RUN_ID}"
 
 decode_jws_payload() {
   local token="$1"
@@ -107,58 +121,89 @@ print(base64.urlsafe_b64encode(hashlib.sha256(canonical).digest()).decode().rstr
 PY
 }
 
-register_member() {
+holder_identity() {
+  local holder="$1"
+  local private_key="${HOLDER_KEYS_DIR}/${holder}.privhex"
+
+  [[ -s "${private_key}" ]] \
+    || fail "Missing holder private key: ${private_key}"
+
+  python3 "${GEN_MEMBER_KEYS}" \
+    --derive \
+    --private-key "${private_key}" \
+    --format json
+}
+
+verify_member() {
   local org="$1"
   local holder="$2"
   local issuer_host="$3"
   local admin_crt="$4"
   local admin_key="$5"
 
-  python3 ../tools/gen_member_keys.py \
-    --org "${org}" \
-    --who "${holder}" \
-    >/dev/null
-
-  local payload
-  payload="$(jq -c 'del(.created_at)' "holder_keys/${holder}.register.json")"
+  local identity expected_pub expected_jkt
+  identity="$(holder_identity "${holder}")"
+  expected_pub="$(jq -er '.pub_b64' <<<"${identity}")"
+  expected_jkt="$(jq -er '.jkt' <<<"${identity}")"
 
   local response
   response="$(
-    curl -skS \
+    curl -sS \
       --resolve "${issuer_host}:${ISSUER_PROXY_PORT}:${ISSUER_PROXY_IP}" \
       --cacert "${CA_CRT}" \
       --cert "${admin_crt}" \
       --key "${admin_key}" \
-      -H 'Content-Type: application/json' \
-      --data "${payload}" \
-      "https://${issuer_host}:${ISSUER_PROXY_PORT}/members/register"
+      "https://${issuer_host}:${ISSUER_PROXY_PORT}/members"
   )"
 
-  echo "${response}" | jq -e '.status == "ok"' >/dev/null \
-    || fail "Registration failed for ${holder}"
+  local count enrolled_pub enrolled_jkt
+  count="$(
+    jq -r \
+      --arg sub "${holder}" \
+      '[.members[] | select(.sub == $sub)] | length' \
+      <<<"${response}"
+  )"
+  [[ "${count}" == "1" ]] \
+    || fail "Expected one issuer enrollment for ${holder}, found ${count}"
 
-  printf '%-8s registered in %-18s  jkt=%s\n' \
-    "${holder}" "${org}" "$(cat "holder_keys/${holder}.jkt")"
+  enrolled_pub="$(
+    jq -er \
+      --arg sub "${holder}" \
+      '.members[] | select(.sub == $sub) | .pub_b64' \
+      <<<"${response}"
+  )"
+  enrolled_jkt="$(
+    jq -er \
+      --arg sub "${holder}" \
+      '.members[] | select(.sub == $sub) | .jkt' \
+      <<<"${response}"
+  )"
+
+  [[ "${expected_pub}" == "${enrolled_pub}" ]] \
+    || fail "${holder}: holder public key does not match issuer enrollment"
+  [[ "${expected_jkt}" == "${enrolled_jkt}" ]] \
+    || fail "${holder}: holder JKT does not match issuer enrollment"
+
+  printf '%-8s verified in %-18s  jkt=%s\n' \
+    "${holder}" "${org}" "${expected_jkt}"
 }
 
 mint_ect() {
   local issuer_container="$1"
   local holder="$2"
-  local profile="$3"
 
   docker exec -i "${issuer_container}" \
-    python3 - "${holder}" "${profile}" "${ENVELOPE_ID}" <<'PY'
+    python3 - "${holder}" "${ENVELOPE_ID}" <<'PY'
 import json
 import sys
 import requests
 
-holder, profile, envelope_id = sys.argv[1:]
+holder, envelope_id = sys.argv[1:]
 
 response = requests.post(
     "http://127.0.0.1:8080/mint",
     json={
         "sub": holder,
-        "profile": profile,
         "envelope_id": envelope_id,
     },
     timeout=20,
@@ -200,7 +245,7 @@ show_and_verify_ect() {
 
   echo
   printf '%s ECT\n' "${holder}"
-  printf '  issuer profile requested : %s\n' "${profile_alias}"
+  printf '  issuer entitlement profile: %s\n' "${profile_alias}"
   printf '  policy capset            : %s\n' "${policy_capset}"
   printf '  policy operation         : %s\n' "${policy_operation}"
   printf '  policy hash (local)      : %s\n' "${local_policy_hash}"
@@ -213,10 +258,13 @@ show_and_verify_ect() {
   echo "  capability minted:"
   jq '.cap' <<<"${claims}"
 
+  local holder_jkt
+  holder_jkt="$(holder_identity "${holder}" | jq -er '.jkt')"
+
   jq -e \
     --arg hash "${local_policy_hash}" \
     --arg envelope_id "${ENVELOPE_ID}" \
-    --arg holder_jkt "$(cat "holder_keys/${holder}.jkt")" \
+    --arg holder_jkt "${holder_jkt}" \
     --argjson expected_cap "${expected_cap}" \
     '
       .policy.policy_hash == $hash
@@ -234,9 +282,13 @@ make_dpop() {
   local nonce="$2"
   local jti="$3"
 
+  local identity holder_pub_b64
+  identity="$(holder_identity "${signer}")"
+  holder_pub_b64="$(jq -er '.pub_b64' <<<"${identity}")"
+
   python3 ../tools/make_dpop_jwt_eddsa.py \
-    "$(cat "holder_keys/${signer}.privhex")" \
-    "$(cat "holder_keys/${signer}.pubb64")" \
+    "$(tr -d '\r\n' <"${HOLDER_KEYS_DIR}/${signer}.privhex")" \
+    "${holder_pub_b64}" \
     "${nonce}" \
     "${jti}" \
     POST \
@@ -308,6 +360,10 @@ call_predict() {
 
   echo "Gatekeeper decision returned by Hub:"
   jq '.admission' <<<"${response}"
+  if ! jq -e 'has("admission")' <<<"${response}" >/dev/null; then
+    echo "Hub response:"
+    jq . <<<"${response}"
+  fi
   printf 'Backend executed: %s\n' "${executed}"
 
   if [[ "${executed}" == "true" ]]; then
@@ -325,13 +381,13 @@ call_predict() {
   if [[ "${expected_allow}" == "true" ]]; then
     jq -e \
       --arg envelope_id "${ENVELOPE_ID}" \
-      --arg run_id "${RUN_ID}" \
+      --arg artifact_run_id "${ARTIFACT_RUN_ID}" \
       --arg tissue "${tissue}" \
       '
         .admission.allow == true
         and .executed == true
         and .prediction.envelope_id == $envelope_id
-        and .prediction.run_id == $run_id
+        and .prediction.run_id == $artifact_run_id
         and .prediction.requested_tissue == $tissue
         and (.prediction.topk | length) > 0
       ' <<<"${response}" >/dev/null \
@@ -373,16 +429,16 @@ jq '{
     .caveats.reserved_pathology_labels
 }' "${POLICY_JSON}"
 
-section "2. Register the two cryptographic holders"
+section "2. Verify the two enrolled cryptographic holders"
 
-register_member \
+verify_member \
   "org://HospitalA" \
   Audrey \
   issuer-hospitala.local \
   "${ADMIN_A_CRT}" \
   "${ADMIN_A_KEY}"
 
-register_member \
+verify_member \
   "org://HospitalB" \
   Bob \
   issuer-hospitalb.local \
@@ -391,7 +447,7 @@ register_member \
 
 section "3. Mint ECTs and prove that they contain policy subsets"
 
-MINT_A="$(mint_ect "${ISSUER_A_CONTAINER}" Audrey PATHMNIST_OTHER_TISSUE_READER)"
+MINT_A="$(mint_ect "${ISSUER_A_CONTAINER}" Audrey)"
 [[ "$(jq -r '.status' <<<"${MINT_A}")" == "200" ]] \
   || fail "Audrey ECT mint failed: ${MINT_A}"
 ECT_A="$(extract_ect <<<"${MINT_A}")"
@@ -404,7 +460,7 @@ show_and_verify_ect \
   query_model_other_tissue_reader \
   "${ECT_A}"
 
-MINT_B="$(mint_ect "${ISSUER_B_CONTAINER}" Bob PATHMNIST_CANCER_ASSOCIATED_READER)"
+MINT_B="$(mint_ect "${ISSUER_B_CONTAINER}" Bob)"
 [[ "$(jq -r '.status' <<<"${MINT_B}")" == "200" ]] \
   || fail "Bob ECT mint failed: ${MINT_B}"
 ECT_B="$(extract_ect <<<"${MINT_B}")"

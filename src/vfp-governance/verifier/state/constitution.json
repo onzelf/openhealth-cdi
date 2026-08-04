@@ -1,11 +1,11 @@
 {
   "constitution": {
     "document_id": "CONST-OPENHEALTH-PATHMNIST-AB",
-    "version": "2.1-draft",
+    "version": "2.2-draft",
     "status": "proof_of_concept",
     "source_mou": {
       "document_id": "MOU-OPENHEALTH-PATHMNIST-AB",
-      "version": "2.1-draft",
+      "version": "2.2-draft",
       "file": "MOU.txt"
     },
     "research_collaboration": {
@@ -215,6 +215,50 @@
         ]
       }
     },
+    "participation_grades": {
+      "predeclaration": {
+        "required": true,
+        "new_actor_within_existing_grade_requires_policy_revision": false,
+        "new_grade_requires_constitutional_reapproval": true,
+        "mou_rules": [
+          "AB-GRADE-01",
+          "AB-GRADE-02",
+          "AB-GRADE-03"
+        ]
+      },
+      "guest_contributor": {
+        "actor_type": "human",
+        "constitutional_member": false,
+        "quorum_rights": false,
+        "sponsorship": "single_founding_member",
+        "issuer": "sponsoring_member_issuer",
+        "authority": "bounded_federated_training_contribution",
+        "model_query_rights_implied": false,
+        "guest_institution_provenance": "issuer_owned_assignment",
+        "mou_rules": [
+          "AB-GUEST-01",
+          "AB-GUEST-02",
+          "AB-GUEST-03",
+          "AB-GUEST-04",
+          "AB-GUEST-05"
+        ]
+      },
+      "agent_evaluator": {
+        "actor_type": "agent",
+        "constitutional_member": false,
+        "quorum_rights": false,
+        "explicit_sponsorship_required": true,
+        "accountability_terminus": "human_or_legal_sponsor",
+        "authority": "bounded_statistical_inquiry_or_evaluation",
+        "prediction_authority": false,
+        "mou_rules": [
+          "AB-AGENT-01",
+          "AB-AGENT-02",
+          "AB-AGENT-03",
+          "AB-AGENT-04"
+        ]
+      }
+    },
     "authorization_context": {
       "principle": "Every authorization is valid only for the particular approved research collaboration for which it was issued.",
       "concurrent_collaborations_may_exist": true,
@@ -281,6 +325,7 @@
         "issuer",
         "holder",
         "research_role_or_capability",
+        "participation_grade_or_capability_profile",
         "authorized_scope",
         "approved_research_collaboration",
         "validity_period"
@@ -289,24 +334,35 @@
         "allow_or_deny",
         "decision_reason",
         "requester_binding_result",
+        "participant_identity",
+        "issuing_or_sponsoring_authority",
+        "participation_grade_or_capability_profile",
+        "declared_purpose",
         "requested_action",
         "requested_tissue_classes",
         "approved_research_collaboration",
         "related_model_run_when_applicable",
         "timestamp"
       ],
+      "training_admission_granularity": "one_decision_per_participant_per_bounded_run",
+      "interactive_admission_granularity": "one_decision_per_governed_operation",
       "secrets_excluded_from_presented_evidence": true,
       "mou_rules": [
         "AB-EVIDENCE-01",
         "AB-EVIDENCE-02",
         "AB-EVIDENCE-03",
         "AB-EVIDENCE-04",
-        "AB-EVIDENCE-05"
+        "AB-EVIDENCE-05",
+        "AB-EVIDENCE-06",
+        "AB-EVIDENCE-07",
+        "AB-EVIDENCE-08"
       ]
     },
     "formalization_boundary": {
       "constitutional_topics": [
         "participating_hospitals",
+        "participation_grades",
+        "sponsorship",
         "research_scope",
         "reserved_tissue_classes",
         "model_custody",

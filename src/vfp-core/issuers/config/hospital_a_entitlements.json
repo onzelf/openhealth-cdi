@@ -1,6 +1,10 @@
 {
   "org": "org://HospitalA",
   "members": {
-    "Audrey": "PATHMNIST_OTHER_TISSUE_READER"
+    "Audrey": "PATHMNIST_OTHER_TISSUE_READER",
+    "Charlie": "PATHMNIST_GUEST_CONTRIBUTOR"
+  },
+  "guest_institutions": {
+    "Charlie": "org://HospitalC"
   }
 }

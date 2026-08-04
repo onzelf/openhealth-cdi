@@ -1,6 +1,7 @@
 
 # OpenTofu/Terraform local provider cache
 **/.terraform/*
+spec/
 src/infra/tofu/terraform.tfstate*
 src/vfp-governance/verifier/certs/
 src/vfp-governance/verifier/state/binds/

@@ -8,6 +8,16 @@
         "ab",
         "mode1a"
       ]
+    },
+    {
+      "principal": "Charlie",
+      "actor_type": "human",
+      "status": "planned",
+      "modes": [
+        "mode1a"
+      ],
+      "participation_grade": "guest_contributor",
+      "guest_institution": "org://HospitalC"
     }
   ],
   "org://HospitalB": [
@@ -17,16 +27,6 @@
       "status": "active",
       "modes": [
         "ab",
-        "mode1a"
-      ]
-    }
-  ],
-  "org://HospitalC": [
-    {
-      "principal": "Charlie",
-      "actor_type": "human",
-      "status": "planned",
-      "modes": [
         "mode1a"
       ]
     }

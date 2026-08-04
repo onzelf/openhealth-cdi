@@ -327,10 +327,6 @@ def cap_match_result(
         return False, "capability_violation"
 
     if "scope" in cap and isinstance(cap["scope"], dict):
-        if "cohort" in cap["scope"]:
-            if req.get("cohort") not in cap["scope"]["cohort"]:
-                return False, "capability_violation"
-
         if "pathology_labels" in cap["scope"]:
             granted_tissues = set(cap["scope"]["pathology_labels"])
             requested_tissues = set(req.get("requested_tissues", []))
@@ -393,7 +389,6 @@ class ProbeReq(BaseModel):
     action: str
     purpose: Optional[str] = None
     requested_tissues: List[str]
-    cohort: Optional[str] = None
     agg: Optional[str] = None
     pii: Optional[bool] = None
     contact: Optional[bool] = None
@@ -769,7 +764,8 @@ def mint_ect(request: Request, req: MintReq):
     if nbf > exp:
         raise HTTPException(400, "ect_invalid_time_window")
 
-    caps = pick_caps(_policy, req.cap_profiles)
+    cap_profiles = list(dict.fromkeys(req.cap_profiles))
+    caps = pick_caps(_policy, cap_profiles)
     if not caps:
         raise HTTPException(400, "selected profiles produce empty capability set")
 
@@ -790,6 +786,7 @@ def mint_ect(request: Request, req: MintReq):
         },
         "envelope_id": req.envelope_id,
         "cnf": {"jkt": jkt},
+        "cap_profiles": cap_profiles,
         "cap": caps,
     }
     headers = {"alg": _alg, "kid": ORG_KEY_KID, "typ": "JWT"}
@@ -840,6 +837,7 @@ def emit_decision_record(
         "sub": identity.get("sub"),
         "actor_type": identity.get("actor_type"),
         "org_iss": identity.get("org_iss"),
+        "cap_profiles": identity.get("cap_profiles", []),
         "requested_action": body.action,
         "requested_purpose": body.purpose,
         "requested_tissue_classes": body.requested_tissues,
@@ -854,7 +852,6 @@ def emit_decision_record(
             "action": body.action,
             "purpose": body.purpose,
             "requested_tissues": body.requested_tissues,
-            "cohort": body.cohort,
             "agg": body.agg,
             "pii": body.pii,
             "contact": body.contact,
@@ -923,7 +920,7 @@ def _probe_impl(
             options={
                 "require": [
                     "iss", "nbf", "exp", "policy", "cnf", "cap",
-                    "envelope_id", "sub", "actor_type", "org_iss",
+                    "cap_profiles", "envelope_id", "sub", "actor_type", "org_iss",
                 ],
                 "verify_aud": False,
             },
@@ -982,6 +979,7 @@ def _probe_impl(
         "sub": ect.get("sub"),
         "actor_type": ect.get("actor_type"),
         "org_iss": ect.get("org_iss"),
+        "cap_profiles": list(ect.get("cap_profiles") or []),
     })
 
     # 2) DPoP
@@ -1081,7 +1079,6 @@ def _probe_impl(
         "action": body.action,
         "purpose": body.purpose,
         "requested_tissues": body.requested_tissues,
-        "cohort": body.cohort,
         "agg": body.agg,
         "pii": body.pii,
         "contact": body.contact,

@@ -1,5 +1,5 @@
 {
-  "version": "2.0",
+  "version": "2.1",
   "ops": {
     "join_pathmnist_ab_envelope": {
       "resource": "openhealth-pathmnist-ab",
@@ -16,9 +16,6 @@
       "action": "submit_update",
       "purpose": "federated_training",
       "scope": {
-        "cohort": [
-          "hospital_a_pathmnist_ab_base"
-        ],
         "pathology_labels": [
           "adipose",
           "background",
@@ -43,9 +40,6 @@
       "action": "submit_update",
       "purpose": "federated_training",
       "scope": {
-        "cohort": [
-          "hospital_b_pathmnist_ab_base"
-        ],
         "pathology_labels": [
           "adipose",
           "background",
@@ -65,14 +59,40 @@
         "AB-CONTRIB-03"
       ]
     },
+    "submit_update_guest_contributor": {
+      "resource": "pathmnist-colon-pathology",
+      "action": "submit_update",
+      "purpose": "federated_training",
+      "scope": {
+        "pathology_labels": [
+          "adipose",
+          "background",
+          "lymphocytes",
+          "mucus",
+          "smooth_muscle",
+          "normal_colon_mucosa",
+          "cancer_associated_stroma",
+          "colorectal_adenocarcinoma_epithelium"
+        ]
+      },
+      "mou_rules": [
+        "AB-TRAIN-01",
+        "AB-TRAIN-02",
+        "AB-CONTRIB-01",
+        "AB-CONTRIB-02",
+        "AB-CONTRIB-03",
+        "AB-GUEST-01",
+        "AB-GUEST-02",
+        "AB-GUEST-03",
+        "AB-GUEST-04",
+        "AB-GUEST-05"
+      ]
+    },
     "submit_evaluation_ab": {
       "resource": "pathmnist-colon-pathology",
       "action": "submit_evaluation",
       "purpose": "model_evaluation",
       "scope": {
-        "cohort": [
-          "pathmnist_ab_base"
-        ],
         "pathology_labels": [
           "adipose",
           "background",
@@ -87,6 +107,29 @@
       "mou_rules": [
         "AB-TRAIN-01",
         "AB-TRAIN-03"
+      ]
+    },
+    "statistical_inquiry_agent_evaluator": {
+      "resource": "pathmnist-colon-pathology",
+      "action": "statistical_inquiry",
+      "purpose": "model_evaluation",
+      "scope": {
+        "pathology_labels": [
+          "adipose",
+          "background",
+          "lymphocytes",
+          "mucus",
+          "smooth_muscle",
+          "normal_colon_mucosa",
+          "cancer_associated_stroma",
+          "colorectal_adenocarcinoma_epithelium"
+        ]
+      },
+      "mou_rules": [
+        "AB-AGENT-01",
+        "AB-AGENT-02",
+        "AB-AGENT-03",
+        "AB-AGENT-04"
       ]
     },
     "query_model_other_tissue_reader": {
@@ -143,6 +186,16 @@
         "submit_evaluation_ab"
       ]
     },
+    "capset:pathmnist_guest_contributor": {
+      "cap": [
+        "submit_update_guest_contributor"
+      ]
+    },
+    "capset:pathmnist_agent_evaluator": {
+      "cap": [
+        "statistical_inquiry_agent_evaluator"
+      ]
+    },
     "capset:pathmnist_other_tissue_reader": {
       "cap": [
         "query_model_other_tissue_reader"
@@ -171,12 +224,12 @@
   },
   "meta": {
     "policy_id": "POL-OPENHEALTH-PATHMNIST-AB",
-    "manifest_id": "MOU-OPENHEALTH-PATHMNIST-AB-2.1",
+    "manifest_id": "MOU-OPENHEALTH-PATHMNIST-AB-2.2",
     "mou_file": "MOU.txt",
     "constitution_file": "constitution.json",
     "status": "proof_of_concept",
     "notes": [
-      "This policy is derived from MOU.txt: OPENHEALTH-PATHMNIST-AB version 2.1-draft.",
+      "This policy is derived from MOU.txt: OPENHEALTH-PATHMNIST-AB version 2.2-draft.",
       "The tuple compiler continues to resolve policy.cap_profiles into policy.ops.",
       "scope.pathology_labels contains canonical PathMNIST identifiers.",
       "The verifier must reject any request containing a label listed in caveats.reserved_pathology_labels.",
