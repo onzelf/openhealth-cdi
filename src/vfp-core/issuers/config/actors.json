@@ -12,7 +12,7 @@
     {
       "principal": "Charlie",
       "actor_type": "human",
-      "status": "planned",
+      "status": "active",
       "modes": [
         "mode1a"
       ],

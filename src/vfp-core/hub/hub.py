@@ -1848,6 +1848,138 @@ def ab_prediction(req: ABPredictionRequest) -> Dict[str, Any]:
     return response
 
 
+@app.post("/mode1a/guest/contribution/admission")
+async def mode1a_guest_contribution_admission(
+    request: Request,
+) -> Dict[str, Any]:
+    """Present an existing sponsored-guest ECT for contribution admission."""
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, f"invalid_request:{exc}") from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "body_must_be_object")
+
+    principal = str(payload.get("principal") or "").strip()
+    envelope_id = str(payload.get("envelope_id") or "").strip()
+    requested_tissues = payload.get("requested_tissues")
+
+    if not principal:
+        raise HTTPException(400, "missing_principal")
+    if not envelope_id:
+        raise HTTPException(400, "missing_envelope_id")
+    if (
+        not isinstance(requested_tissues, list)
+        or not requested_tissues
+        or not all(
+            isinstance(tissue, str) and tissue
+            for tissue in requested_tissues
+        )
+    ):
+        raise HTTPException(400, "invalid_requested_tissues")
+
+    unknown_tissues = sorted(
+        set(requested_tissues)
+        - set(PATHMNIST_QUERY_TISSUES + ["debris"])
+    )
+    if unknown_tissues:
+        raise HTTPException(
+            400,
+            "unknown_tissues:" + ",".join(unknown_tissues),
+        )
+
+    binding_state = selected_envelope_binding_state()
+    selected_id = binding_state.get("selected_envelope_id")
+    if not selected_id:
+        raise HTTPException(409, "no_envelope_selected")
+    if envelope_id != selected_id:
+        raise HTTPException(409, "envelope_mismatch")
+    if not binding_state.get("bound", False):
+        raise HTTPException(409, "envelope_not_bound")
+
+    principal_context = ACTOR_CONTEXTS.get(principal)
+    if principal_context is None:
+        raise HTTPException(400, f"unknown_principal:{principal}")
+    if not actor_is_operational(principal_context):
+        raise HTTPException(409, f"actor_not_operational:{principal}")
+    if principal_context.get("actor_type") != "human":
+        raise HTTPException(403, "guest_contributor_must_be_human")
+    if principal_context.get("participation_grade") != "guest_contributor":
+        raise HTTPException(403, "guest_contributor_grade_required")
+    if "mode1a" not in principal_context.get("modes", []):
+        raise HTTPException(403, "mode1a_guest_required")
+
+    credential_key = principal_runtime_key(selected_id, principal)
+    credential = holder_runtime_credentials.get(credential_key)
+    if not credential:
+        raise HTTPException(409, "ect_not_ready")
+
+    expires_at = credential.get("expires_at")
+    if expires_at and int(expires_at) <= int(time.time()):
+        credential["expired"] = True
+        raise HTTPException(409, "ect_expired")
+
+    nonce = "nonce-" + secrets.token_urlsafe(18)
+    jti = "jti-" + secrets.token_urlsafe(18)
+    guest_htu = "https://verifier.local/admission/guest-contribution"
+
+    try:
+        signer = requests.post(
+            SIGNER_URL + "/dpop/sign",
+            json={
+                "sub": principal,
+                "htu": guest_htu,
+                "htm": "POST",
+                "jti": jti,
+                "nonce": nonce,
+                "envelope_id": selected_id,
+            },
+            timeout=15,
+        )
+        signer.raise_for_status()
+        dpop = signer.json().get("dpop")
+    except Exception as exc:
+        raise HTTPException(502, f"dpop_sign_failed:{exc}") from exc
+
+    if not dpop:
+        raise HTTPException(502, "dpop_sign_failed:missing_dpop")
+
+    try:
+        verifier = requests.post(
+            VERIFIER_URL + "/admission/guest-contribution",
+            headers={
+                "Authorization": f"ECT {credential['ect']}",
+                "DPoP": str(dpop),
+                "X-DPoP-Nonce": nonce,
+            },
+            json={
+                "envelope_id": selected_id,
+                "requested_tissues": requested_tissues,
+                "jti": jti,
+            },
+            timeout=15,
+            verify=CA_CRT,
+            cert=(HUB_CERT_CRT, HUB_CERT_KEY),
+        )
+        verifier.raise_for_status()
+        admission = verifier.json()
+    except Exception as exc:
+        raise HTTPException(502, f"verifier_error:{exc}") from exc
+
+    return {
+        "principal": principal,
+        "guest_institution": principal_context.get("guest_institution"),
+        "request": {
+            "envelope_id": selected_id,
+            "requested_tissues": requested_tissues,
+            "jti": jti,
+        },
+        "admission": admission,
+        "executed": False,
+    }
+
+
 @app.post("/user/inference")
 def user_inference(req: UserInferenceRequest) -> Dict[str, Any]:
     """Use the Hub-held ECT for governed user inference with fresh DPoP."""

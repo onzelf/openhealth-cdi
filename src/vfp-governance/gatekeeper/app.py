@@ -1145,6 +1145,110 @@ async def admission_check(
     return result
 
 
+# ---------------------------------------------------------------------
+# Mode 1A guest-contributor aperture
+# ---------------------------------------------------------------------
+@app.post("/admission/guest-contribution", response_model=ProbeResp)
+async def guest_contribution_admission(
+    request: Request,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    dpop_header: Optional[str] = Header(None, alias="DPoP"),
+    dpop_nonce: Optional[str] = Header(None, alias="X-DPoP-Nonce"),
+):
+    """Evaluate the pre-declared guest-contributor capability without a run input."""
+    full_start = _ns()
+    _bench_begin_request()
+
+    try:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise ValueError("body_must_be_object")
+
+        allowed_fields = {"envelope_id", "requested_tissues", "jti"}
+        unexpected = sorted(set(payload) - allowed_fields)
+        if unexpected:
+            raise ValueError("unexpected_fields:" + ",".join(unexpected))
+
+        envelope_id = payload.get("envelope_id")
+        requested_tissues = payload.get("requested_tissues")
+        jti = payload.get("jti")
+
+        if not isinstance(envelope_id, str) or not envelope_id.strip():
+            raise ValueError("invalid_envelope_id")
+        if (
+            not isinstance(requested_tissues, list)
+            or not requested_tissues
+            or not all(
+                isinstance(tissue, str) and tissue
+                for tissue in requested_tissues
+            )
+        ):
+            raise ValueError("invalid_requested_tissues")
+        if not isinstance(jti, str) or not jti:
+            raise ValueError("invalid_jti")
+    except Exception as exc:
+        raise HTTPException(
+            400,
+            f"invalid_guest_contribution_request:{exc}",
+        ) from exc
+
+    class GuestContributionProbe:
+        # Internal compatibility view for the unchanged verification core.
+        # run_id is not accepted by this endpoint and is not a guest input.
+        run_id = None
+        resource = "pathmnist-colon-pathology"
+        action = "submit_update"
+        purpose = "federated_training"
+        agg = None
+        pii = None
+        contact = None
+
+        def __init__(self):
+            self.envelope_id = envelope_id
+            self.requested_tissues = requested_tissues
+            self.jti = jti
+
+    body_model = GuestContributionProbe()
+
+    result = _probe_impl(
+        request,
+        body_model,
+        authorization,
+        dpop_header,
+        dpop_nonce,
+    )
+
+    # Pinch the generic machinery to the declared guest-contributor grade.
+    identity = _verified_ect_identity.get() or {}
+    if identity:
+        profiles = set(identity.get("cap_profiles") or [])
+        if (
+            identity.get("actor_type") != "human"
+            or "capset:pathmnist_guest_contributor" not in profiles
+        ):
+            result = ProbeResp(
+                allow=False,
+                reason="capability_violation",
+            )
+
+    decision_id, sign_ms, persist_ms, emit_ms = emit_decision_record(
+        body_model,
+        result,
+        authorization,
+    )
+    result.decision_id = decision_id
+
+    _bench_finalize_request({
+        "decision_id": decision_id,
+        "record_emitted": True,
+        "sign_record_ms": sign_ms,
+        "persist_record_ms": persist_ms,
+        "emit_record_ms": emit_ms,
+        "full_check_ms": _ms(_ns() - full_start),
+    })
+    return result
+
+
 # =============================================================================
 # Entrypoint
 # =============================================================================
