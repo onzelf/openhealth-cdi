@@ -71,6 +71,12 @@ REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 REDIS_CHANNEL_ENVELOPES_CREATED = os.environ.get("FCAC_ENVELOPE_CHANNEL", "fcac:envelopes:created")
 redis_client = None
 
+# DPoP proof freshness and replay window.
+# ECTs remain reusable while valid. Individual DPoP presentations do not.
+DPOP_MAX_AGE_SECONDS = int(os.environ.get("DPOP_MAX_AGE_SECONDS", "60"))
+DPOP_CLOCK_SKEW_SECONDS = int(os.environ.get("DPOP_CLOCK_SKEW_SECONDS", "5"))
+DPOP_REPLAY_TTL_SECONDS = DPOP_MAX_AGE_SECONDS + DPOP_CLOCK_SKEW_SECONDS
+
 # Enforce nginx mTLS headers for /verify-start by default (matches your previous behavior)
 REQUIRE_MTLS_HEADERS = os.environ.get("REQUIRE_MTLS_HEADERS", "true").lower() in ("1", "true", "yes")
 
@@ -892,7 +898,7 @@ def _bench_return(token_ms, pop_start_ns, full_start_ns, allow: bool, reason: st
     return ProbeResp(allow=allow, reason=reason)
 
 
-def _probe_impl(
+async def _probe_impl(
     request: Request,
     body: ProbeReq,
     authorization: Optional[str],
@@ -1022,13 +1028,27 @@ def _probe_impl(
     except Exception as e:
         return _bench_return(token_ms, t, t0, False, f"dpop_verify:{e}")
 
-    # htm/htu/nonce/jti/envelope_id
+    # htm/htu/nonce/jti/iat/envelope_id
     try:
         htm = str(pl.get("htm", "")).upper()
         htu = str(pl.get("htu", ""))
         jti = str(pl.get("jti", ""))
         nonce_claim = str(pl.get("nonce", ""))
         proof_envelope_id = str(pl.get("envelope_id", ""))
+
+        if "iat" not in pl:
+            return _bench_return(token_ms, t, t0, False, "dpop_iat_missing")
+
+        iat_claim = pl.get("iat")
+        if not isinstance(iat_claim, int) or isinstance(iat_claim, bool):
+            return _bench_return(token_ms, t, t0, False, "dpop_iat_invalid")
+
+        dpop_now = now_epoch()
+        if iat_claim > dpop_now + DPOP_CLOCK_SKEW_SECONDS:
+            return _bench_return(token_ms, t, t0, False, "dpop_iat_future")
+
+        if dpop_now - iat_claim > DPOP_MAX_AGE_SECONDS:
+            return _bench_return(token_ms, t, t0, False, "dpop_iat_stale")
 
         if htm != request.method.upper():
             return _bench_return(token_ms, t, t0, False, "dpop_htm_mismatch")
@@ -1062,6 +1082,30 @@ def _probe_impl(
     # bind DPoP key to ECT cnf.jkt
     if ect.get("cnf", {}).get("jkt") != rfc7638_thumbprint_okp_ed25519(jwk["x"]):
         return _bench_return(token_ms, t, t0, False, "dpop_binding_mismatch")
+
+    # A valid DPoP presentation is single-use. Redis SET NX + EX makes the
+    # check atomic across concurrent requests and bounds replay state to the
+    # proof freshness window.
+    replay_key = (
+        "fcac:dpop:jti:"
+        + hashlib.sha256(jti.encode("utf-8")).hexdigest()
+    )
+    try:
+        r = await get_redis()
+        first_use = await r.set(
+            replay_key,
+            "1",
+            ex=DPOP_REPLAY_TTL_SECONDS,
+            nx=True,
+        )
+    except Exception:
+        return _bench_return(
+            token_ms, t, t0, False,
+            "dpop_replay_store_unavailable",
+        )
+
+    if not first_use:
+        return _bench_return(token_ms, t, t0, False, "dpop_replay")
 
     # 3) constitutional reserved-tissue rule
     reserved_tissues = set(
@@ -1120,7 +1164,7 @@ async def admission_check(
     except Exception as e:
         raise HTTPException(400, f"invalid_probe_request:{e}")
 
-    result = _probe_impl(
+    result = await _probe_impl(
         request,
         body_model,
         authorization,
@@ -1216,7 +1260,7 @@ async def guest_contribution_admission(
 
     body_model = GuestContributionProbe()
 
-    result = _probe_impl(
+    result = await _probe_impl(
         request,
         body_model,
         authorization,
