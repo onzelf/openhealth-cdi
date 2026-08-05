@@ -1155,7 +1155,7 @@ async def guest_contribution_admission(
     dpop_header: Optional[str] = Header(None, alias="DPoP"),
     dpop_nonce: Optional[str] = Header(None, alias="X-DPoP-Nonce"),
 ):
-    """Evaluate the pre-declared guest-contributor capability without a run input."""
+    """Evaluate the pre-declared guest-contributor capability, optionally for one run."""
     full_start = _ns()
     _bench_begin_request()
 
@@ -1164,17 +1164,22 @@ async def guest_contribution_admission(
         if not isinstance(payload, dict):
             raise ValueError("body_must_be_object")
 
-        allowed_fields = {"envelope_id", "requested_tissues", "jti"}
+        allowed_fields = {"envelope_id", "run_id", "requested_tissues", "jti"}
         unexpected = sorted(set(payload) - allowed_fields)
         if unexpected:
             raise ValueError("unexpected_fields:" + ",".join(unexpected))
 
         envelope_id = payload.get("envelope_id")
+        run_id = payload.get("run_id")
         requested_tissues = payload.get("requested_tissues")
         jti = payload.get("jti")
 
         if not isinstance(envelope_id, str) or not envelope_id.strip():
             raise ValueError("invalid_envelope_id")
+        if run_id is not None and (
+            not isinstance(run_id, str) or not run_id.strip()
+        ):
+            raise ValueError("invalid_run_id")
         if (
             not isinstance(requested_tissues, list)
             or not requested_tissues
@@ -1194,8 +1199,6 @@ async def guest_contribution_admission(
 
     class GuestContributionProbe:
         # Internal compatibility view for the unchanged verification core.
-        # run_id is not accepted by this endpoint and is not a guest input.
-        run_id = None
         resource = "pathmnist-colon-pathology"
         action = "submit_update"
         purpose = "federated_training"
@@ -1205,6 +1208,9 @@ async def guest_contribution_admission(
 
         def __init__(self):
             self.envelope_id = envelope_id
+            self.run_id = (
+                run_id.strip() if isinstance(run_id, str) else None
+            )
             self.requested_tissues = requested_tissues
             self.jti = jti
 
@@ -1219,8 +1225,8 @@ async def guest_contribution_admission(
     )
 
     # Pinch the generic machinery to the declared guest-contributor grade.
-    identity = _verified_ect_identity.get() or {}
-    if identity:
+    if result.allow:
+        identity = _verified_ect_identity.get() or {}
         profiles = set(identity.get("cap_profiles") or [])
         if (
             identity.get("actor_type") != "human"

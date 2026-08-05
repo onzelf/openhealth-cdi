@@ -35,6 +35,8 @@ const SCENARIOS = [
     organisations: "Hospital A + Hospital B",
     actors: "Audrey · Bob",
     detail: "Founding members · train and query",
+    participantOrgIds: ["org://HospitalA", "org://HospitalB"],
+    expectedRegisteredClients: 2,
     statement:
       "Hospitals A and B train the baseline model under the active sovereignty envelope.",
   },
@@ -44,6 +46,12 @@ const SCENARIOS = [
     organisations: "Hospital A + Hospital B + sponsored Hospital C",
     actors: "Audrey · Bob · Charlie",
     detail: "Guest contributor · train A+B+C",
+    participantOrgIds: [
+      "org://HospitalA",
+      "org://HospitalB",
+      "org://HospitalC",
+    ],
+    expectedRegisteredClients: 3,
     statement:
       "Hospital C is admitted as a sponsored training contributor; the A+B+C model remains queryable by A and B.",
   },
@@ -53,6 +61,8 @@ const SCENARIOS = [
     organisations: "Hospital A + Hospital B + AI agent",
     actors: "Audrey · Bob · Hal",
     detail: "Bounded AI task · reuse A+B+C",
+    participantOrgIds: ["org://HospitalA", "org://HospitalB"],
+    expectedRegisteredClients: 2,
     statement:
       "Hal receives a holder-bound, envelope-bound capability and participates only within its admitted task.",
   },
@@ -169,20 +179,6 @@ function metricChartData(rows, totalRounds = 0) {
   return hasValues ? chartRows : [];
 }
 
-function normaliseScenario(config) {
-  const value = String(
-    config.scenario || config.mode || config.phase || "AB_BASE"
-  ).toUpperCase();
-
-  if (value.includes("1B")) {
-    return "mode1b";
-  }
-  if (value.includes("1A")) {
-    return "mode1a";
-  }
-  return "ab";
-}
-
 function scenarioState(scenarioId, activeScenarioId, executionStatus) {
   if (scenarioId !== activeScenarioId) {
     return "NOT STARTED";
@@ -242,7 +238,22 @@ function participantSummary(participants, registeredClients) {
   return configuredParticipants.length ? configuredParticipants.join(" + ") : "—";
 }
 
-function ScenarioStrip({ activeScenarioId, executionStatus }) {
+function actorVisibleInScenario(actor, scenarioId) {
+  const modes = actor.modes || [];
+  return !modes.length || modes.includes(scenarioId);
+}
+
+function trainingPhaseForScenario(scenarioId) {
+  if (scenarioId === "ab") {
+    return "AB_BASE";
+  }
+  if (scenarioId === "mode1a") {
+    return "MODE1A";
+  }
+  throw new Error(`Scenario ${scenarioId} does not support training`);
+}
+
+function ScenarioStrip({ activeScenarioId, executionStatus, onSelect }) {
   return (
     <section className="scenario-section" aria-labelledby="scenario-heading">
       <div className="section-heading">
@@ -251,7 +262,7 @@ function ScenarioStrip({ activeScenarioId, executionStatus }) {
           <h2 id="scenario-heading">Collaboration scenario</h2>
         </div>
         <p>
-          Three bounded contexts, one evidence trail. Mode 2 remains future work.
+          Three bounded contexts, one evidence trail.
         </p>
       </div>
 
@@ -265,9 +276,19 @@ function ScenarioStrip({ activeScenarioId, executionStatus }) {
           );
           return (
             <article
-              aria-current={isActive ? "step" : undefined}
+              aria-current={isActive ? "true" : undefined}
+              aria-pressed={isActive}
               className={`scenario-card ${isActive ? "selected" : ""}`}
               key={scenario.id}
+              onClick={() => onSelect(scenario.id)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  onSelect(scenario.id);
+                }
+              }}
+              role="button"
+              tabIndex={0}
             >
               <div className="scenario-card-top">
                 <span className="scenario-number">0{index + 1}</span>
@@ -292,9 +313,15 @@ function ScenarioStrip({ activeScenarioId, executionStatus }) {
   );
 }
 
-function Overview({ status, participants, activeScenario, lastRefresh }) {
+function Overview({
+  status,
+  participants,
+  registeredClients,
+  expectedRegisteredClients,
+  activeScenario,
+  lastRefresh,
+}) {
   const admission = admissionSummary(status);
-  const registeredClients = status.registered_clients || [];
   const cards = [
     {
       label: "Active scenario",
@@ -316,7 +343,7 @@ function Overview({ status, participants, activeScenario, lastRefresh }) {
     {
       label: "Participants",
       value: participantSummary(participants, registeredClients),
-      detail: `${status.registered_client_count ?? 0} of ${status.min_clients ?? "—"} registered`,
+      detail: `${registeredClients.length} of ${expectedRegisteredClients} registered`,
     },
     {
       label: "Execution status",
@@ -1177,6 +1204,7 @@ function Header({ lastRefresh }) {
 export default function App() {
   const [dashboardMode, setDashboardMode] = useState("administration");
   const [activeTab, setActiveTab] = useState("training");
+  const [selectedScenarioId, setSelectedScenarioId] = useState("ab");
   const [status, setStatus] = useState({});
   const [experiment, setExperiment] = useState({});
   const [metrics, setMetrics] = useState([]);
@@ -1218,9 +1246,31 @@ export default function App() {
     [experiment.participants]
   );
   const registeredClients = status.registered_clients || [];
-  const activeScenarioId = normaliseScenario(config);
+  const activeScenarioId = selectedScenarioId;
   const activeScenario =
     SCENARIOS.find((scenario) => scenario.id === activeScenarioId) || SCENARIOS[0];
+  const scenarioParticipants = useMemo(
+    () =>
+      participants.filter((participant) =>
+        activeScenario.participantOrgIds.includes(participant.org_id)
+      ),
+    [participants, activeScenario]
+  );
+  const scenarioRegisteredClients = registeredClients.filter((orgId) =>
+    activeScenario.participantOrgIds.includes(orgId)
+  );
+  const scenarioAdministration = useMemo(
+    () => ({
+      ...administration,
+      holders: (administration.holders || []).filter((actor) =>
+        actorVisibleInScenario(actor, activeScenarioId)
+      ),
+      inference_actors: (administration.inference_actors || []).filter((actor) =>
+        actorVisibleInScenario(actor, activeScenarioId)
+      ),
+    }),
+    [administration, activeScenarioId]
+  );
   const selectedModelRunId = (administration.envelopes || []).find(
     (envelope) => envelope.envelope_id === administration.selected_envelope_id
   )?.model_run_id;
@@ -1389,6 +1439,7 @@ export default function App() {
         run_id: RUN_ID,
         dataset: config.dataset || "medmnist",
         dataset_subset: config.dataset_subset || "pathmnist",
+        phase: trainingPhaseForScenario(activeScenarioId),
         rounds: Math.max(1, Number(editableConfig.rounds) || 1),
         min_clients: status.min_clients || config.min_clients || 2,
         local_epochs: Math.max(1, Number(editableConfig.local_epochs) || 1),
@@ -1424,7 +1475,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const actors = administration.inference_actors || [];
+    const actors = scenarioAdministration.inference_actors || [];
     if (!actors.length) {
       if (userPrincipal) {
         setUserPrincipal("");
@@ -1436,7 +1487,7 @@ export default function App() {
       setUserPrincipal(actors[0].principal);
       setUserInferenceResult(null);
     }
-  }, [administration.inference_actors, userPrincipal]);
+  }, [scenarioAdministration.inference_actors, userPrincipal]);
 
   return (
     <>
@@ -1468,18 +1519,21 @@ export default function App() {
         <ScenarioStrip
           activeScenarioId={activeScenarioId}
           executionStatus={status.status}
+          onSelect={setSelectedScenarioId}
         />
 
         <Overview
           status={displayedStatus}
-          participants={participants}
+          participants={scenarioParticipants}
+          registeredClients={scenarioRegisteredClients}
+          expectedRegisteredClients={activeScenario.expectedRegisteredClients}
           activeScenario={activeScenario}
           lastRefresh={lastRefresh}
         />
 
         {dashboardMode === "administration" ? (
           <BoundaryControlArea
-            administration={administration}
+            administration={scenarioAdministration}
             busy={administrationBusy}
             ceremony={ceremony}
             error={administrationError}
@@ -1509,8 +1563,8 @@ export default function App() {
           activeTab={activeTab}
           metrics={metrics}
           events={events}
-          participants={participants}
-          registeredClients={registeredClients}
+          participants={scenarioParticipants}
+          registeredClients={scenarioRegisteredClients}
           config={config}
           chartRounds={configEditable ? editableConfig.rounds : undefined}
           status={displayedStatus}
@@ -1524,7 +1578,7 @@ export default function App() {
           modelRunId={selectedModelRunId}
           userModePanel={(
             <UserModePanel
-              administration={administration}
+              administration={scenarioAdministration}
               busy={userBusy}
               error={userError}
               onPrincipalChange={(principal) => {

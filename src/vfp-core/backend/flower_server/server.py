@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""OpenHealth Flower coordinator for the validated A+B PathMNIST workload.
+"""OpenHealth Flower coordinator for the PathMNIST A+B and Mode 1A workloads.
 
 The existing governance boundary is preserved:
 - Hub controls experiment activation.
 - The backend accepts a Hub-approved envelope binding.
 - Flower training starts only after the Hub marks the run as ``running``.
 
-This first integration slice implements AB_BASE only. Hospital C and the
-Guest/Member/Founder workflows are deliberately absent.
+Mode 1A admits Hospital C only after Charlie receives a run-bound sponsored-
+guest contribution ALLOW for the actual Flower run.
 """
 
 from __future__ import annotations
@@ -98,8 +98,19 @@ DEFAULT_MIN_CLIENTS = int(
     os.getenv("MIN_CLIENTS", os.getenv("MIN_AVAILABLE_CLIENTS", "2"))
 )
 DEFAULT_FRACTION_FIT = float(os.getenv("FRACTION_FIT", "1.0"))
-
-PHASE = "AB_BASE"
+MODE1A_TRAINING_MIN_CLIENTS = 3
+MODE1A_GUEST_PRINCIPAL = "Charlie"
+MODE1A_GUEST_TISSUES = [
+    "adipose",
+    "background",
+    "lymphocytes",
+    "mucus",
+    "smooth_muscle",
+    "normal_colon_mucosa",
+    "cancer_associated_stroma",
+    "colorectal_adenocarcinoma_epithelium",
+]
+GUEST_ADMISSION_RETRY_SECONDS = 2.0
 
 # ---------------------------------------------------------------------
 # Runtime state and control plane
@@ -113,11 +124,14 @@ artifact_run_lock = threading.Lock()
 
 training_state: Dict[str, Any] = {
     "status": "waiting",
-    "phase": PHASE,
+    "phase": None,
     "data_partition_profile": PATHMNIST_PARTITION_PROFILE,
     "data_partition_seed": PATHMNIST_PARTITION_SEED,
     "round": 0,
     "rounds": DEFAULT_ROUNDS,
+    "min_clients": DEFAULT_MIN_CLIENTS,
+    "guest_admission_decision_id": None,
+    "guest_admission_run_id": None,
     "overall_accuracy": None,
     "macro_recall": None,
     "non_cancer_recall": None,
@@ -666,7 +680,6 @@ def register_with_hub() -> None:
             "server_address": SERVER_ADDRESS,
             "rounds": DEFAULT_ROUNDS,
             "min_clients": DEFAULT_MIN_CLIENTS,
-            "phase": PHASE,
             "central_evaluation": True,
             "data_partition_profile": PATHMNIST_PARTITION_PROFILE,
             "data_partition_seed": PATHMNIST_PARTITION_SEED,
@@ -781,6 +794,108 @@ def keep_control_plane_alive() -> None:
         except Exception as exc:
             write_event("server_restart_poll_error", error=str(exc))
         time.sleep(SERVER_POLL_SECONDS)
+
+
+def require_mode1a_guest_admission(
+    run_id: str,
+    phase: str,
+) -> Optional[Dict[str, Any]]:
+    """Gate Mode 1A training before the Flower gRPC server is opened."""
+
+    if phase != "MODE1A":
+        return None
+
+    envelope_id = current_session_id()
+    if not envelope_id:
+        raise RuntimeError("Mode 1A admission requires a bound envelope")
+    if not MODE1A_GUEST_PRINCIPAL:
+        raise RuntimeError("MODE1A_GUEST_PRINCIPAL must not be empty")
+
+    while True:
+        try:
+            response = requests.post(
+                f"{HUB_URL}/mode1a/guest/contribution/admission",
+                json={
+                    "principal": MODE1A_GUEST_PRINCIPAL,
+                    "envelope_id": envelope_id,
+                    "run_id": run_id,
+                    "requested_tissues": MODE1A_GUEST_TISSUES,
+                },
+                timeout=15,
+            )
+        except Exception as exc:
+            write_event(
+                "guest_contribution_admission_unavailable",
+                principal=MODE1A_GUEST_PRINCIPAL,
+                envelope_id=envelope_id,
+                admission_run_id=run_id,
+                error=str(exc),
+            )
+            time.sleep(GUEST_ADMISSION_RETRY_SECONDS)
+            continue
+
+        if response.status_code == 409 or response.status_code >= 500:
+            write_event(
+                "guest_contribution_admission_wait",
+                principal=MODE1A_GUEST_PRINCIPAL,
+                envelope_id=envelope_id,
+                admission_run_id=run_id,
+                http_status=response.status_code,
+                detail=response.text,
+            )
+            time.sleep(GUEST_ADMISSION_RETRY_SECONDS)
+            continue
+
+        if not response.ok:
+            error = (
+                "Mode 1A guest admission request failed: "
+                f"HTTP {response.status_code} {response.text}"
+            )
+            update_training_state(status="admission_error", error=error)
+            write_event(
+                "guest_contribution_admission_error",
+                principal=MODE1A_GUEST_PRINCIPAL,
+                envelope_id=envelope_id,
+                admission_run_id=run_id,
+                error=error,
+            )
+            while True:
+                time.sleep(GUEST_ADMISSION_RETRY_SECONDS)
+
+        result = response.json()
+        admission = result.get("admission") or {}
+        if not admission.get("allow", False):
+            reason = str(admission.get("reason") or "admission_denied")
+            update_training_state(
+                status="admission_denied",
+                error=reason,
+                guest_admission_decision_id=admission.get("decision_id"),
+                guest_admission_run_id=run_id,
+            )
+            write_event(
+                "guest_contribution_denied",
+                principal=MODE1A_GUEST_PRINCIPAL,
+                envelope_id=envelope_id,
+                admission_run_id=run_id,
+                decision_id=admission.get("decision_id"),
+                reason=reason,
+            )
+            while True:
+                time.sleep(GUEST_ADMISSION_RETRY_SECONDS)
+
+        decision_id = admission.get("decision_id")
+        write_event(
+            "guest_contribution_admitted",
+            principal=MODE1A_GUEST_PRINCIPAL,
+            envelope_id=envelope_id,
+            admission_run_id=run_id,
+            decision_id=decision_id,
+        )
+        update_training_state(
+            guest_admission_decision_id=decision_id,
+            guest_admission_run_id=run_id,
+        )
+        return result
 
 
 # ---------------------------------------------------------------------
@@ -1150,7 +1265,7 @@ def write_final_metadata(
     metadata = {
         "run_id": current_artifact_run_id() or RUN_ID,
         "session_id": current_session_id(),
-        "phase": PHASE,
+        "phase": config.get("phase", "AB_BASE"),
         "timestamp": utc_now(),
         "status": status,
         "dataset": config.get("dataset", "medmnist"),
@@ -1184,6 +1299,7 @@ def write_final_metadata(
 
 def write_envelope_run_summary(
     *,
+    phase: str,
     status: str,
     rounds_completed: int,
     error: Optional[str] = None,
@@ -1201,7 +1317,7 @@ def write_envelope_run_summary(
     payload = {
         "run_id": current_artifact_run_id() or RUN_ID,
         "session_id": session_id,
-        "phase": PHASE,
+        "phase": phase,
         "status": status,
         "rounds_completed": rounds_completed,
         "artifacts": {
@@ -1236,7 +1352,6 @@ def main() -> None:
         "server_starting",
         server_address=SERVER_ADDRESS,
         hub_url=HUB_URL,
-        phase=PHASE,
         strategy="FedAvg",
         central_evaluation=True,
     )
@@ -1262,6 +1377,26 @@ def main() -> None:
         "data_partition_profile": PATHMNIST_PARTITION_PROFILE,
         "data_partition_seed": PATHMNIST_PARTITION_SEED,
     }
+    phase = str(config.get("phase") or "AB_BASE").strip().upper()
+    if phase not in {"AB_BASE", "MODE1A"}:
+        raise RuntimeError(f"Unsupported training phase: {phase!r}")
+
+    training_min_clients = (
+        MODE1A_TRAINING_MIN_CLIENTS
+        if phase == "MODE1A"
+        else positive_int(config, "min_clients", DEFAULT_MIN_CLIENTS)
+    )
+    config["phase"] = phase
+    config["training_min_clients"] = training_min_clients
+
+    update_training_state(
+        status="admission_pending" if phase == "MODE1A" else "running",
+        phase=phase,
+        min_clients=training_min_clients,
+        round=0,
+    )
+    require_mode1a_guest_admission(allocated_run_id, phase)
+
     (run_dir() / "experiment_config.json").write_text(
         json.dumps({**config, "run_id": allocated_run_id}, indent=2),
         encoding="utf-8",
@@ -1270,8 +1405,8 @@ def main() -> None:
     rounds = positive_int(config, "rounds", DEFAULT_ROUNDS)
     min_clients = positive_int(
         config,
-        "min_clients",
-        DEFAULT_MIN_CLIENTS,
+        "training_min_clients",
+        training_min_clients,
     )
     fraction_fit = bounded_fraction(
         config,
@@ -1281,6 +1416,8 @@ def main() -> None:
 
     update_training_state(
         status="running",
+        phase=phase,
+        min_clients=min_clients,
         round=0,
         rounds=rounds,
     )
@@ -1316,7 +1453,7 @@ def main() -> None:
                 [
                     current_artifact_run_id() or RUN_ID,
                     current_session_id(),
-                    PHASE,
+                    phase,
                     server_round,
                     client_count,
                     failure_count,
@@ -1421,6 +1558,7 @@ def main() -> None:
             status="completed",
         )
         write_envelope_run_summary(
+            phase=phase,
             status="completed",
             rounds_completed=rounds,
         )

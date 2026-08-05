@@ -224,6 +224,7 @@ class ExperimentInitialiseRequest(BaseModel):
     run_id: str = RUN_ID
     dataset: str = DATASET
     dataset_subset: str = DATASET_SUBSET
+    phase: str = "AB_BASE"
     rounds: int = FLOWER_ROUNDS
     min_clients: int = MIN_CLIENTS
     local_epochs: int = LOCAL_EPOCHS
@@ -608,6 +609,7 @@ def write_experiment_config(req: ExperimentInitialiseRequest) -> None:
         "run_id": req.run_id,
         "dataset": req.dataset,
         "dataset_subset": req.dataset_subset,
+        "phase": req.phase.strip().upper(),
         "aggregation_strategy": "FedAvg",
         "rounds": req.rounds,
         "min_clients": req.min_clients,
@@ -1126,7 +1128,10 @@ def active_training_run_id(
     backend_state = backend_state or backend_reported_state()
     training = backend_state.get("training") or {}
     model_run_id = backend_state.get("model_run_id")
-    if training.get("status") != "running" or not model_run_id:
+    if (
+        training.get("status") not in {"admission_pending", "running"}
+        or not model_run_id
+    ):
         return None
     return str(model_run_id)
 
@@ -1474,6 +1479,10 @@ def administration_kyo_approve(
 def experiments_initialise(
     req: ExperimentInitialiseRequest,
 ) -> Dict[str, Any]:
+    phase = req.phase.strip().upper()
+    if phase not in {"AB_BASE", "MODE1A"}:
+        raise HTTPException(400, f"unsupported_training_phase:{phase}")
+
     previous_run_id = experiment_state.get("run_id")
     same_run = previous_run_id == req.run_id
     preserved_envelope_id = (
@@ -1511,6 +1520,7 @@ def experiments_initialise(
         run_id=req.run_id,
         dataset=req.dataset,
         dataset_subset=req.dataset_subset,
+        phase=phase,
         rounds=req.rounds,
         min_clients=req.min_clients,
         local_epochs=req.local_epochs,
@@ -1863,12 +1873,19 @@ async def mode1a_guest_contribution_admission(
 
     principal = str(payload.get("principal") or "").strip()
     envelope_id = str(payload.get("envelope_id") or "").strip()
+    run_id_value = payload.get("run_id")
     requested_tissues = payload.get("requested_tissues")
 
     if not principal:
         raise HTTPException(400, "missing_principal")
     if not envelope_id:
         raise HTTPException(400, "missing_envelope_id")
+    if run_id_value is None:
+        run_id: Optional[str] = None
+    elif not isinstance(run_id_value, str) or not run_id_value.strip():
+        raise HTTPException(400, "invalid_run_id")
+    else:
+        run_id = run_id_value.strip()
     if (
         not isinstance(requested_tissues, list)
         or not requested_tissues
@@ -1897,6 +1914,19 @@ async def mode1a_guest_contribution_admission(
         raise HTTPException(409, "envelope_mismatch")
     if not binding_state.get("bound", False):
         raise HTTPException(409, "envelope_not_bound")
+    if run_id is not None:
+        backend_state = binding_state.get("backend_state") or {}
+        active_run_id = active_training_run_id(backend_state)
+        if active_run_id is None:
+            raise HTTPException(409, "training_run_not_ready")
+        if run_id != active_run_id:
+            raise HTTPException(
+                409,
+                (
+                    "training_run_mismatch:"
+                    f"requested={run_id}:active={active_run_id}"
+                ),
+            )
 
     principal_context = ACTOR_CONTEXTS.get(principal)
     if principal_context is None:
@@ -1945,6 +1975,14 @@ async def mode1a_guest_contribution_admission(
     if not dpop:
         raise HTTPException(502, "dpop_sign_failed:missing_dpop")
 
+    verifier_payload: Dict[str, Any] = {
+        "envelope_id": selected_id,
+        "requested_tissues": requested_tissues,
+        "jti": jti,
+    }
+    if run_id is not None:
+        verifier_payload["run_id"] = run_id
+
     try:
         verifier = requests.post(
             VERIFIER_URL + "/admission/guest-contribution",
@@ -1953,11 +1991,7 @@ async def mode1a_guest_contribution_admission(
                 "DPoP": str(dpop),
                 "X-DPoP-Nonce": nonce,
             },
-            json={
-                "envelope_id": selected_id,
-                "requested_tissues": requested_tissues,
-                "jti": jti,
-            },
+            json=verifier_payload,
             timeout=15,
             verify=CA_CRT,
             cert=(HUB_CERT_CRT, HUB_CERT_KEY),
@@ -1972,6 +2006,7 @@ async def mode1a_guest_contribution_admission(
         "guest_institution": principal_context.get("guest_institution"),
         "request": {
             "envelope_id": selected_id,
+            "run_id": run_id,
             "requested_tissues": requested_tissues,
             "jti": jti,
         },

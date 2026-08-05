@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""OpenHealth Flower client for the validated A+B PathMNIST workload.
+"""OpenHealth Flower client for the validated PathMNIST A+B and Mode 1A workloads.
 
 This process preserves the existing Hub registration and Flower connection
 lifecycle. Dataset partitioning, the model, and local training are imported
@@ -89,11 +89,57 @@ def validate_cuda_runtime() -> None:
 
 
 def validate_configuration() -> None:
-    # Hospital C is intentionally not enabled in this first integration slice.
-    if HOSPITAL not in {"A", "B"}:
-        raise ValueError(
-            f"AB_BASE supports only HOSPITAL=A or B, received {HOSPITAL!r}"
-        )
+    if HOSPITAL not in {"A", "B", "C"}:
+        raise ValueError(f"Unsupported HOSPITAL={HOSPITAL!r}")
+
+
+def wait_for_mode1a_training_admission() -> None:
+    """Keep Hospital C outside runtime registration until run-bound ALLOW."""
+
+    if HOSPITAL != "C":
+        return
+
+    last_reason = None
+    while True:
+        try:
+            response = requests.get(f"{HUB_URL}/status", timeout=5)
+            response.raise_for_status()
+            experiment = response.json().get("experiment") or {}
+            training = experiment.get("training") or {}
+            model_run_id = str(experiment.get("model_run_id") or "")
+            admitted_run_id = str(
+                training.get("guest_admission_run_id") or ""
+            )
+            decision_id = training.get("guest_admission_decision_id")
+
+            if (
+                experiment.get("status") == "running"
+                and training.get("status") == "running"
+                and model_run_id
+                and admitted_run_id == model_run_id
+                and decision_id
+            ):
+                log(
+                    "run-bound guest admission observed: "
+                    f"run_id={model_run_id} decision_id={decision_id}"
+                )
+                return
+
+            reason = (
+                f"experiment={experiment.get('status')} "
+                f"training={training.get('status')} "
+                f"run={model_run_id or '-'}"
+            )
+            if reason != last_reason:
+                log(f"waiting for Mode 1A admission: {reason}")
+                last_reason = reason
+        except Exception as exc:
+            reason = f"{type(exc).__name__}:{exc}"
+            if reason != last_reason:
+                log(f"waiting for Mode 1A admission: {reason}")
+                last_reason = reason
+
+        time.sleep(HUB_REGISTER_RETRY_INTERVAL)
 
 
 def partition_metadata(counts: Dict[int, int]) -> Dict[str, Any]:
@@ -114,7 +160,6 @@ def partition_metadata(counts: Dict[int, int]) -> Dict[str, Any]:
         },
         "class_counts": {str(key): value for key, value in counts.items()},
         "flower_server": SERVER,
-        "phase": "AB_BASE",
     }
 
 
@@ -123,7 +168,7 @@ def register_with_hub(counts: Dict[int, int]) -> None:
         "run_id": RUN_ID,
         "org_id": ORG_ID,
         "org_label": f"Hospital {HOSPITAL}",
-        "data_partition": 0 if HOSPITAL == "A" else 1,
+        "data_partition": {"A": 0, "B": 1, "C": 2}[HOSPITAL],
         "metadata": partition_metadata(counts),
     }
 
@@ -153,7 +198,7 @@ class FlowerClient(fl.client.NumPyClient):
         self.model = Net().to(DEVICE)
 
         log(
-            f"validated AB_BASE partition loaded: device={DEVICE} "
+            f"validated PathMNIST partition loaded: device={DEVICE} "
             f"profile={PATHMNIST_PARTITION_PROFILE} "
             f"seed={PATHMNIST_PARTITION_SEED} "
             f"samples={len(self.train_loader.dataset)} "
@@ -179,7 +224,6 @@ class FlowerClient(fl.client.NumPyClient):
             {
                 "hospital": HOSPITAL,
                 "org_id": ORG_ID,
-                "phase": "AB_BASE",
                 "data_partition_profile": PATHMNIST_PARTITION_PROFILE,
                 "train_loss": float(loss),
                 "train_accuracy": float(accuracy),
@@ -191,6 +235,7 @@ def main() -> None:
     validate_configuration()
     validate_cuda_runtime()
     client = FlowerClient()
+    wait_for_mode1a_training_admission()
     register_with_hub(client.counts)
 
     log(f"attempting Flower connection: server={SERVER}")

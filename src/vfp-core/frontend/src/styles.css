@@ -923,10 +923,23 @@ main {
   background: #f8fafb;
   border: 1px solid #dfe8ec;
   border-radius: 17px;
+  cursor: pointer;
   min-height: 194px;
   padding: 17px;
   position: relative;
+  text-align: left;
   transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.scenario-card:not(.selected):hover {
+  border-color: #b9d7d3;
+  box-shadow: 0 8px 18px rgba(23, 140, 130, 0.08);
+  transform: translateY(-1px);
+}
+
+.scenario-card:focus-visible {
+  outline: 3px solid rgba(23, 140, 130, 0.24);
+  outline-offset: 3px;
 }
 
 .scenario-card.selected {

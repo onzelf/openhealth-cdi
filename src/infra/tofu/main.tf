@@ -89,6 +89,11 @@ variable "org_b_id" {
    default = "org://HospitalB" 
 }
 
+variable "org_c_id" {
+  type    = string
+  default = "org://HospitalC"
+}
+
 variable "issuer_mtls_port" {
   type = number
   default     = 9443
@@ -607,7 +612,6 @@ resource "docker_container" "flower_server" {
     "VERIFY_TLS=0",
     "FLOWER_ROUNDS=${var.flower_rounds}",
     "MIN_CLIENTS=2",
-    "PHASE=AB_BASE",
     "DEVICE=cpu",
     "TRAIN_FRACTION=${var.train_fraction}",
     "CANCER_SAMPLES_PER_AB_HOSPITAL=${var.cancer_samples_per_ab_hospital}",
@@ -728,6 +732,40 @@ resource "docker_container" "flower_client_b" {
 
   
 
+# Flower Client - Hospital C
+# Hospital C is the data source. Charlie remains the sponsored guest principal.
+resource "docker_container" "flower_client_c" {
+  name  = "flower-client-c"
+  image = docker_image.flower_client.name
+  gpus  = "all"
+
+  networks_advanced {
+    name = docker_network.fc.name
+  }
+
+  env = [
+    "HOSPITAL=C",
+    "ORG_ID=${var.org_c_id}",
+    "RUN_ID=${var.run_id}",
+    "HUB_URL=http://fc-hub:8080",
+    "SERVER_ADDRESS=flower-server:8080",
+    "LOCAL_EPOCHS=${var.local_epochs}",
+    "LEARNING_RATE=${var.learning_rate}",
+    "BATCH_SIZE=${var.batch_size}",
+    "TRAIN_FRACTION=${var.train_fraction}",
+    "CANCER_SAMPLES_PER_AB_HOSPITAL=${var.cancer_samples_per_ab_hospital}",
+    "PATHMNIST_PARTITION_PROFILE=${var.pathmnist_partition_profile}",
+    "PATHMNIST_PARTITION_SEED=${var.pathmnist_partition_seed}",
+    "MEDMNIST_ROOT=/tmp/medmnist",
+    "DEVICE=cuda",
+  ]
+
+  depends_on = [docker_container.flower_server]
+  must_run   = true
+  restart    = "unless-stopped"
+}
+
+
 # -------------------------------------------------------------------
 # Outputs
 # -------------------------------------------------------------------
@@ -741,6 +779,10 @@ output "client_a_container" {
 
 output "client_b_container" {
   value = docker_container.flower_client_b.name
+}
+
+output "client_c_container" {
+  value = docker_container.flower_client_c.name
 }
 
 
