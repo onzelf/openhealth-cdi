@@ -379,6 +379,7 @@ class MintReq(BaseModel):
     envelope_id: str = Field(..., min_length=1, description="Active federation envelope bound into the ECT")
     sub: str = Field(..., min_length=1)
     actor_type: str = Field(..., min_length=1)
+    sponsors: Optional[List[str]] = None
     nbf: str
     exp: str
 
@@ -750,6 +751,119 @@ def load_active_envelope(envelope_id: str) -> Dict[str, Any]:
     return envelope
 
 
+def _sponsorship_validation_reason(
+    cap_profiles: Any,
+    sponsors_claim: Any,
+    org_iss: str,
+    envelope: Dict[str, Any],
+) -> Optional[str]:
+    if not isinstance(cap_profiles, list) or any(
+        not isinstance(profile, str) or not profile
+        for profile in cap_profiles
+    ):
+        return "sponsorship_profiles_invalid"
+
+    if sponsors_claim is None:
+        sponsors = []
+    elif isinstance(sponsors_claim, list):
+        sponsors = sponsors_claim
+    else:
+        return "sponsorship_claim_invalid"
+
+    if any(
+        not isinstance(sponsor, str)
+        or re.fullmatch(
+            r"org://[A-Za-z0-9][A-Za-z0-9._-]*",
+            sponsor,
+        ) is None
+        for sponsor in sponsors
+    ):
+        return "sponsorship_sponsor_invalid"
+
+    if len(set(sponsors)) != len(sponsors):
+        return "sponsorship_duplicate_sponsor"
+
+    participant_orgs = {
+        str(participant.get("org"))
+        for participant in envelope.get("participants", [])
+        if isinstance(participant, dict) and participant.get("org")
+    }
+
+    rules = _policy.get("sponsorship_rules", {})
+    if not isinstance(rules, dict):
+        return "sponsorship_policy_invalid"
+
+    authority = _policy.get("sponsorship_authority", {})
+    if not isinstance(authority, dict):
+        return "sponsorship_policy_invalid"
+
+    eligible_sponsors = authority.get("eligible_sponsor_organizations")
+    if not isinstance(eligible_sponsors, list) or any(
+        not isinstance(sponsor, str) or not sponsor
+        for sponsor in eligible_sponsors
+    ):
+        return "sponsorship_policy_invalid"
+
+    eligible_sponsor_set = set(eligible_sponsors)
+    require_active_envelope_participation = authority.get(
+        "require_active_envelope_participation"
+    )
+    if require_active_envelope_participation is not True:
+        return "sponsorship_policy_invalid"
+
+    for profile in cap_profiles:
+        rule = rules.get(profile)
+
+        # No rule means this profile is explicitly unsponsored.
+        # Every profile carried by a multi-profile ECT must be satisfied.
+        if rule is None:
+            if sponsors:
+                return "sponsorship_not_permitted"
+            continue
+
+        if not isinstance(rule, dict):
+            return "sponsorship_policy_invalid"
+
+        if rule.get("required") is True and not sponsors:
+            return "sponsorship_required"
+
+        min_sponsors = rule.get("min_sponsors")
+        if min_sponsors is not None:
+            if (
+                not isinstance(min_sponsors, int)
+                or isinstance(min_sponsors, bool)
+                or min_sponsors < 0
+            ):
+                return "sponsorship_policy_invalid"
+            if len(sponsors) < min_sponsors:
+                return "sponsorship_cardinality"
+
+        max_sponsors = rule.get("max_sponsors")
+        if max_sponsors is not None:
+            if (
+                not isinstance(max_sponsors, int)
+                or isinstance(max_sponsors, bool)
+                or max_sponsors < 0
+            ):
+                return "sponsorship_policy_invalid"
+            if len(sponsors) > max_sponsors:
+                return "sponsorship_cardinality"
+
+        if rule.get("sponsor_type") != "founding_member":
+            return "sponsorship_policy_invalid"
+
+        if any(sponsor not in eligible_sponsor_set for sponsor in sponsors):
+            return "sponsorship_not_eligible"
+
+        if any(sponsor not in participant_orgs for sponsor in sponsors):
+            return "sponsorship_not_envelope_participant"
+
+    if sponsors and org_iss not in sponsors:
+        return "sponsorship_issuer_not_in_set"
+
+    return None
+
+
 @app.post("/mint_ect", response_model=MintResp)
 def mint_ect(request: Request, req: MintReq):
     org_iss = _minting_org(request)
@@ -771,6 +885,16 @@ def mint_ect(request: Request, req: MintReq):
         raise HTTPException(400, "ect_invalid_time_window")
 
     cap_profiles = list(dict.fromkeys(req.cap_profiles))
+    sponsors = list(req.sponsors or [])
+    sponsorship_reason = _sponsorship_validation_reason(
+        cap_profiles,
+        sponsors,
+        org_iss,
+        envelope,
+    )
+    if sponsorship_reason:
+        raise HTTPException(400, sponsorship_reason)
+
     caps = pick_caps(_policy, cap_profiles)
     if not caps:
         raise HTTPException(400, "selected profiles produce empty capability set")
@@ -795,6 +919,9 @@ def mint_ect(request: Request, req: MintReq):
         "cap_profiles": cap_profiles,
         "cap": caps,
     }
+    if sponsors:
+        payload["sponsors"] = sponsors
+
     headers = {"alg": _alg, "kid": ORG_KEY_KID, "typ": "JWT"}
     ect_jws = jwt.encode(payload, _org_priv_pem, algorithm=_alg, headers=headers)
     return MintResp(ect_jws=ect_jws, policy_hash=_policy_hash, alg=_alg, kid=ORG_KEY_KID)
@@ -843,6 +970,7 @@ def emit_decision_record(
         "sub": identity.get("sub"),
         "actor_type": identity.get("actor_type"),
         "org_iss": identity.get("org_iss"),
+        "sponsors": identity.get("sponsors", []),
         "cap_profiles": identity.get("cap_profiles", []),
         "requested_action": body.action,
         "requested_purpose": body.purpose,
@@ -978,6 +1106,22 @@ async def _probe_impl(
             "ect_exp_exceeds_envelope",
         )
 
+    cap_profiles = ect.get("cap_profiles")
+    sponsors_claim = ect.get("sponsors")
+    sponsorship_reason = _sponsorship_validation_reason(
+        cap_profiles,
+        sponsors_claim,
+        str(ect.get("org_iss") or ""),
+        envelope,
+    )
+    if sponsorship_reason:
+        return _bench_return(
+            token_ms, None, t0, False,
+            sponsorship_reason,
+        )
+
+    verified_sponsors = list(sponsors_claim or [])
+
     # Preserve identity only after the ECT has passed the complete governed
     # validation path. Decision evidence consumes these already-verified claims
     # and must not perform a second token verification.
@@ -985,7 +1129,8 @@ async def _probe_impl(
         "sub": ect.get("sub"),
         "actor_type": ect.get("actor_type"),
         "org_iss": ect.get("org_iss"),
-        "cap_profiles": list(ect.get("cap_profiles") or []),
+        "sponsors": verified_sponsors,
+        "cap_profiles": list(cap_profiles),
     })
 
     # 2) DPoP

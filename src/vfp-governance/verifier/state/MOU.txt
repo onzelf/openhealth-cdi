@@ -3,7 +3,7 @@ OPENHEALTH PATHMNIST A+B RESEARCH COLLABORATION
 Proof-of-Concept Constitutional Agreement
 
 Document ID: MOU-OPENHEALTH-PATHMNIST-AB
-Version: 2.2-draft
+Version: 2.3-draft
 Status: Research proof of concept; not for clinical use
 Parties: Hospital A and Hospital B
 Referenced dataset: PathMNIST
@@ -161,13 +161,13 @@ AB-GUEST-03
 Guest contribution does not create founding membership, quorum rights, model custody rights, model-query rights, or any other authority not separately granted.
 
 AB-GUEST-04
-For a singly sponsored human guest, issuance of the authorization by the sponsoring founding hospital constitutes the sponsorship assertion when the authorization identifies the pre-declared guest participation grade.
+A guest authorization shall explicitly identify its sponsoring founding hospital. The GUEST CONTRIBUTOR grade requires exactly one sponsoring founding hospital; sponsorship shall not be inferred from the identity of the issuer alone.
 
 AB-GUEST-05
 The institution associated with a guest contribution remains the provenance source of the contributed data. Sponsorship does not transfer custody or ownership of that data to the sponsoring hospital.
 
 AB-AGENT-01
-The collaboration may admit a non-human computational participant only under an explicitly declared participation grade and explicit sponsorship by one or more accountable founding hospitals.
+The collaboration may admit a non-human computational participant only under an explicitly declared participation grade and explicit sponsorship by accountable founding hospitals. The AGENT EVALUATOR grade requires at least two sponsoring founding hospitals.
 
 AB-AGENT-02
 A non-human participant cannot itself bear accountability. Its accountability path shall terminate in the human or legal parties that sponsor its admission.
@@ -251,7 +251,7 @@ Delegation shall not permit privilege amplification. The sponsoring hospital sha
 11. EVIDENCE AND ACCOUNTABILITY
 
 AB-EVIDENCE-01
-The collaboration shall retain sufficient evidence to determine who issued an authorization, to whom it was granted, what it permitted, for which collaboration it was valid, and for how long.
+The collaboration shall retain sufficient evidence to determine who issued an authorization, to whom it was granted, which sponsoring organizations were asserted when sponsorship is required, what it permitted, for which collaboration it was valid, and for how long.
 
 AB-EVIDENCE-02
 Each evaluated request shall produce an auditable decision indicating whether it was allowed or refused and the reason for that decision.
@@ -274,7 +274,7 @@ The evidence shall be sufficient to distinguish at least:
 
 
 AB-EVIDENCE-06
-An admission decision shall preserve sufficient information to identify the participation grade or capability profile under which the participant was admitted.
+An admission decision shall preserve sufficient information to identify the participation grade or capability profile under which the participant was admitted and the verified sponsoring organizations when sponsorship is required.
 
 AB-EVIDENCE-07
 For federated training, one admission decision may bind a participant to one bounded model run. Internal protocol exchanges within that run inherit the admission and do not require independent admission decisions.
@@ -286,7 +286,7 @@ Interactive model use and other independently governed operations shall be evalu
 12. CHANGE CONTROL
 
 AB-CHANGE-01
-A change to the participating hospitals, reserved tissue classes, model custody, research roles, authorization scope, contextual binding, issuer authority, or delegation rules is a constitutional change.
+A change to the participating hospitals, participation grades, sponsorship rules, reserved tissue classes, model custody, research roles, authorization scope, contextual binding, issuer authority, or delegation rules is a constitutional change.
 
 AB-CHANGE-02
 A constitutional change shall require corresponding updates to this Memorandum and to the machine-readable constitution and executable policy derived from it.

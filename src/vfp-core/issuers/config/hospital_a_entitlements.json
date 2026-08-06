@@ -6,5 +6,10 @@
   },
   "guest_institutions": {
     "Charlie": "org://HospitalC"
+  },
+  "sponsors": {
+    "Charlie": [
+      "org://HospitalA"
+    ]
   }
 }

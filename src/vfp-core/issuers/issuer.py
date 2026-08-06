@@ -152,6 +152,18 @@ def mint(req: MintReq):
             f"entitlement_profile_not_configured:{profile}",
         )
 
+    # Sponsorship is issuer-owned governance state. The caller cannot select it.
+    sponsors = (MEMBER_ENTITLEMENTS.get("sponsors") or {}).get(subject, [])
+    if not isinstance(sponsors, list) or any(
+        not isinstance(sponsor, str) or not sponsor.strip()
+        for sponsor in sponsors
+    ):
+        raise HTTPException(
+            500,
+            f"invalid_sponsor_assignment:{subject}",
+        )
+    sponsors = [sponsor.strip() for sponsor in sponsors]
+
     holder_pub_b64 = m["pub_b64"]
 
     # Default validity window (1h) if not provided
@@ -168,6 +180,7 @@ def mint(req: MintReq):
                 "envelope_id": req.envelope_id,
                 "sub": m["sub"],
                 "actor_type": "human",
+                "sponsors": sponsors,
                 "nbf": nbf,
                 "exp": exp,
             },

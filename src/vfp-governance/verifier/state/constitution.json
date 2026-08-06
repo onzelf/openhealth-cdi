@@ -1,11 +1,11 @@
 {
   "constitution": {
     "document_id": "CONST-OPENHEALTH-PATHMNIST-AB",
-    "version": "2.2-draft",
+    "version": "2.3-draft",
     "status": "proof_of_concept",
     "source_mou": {
       "document_id": "MOU-OPENHEALTH-PATHMNIST-AB",
-      "version": "2.2-draft",
+      "version": "2.3-draft",
       "file": "MOU.txt"
     },
     "research_collaboration": {
@@ -241,7 +241,11 @@
           "AB-GUEST-03",
           "AB-GUEST-04",
           "AB-GUEST-05"
-        ]
+        ],
+        "explicit_sponsorship_required": true,
+        "minimum_sponsors": 1,
+        "maximum_sponsors": 1,
+        "sponsor_type": "founding_member"
       },
       "agent_evaluator": {
         "actor_type": "agent",
@@ -256,7 +260,9 @@
           "AB-AGENT-02",
           "AB-AGENT-03",
           "AB-AGENT-04"
-        ]
+        ],
+        "minimum_sponsors": 2,
+        "sponsor_type": "founding_member"
       }
     },
     "authorization_context": {
@@ -290,7 +296,9 @@
         "AB-ISSUER-03",
         "AB-ISSUER-04",
         "AB-ISSUER-05"
-      ]
+      ],
+      "sponsorship_assignment_is_issuer_owned": true,
+      "caller_may_not_select_sponsors": true
     },
     "holder_assurance": {
       "holder_binding_required": true,
@@ -325,6 +333,7 @@
         "issuer",
         "holder",
         "research_role_or_capability",
+        "sponsoring_organizations_when_required",
         "participation_grade_or_capability_profile",
         "authorized_scope",
         "approved_research_collaboration",
@@ -336,6 +345,7 @@
         "requester_binding_result",
         "participant_identity",
         "issuing_or_sponsoring_authority",
+        "verified_sponsoring_organizations_when_required",
         "participation_grade_or_capability_profile",
         "declared_purpose",
         "requested_action",
