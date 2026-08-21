@@ -153,9 +153,9 @@ jq -e \
   || fail "Other-tissue reader operation does not match the agreed PathMNIST scope"
 
 jq -e \
-  '.caveats.reserved_pathology_labels | index("debris") != null' \
+  '.caveats.reserved_pathology_labels | index("background") != null' \
   "${POLICY_JSON}" >/dev/null \
-  || fail "policy.json does not declare debris as reserved"
+  || fail "policy.json does not declare Background tissue as reserved"
 
 pass "Policy capset and PathMNIST tissue scopes are coherent"
 
@@ -373,12 +373,12 @@ run_probe \
   "${PUB_B64}"
 
 run_probe \
-  "UC-02 reserved debris request" \
+  "UC-02 reserved background request" \
   "false" \
   "reserved_tissue" \
   "${ENVELOPE_ID}" \
   "${ENVELOPE_ID}" \
-  '["debris"]' \
+  '["background"]' \
   "${PRIV_HEX}" \
   "${PUB_B64}"
 
@@ -401,7 +401,7 @@ run_probe \
   "envelope_mismatch" \
   "${OTHER_ENVELOPE_ID}" \
   "${OTHER_ENVELOPE_ID}" \
-  '["background","lymphocytes"]' \
+  '["mucus","lymphocytes"]' \
   "${PRIV_HEX}" \
   "${PUB_B64}"
 
@@ -411,7 +411,7 @@ run_probe \
   "dpop_envelope_mismatch" \
   "${ENVELOPE_ID}" \
   "${OTHER_ENVELOPE_ID}" \
-  '["background","lymphocytes"]' \
+  '["mucus","lymphocytes"]' \
   "${PRIV_HEX}" \
   "${PUB_B64}"
 
@@ -431,7 +431,7 @@ run_probe \
   "dpop_binding_mismatch" \
   "${ENVELOPE_ID}" \
   "${ENVELOPE_ID}" \
-  '["background","lymphocytes"]' \
+  '["mucus","lymphocytes"]' \
   "${INTRUDER_PRIV_HEX}" \
   "${INTRUDER_PUB_B64}"
 

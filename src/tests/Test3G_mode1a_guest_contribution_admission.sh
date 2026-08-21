@@ -32,7 +32,7 @@ done
 
 ALL_TISSUES='[
   "adipose",
-  "background",
+  "debris",
   "lymphocytes",
   "mucus",
   "smooth_muscle",
@@ -124,9 +124,9 @@ ALLOW_ECT_HASH="$(jq -r '.presented_ect_sha256 // empty' "${ALLOW_RECORD}")"
 
 pass "Charlie passed only through the guest contribution aperture"
 
-section "3. Same ECT cannot contribute reserved debris"
+section "3. Same ECT cannot contribute reserved tissue background"
 
-DENY_FILE="${TMP_DIR}/guest-deny-debris.json"
+DENY_FILE="${TMP_DIR}/guest-deny-background.json"
 DENY_STATUS="$(
     curl -sS -o "${DENY_FILE}" -w '%{http_code}' \
         -X POST "${HUB_URL}/mode1a/guest/contribution/admission" \
@@ -138,7 +138,7 @@ DENY_STATUS="$(
                 '{
                     principal: $principal,
                     envelope_id: $envelope,
-                    requested_tissues: ["debris"]
+                    requested_tissues: ["background"]
                 }'
         )"
 )"
@@ -153,11 +153,11 @@ jq -e \
      and .admission.reason == "reserved_tissue"
      and .executed == false' \
     "${DENY_FILE}" >/dev/null ||
-    fail "Debris did not produce reserved_tissue DENY"
+    fail "Background did not produce reserved_tissue DENY"
 
 DENY_DECISION_ID="$(jq -r '.admission.decision_id // empty' "${DENY_FILE}")"
 DENY_RECORD="${DECISIONS_DIR}/${DENY_DECISION_ID}.json"
-[[ -s "${DENY_RECORD}" ]] || fail "Missing signed debris DENY evidence"
+[[ -s "${DENY_RECORD}" ]] || fail "Missing signed Background tissue DENY evidence"
 
 DENY_ECT_HASH="$(jq -r '.presented_ect_sha256 // empty' "${DENY_RECORD}")"
 [[ "${DENY_ECT_HASH}" == "${ALLOW_ECT_HASH}" ]] ||

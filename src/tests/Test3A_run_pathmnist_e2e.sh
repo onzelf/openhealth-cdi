@@ -492,8 +492,8 @@ call_predict \
   Bob "${ECT_B}" Bob lymphocytes false capability_scope_exceeded
 
 call_predict \
-  "Audrey requests reserved debris" \
-  Audrey "${ECT_A}" Audrey debris false reserved_tissue
+  "Audrey requests reserved background" \
+  Audrey "${ECT_A}" Audrey background false reserved_tissue
 
 call_predict \
   "Audrey ECT is presented with Bob's DPoP" \

@@ -3,7 +3,7 @@ OPENHEALTH PATHMNIST A+B RESEARCH COLLABORATION
 Proof-of-Concept Constitutional Agreement
 
 Document ID: MOU-OPENHEALTH-PATHMNIST-AB
-Version: 2.3-draft
+Version: 2.4-draft
 Status: Research proof of concept; not for clinical use
 Parties: Hospital A and Hospital B
 Referenced dataset: PathMNIST
@@ -56,7 +56,7 @@ The collaboration uses the following PathMNIST tissue classes:
   8  colorectal adenocarcinoma epithelium
 
 AB-LABEL-02
-For governance and presentation, adipose, background, lymphocytes, mucus, smooth muscle, and normal colon mucosa are designated OTHER TISSUE CLASSES.
+For governance and presentation, adipose, debris, lymphocytes, mucus, smooth muscle, and normal colon mucosa are designated OTHER TISSUE CLASSES.
 
 AB-LABEL-03
 Cancer-associated stroma and colorectal adenocarcinoma epithelium are designated CANCER-ASSOCIATED TISSUE CLASSES.
@@ -65,19 +65,19 @@ AB-LABEL-04
 Cancer-associated stroma is tumor-associated stromal tissue. Colorectal adenocarcinoma epithelium is the malignant epithelial class. The collective designation “cancer-associated” shall not erase this distinction.
 
 AB-LABEL-05
-Debris is designated the RESERVED TISSUE CLASS for this collaboration.
+Background is designated the RESERVED TISSUE CLASS for this collaboration.
 
 
 4. TRAINING AND EVALUATION
 
 AB-TRAIN-01
-The authorized training scope comprises all PathMNIST tissue classes except debris.
+The authorized training scope comprises all PathMNIST tissue classes except background.
 
 AB-TRAIN-02
-Debris shall be removed from the local training data before federated training begins.
+background shall be removed from the local training data before federated training begins.
 
 AB-TRAIN-03
-Debris shall not be included in the governed evaluation results used to describe the research collaboration.
+background shall not be included in the governed evaluation results used to describe the research collaboration.
 
 AB-TRAIN-04
 The exact allocation of samples, random seeds, optimization method, number of rounds, computing equipment, and similar implementation choices are operational research parameters rather than constitutional rights.
@@ -134,7 +134,7 @@ AB-QUERY-06
 The presence of a tissue class in the trained model does not by itself create a right to query that class.
 
 AB-QUERY-07
-Any request that includes debris shall be refused because debris is outside the authorized learning and query scope of the collaboration.
+Any request that includes background shall be refused because background is outside the authorized learning and query scope of the collaboration.
 
 AB-QUERY-08
 A request containing both authorized and unauthorized tissue classes shall be refused as submitted rather than silently reduced or rewritten.
@@ -209,7 +209,7 @@ AB-ISSUER-03
 An issuer shall not grant a broader action, purpose, tissue scope, collaboration context, audience, or validity period than its own authority permits.
 
 AB-ISSUER-04
-No issuer may grant access to debris.
+No issuer may grant access to background.
 
 AB-ISSUER-05
 The implementation shall preserve traceability between each research role, the corresponding capability, and the clauses of this Memorandum from which that capability is derived.

@@ -115,7 +115,7 @@ KYO_BIND_PAYLOAD = {
 
 PATHMNIST_QUERY_TISSUES = [
     "adipose",
-    "background",
+    "debris",
     "lymphocytes",
     "mucus",
     "smooth_muscle",
@@ -1898,7 +1898,7 @@ async def mode1a_guest_contribution_admission(
 
     unknown_tissues = sorted(
         set(requested_tissues)
-        - set(PATHMNIST_QUERY_TISSUES + ["debris"])
+        - set(PATHMNIST_QUERY_TISSUES + ["background"])
     )
     if unknown_tissues:
         raise HTTPException(
@@ -2020,7 +2020,7 @@ def user_inference(req: UserInferenceRequest) -> Dict[str, Any]:
     """Use the Hub-held ECT for governed user inference with fresh DPoP."""
     if req.run_id != RUN_ID:
         raise HTTPException(404, f"unknown_run:{req.run_id}")
-    if req.requested_tissue not in PATHMNIST_QUERY_TISSUES + ["debris"]:
+    if req.requested_tissue not in PATHMNIST_QUERY_TISSUES + ["background"]:
         raise HTTPException(400, f"unknown_tissue:{req.requested_tissue}")
 
     binding_state = selected_envelope_binding_state()

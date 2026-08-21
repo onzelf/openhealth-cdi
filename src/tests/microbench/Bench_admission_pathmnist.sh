@@ -11,9 +11,9 @@ set -euo pipefail
 #
 # Cases:
 #   BENCH_CASE=allow       -> mucus, expected ALLOW
-#   BENCH_CASE=deny_scope  -> background, expected capability_scope_exceeded
+#   BENCH_CASE=deny_scope  -> debris, expected capability_scope_exceeded
 #   BENCH_CASE=deny_pop    -> mucus with wrong holder key, expected dpop_binding_mismatch
-#   BENCH_CASE=deny_reserved -> debris, expected reserved_tissue
+#   BENCH_CASE=deny_reserved -> background, expected reserved_tissue
 #
 # Examples:
 #   BENCH_CASE=allow      NITER=1000 ./Bench_admission.sh <envelope-id>
@@ -109,7 +109,7 @@ case "$BENCH_CASE" in
     USE_BAD_HOLDER="false"
     ;;
   deny_scope)
-    REQUESTED_TISSUES='["background"]'
+    REQUESTED_TISSUES='["debris"]'
     EXPECT_ALLOW="false"
     EXPECT_REASON="capability_scope_exceeded"
     OUTPUT_TAG="deny_scope"
@@ -123,7 +123,7 @@ case "$BENCH_CASE" in
     USE_BAD_HOLDER="true"
     ;;
   deny_reserved)
-    REQUESTED_TISSUES='["debris"]'
+    REQUESTED_TISSUES='["background"]'
     EXPECT_ALLOW="false"
     EXPECT_REASON="reserved_tissue"
     OUTPUT_TAG="deny_reserved"
@@ -148,8 +148,8 @@ jq -e \
    and .ops[$op].action == "query_model"
    and .ops[$op].purpose == "approved_model_query"
    and (.ops[$op].scope.pathology_labels | index("mucus") != null)
-   and (.ops[$op].scope.pathology_labels | index("background") == null)
-   and (.caveats.reserved_pathology_labels | index("debris") != null)' \
+   and (.ops[$op].scope.pathology_labels | index("debris") == null)
+   and (.caveats.reserved_pathology_labels | index("background") != null)' \
   "$POLICY_JSON" >/dev/null || fail "Benchmark assumptions do not match current PathMNIST policy"
 
 CURL_HUB=(

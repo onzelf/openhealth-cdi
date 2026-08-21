@@ -191,7 +191,7 @@ jq -e \
     and .ops.submit_update_guest_contributor.purpose == "federated_training"
     and (
       .ops.submit_update_guest_contributor.scope.pathology_labels
-      | index("debris")
+      | index("background")
     ) == null
   ' "${POLICY_JSON}" >/dev/null \
   || fail "Guest-contributor policy profile is not the expected bounded training capability"
@@ -357,14 +357,14 @@ printf '%s' "${ECT}" |
     --expected-action "submit_update" \
     --expected-purpose "federated_training" \
     --require-tissue "adipose" \
-    --require-tissue "background" \
+    --require-tissue "debris" \
     --require-tissue "lymphocytes" \
     --require-tissue "mucus" \
     --require-tissue "smooth_muscle" \
     --require-tissue "normal_colon_mucosa" \
     --require-tissue "cancer_associated_stroma" \
     --require-tissue "colorectal_adenocarcinoma_epithelium" \
-    --forbid-tissue "debris" \
+    --forbid-tissue "background" \
     >"${TMP_DIR}/ect-inspection.json"
 
 cat "${TMP_DIR}/ect-inspection.json" | jq .

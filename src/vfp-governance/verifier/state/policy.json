@@ -1,5 +1,5 @@
 {
-  "version": "2.1",
+  "version": "2.2",
   "ops": {
     "join_pathmnist_ab_envelope": {
       "resource": "openhealth-pathmnist-ab",
@@ -18,7 +18,7 @@
       "scope": {
         "pathology_labels": [
           "adipose",
-          "background",
+          "debris",
           "lymphocytes",
           "mucus",
           "smooth_muscle",
@@ -42,7 +42,7 @@
       "scope": {
         "pathology_labels": [
           "adipose",
-          "background",
+          "debris",
           "lymphocytes",
           "mucus",
           "smooth_muscle",
@@ -66,7 +66,7 @@
       "scope": {
         "pathology_labels": [
           "adipose",
-          "background",
+          "debris",
           "lymphocytes",
           "mucus",
           "smooth_muscle",
@@ -95,7 +95,7 @@
       "scope": {
         "pathology_labels": [
           "adipose",
-          "background",
+          "debris",
           "lymphocytes",
           "mucus",
           "smooth_muscle",
@@ -116,7 +116,7 @@
       "scope": {
         "pathology_labels": [
           "adipose",
-          "background",
+          "debris",
           "lymphocytes",
           "mucus",
           "smooth_muscle",
@@ -214,7 +214,7 @@
       "envelope_id"
     ],
     "reserved_pathology_labels": [
-      "debris"
+      "background"
     ],
     "prohibitions": [
       "no_export_raw",
@@ -224,12 +224,12 @@
   },
   "meta": {
     "policy_id": "POL-OPENHEALTH-PATHMNIST-AB",
-    "manifest_id": "MOU-OPENHEALTH-PATHMNIST-AB-2.3",
+    "manifest_id": "MOU-OPENHEALTH-PATHMNIST-AB-2.4",
     "mou_file": "MOU.txt",
     "constitution_file": "constitution.json",
     "status": "proof_of_concept",
     "notes": [
-      "This policy is derived from MOU.txt: OPENHEALTH-PATHMNIST-AB version 2.3-draft.",
+      "This policy is derived from MOU.txt: OPENHEALTH-PATHMNIST-AB version 2.4-draft.",
       "The tuple compiler continues to resolve policy.cap_profiles into policy.ops.",
       "scope.pathology_labels contains canonical PathMNIST identifiers.",
       "The verifier must reject any request containing a label listed in caveats.reserved_pathology_labels.",

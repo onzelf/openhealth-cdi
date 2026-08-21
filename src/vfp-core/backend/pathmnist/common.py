@@ -17,9 +17,9 @@ from torch.utils.data import DataLoader, Dataset, Subset
 
 SEED = 20260702
 NUM_CLASSES = 9
-STORY_NON_CANCER_CLASSES = [0, 1, 3, 4, 5, 6]
+STORY_NON_CANCER_CLASSES = [0, 2, 3, 4, 5, 6]
 STORY_CANCER_CLASSES = [7, 8]
-IGNORED_CLASSES = {2}
+IGNORED_CLASSES = {1}
 ACTIVE_CLASSES = STORY_NON_CANCER_CLASSES + STORY_CANCER_CLASSES
 CLASS_NAMES = [
     INFO["pathmnist"]["label"][str(label)]
@@ -48,13 +48,13 @@ if CANCER_SAMPLES_PER_AB_HOSPITAL < 1:
 PARTITION_HOSPITALS = ("A", "B", "C")
 PARTITION_PROFILES: Dict[str, Dict[int, Dict[str, int]]] = {
     "COMPLEMENTARY_ABC_V1": {
-        0: {"A": 25, "B": 25, "C": 50},
-        1: {"A": 25, "B": 25, "C": 50},
-        2: {"A": 0, "B": 0, "C": 0},
-        3: {"A": 10, "B": 10, "C": 80},
-        4: {"A": 25, "B": 25, "C": 50},
-        5: {"A": 25, "B": 25, "C": 50},
-        6: {"A": 25, "B": 25, "C": 50},
+        0: {"A": 30, "B": 30, "C": 40},
+        1: {"A": 0, "B": 0, "C": 0},
+        2: {"A": 30, "B": 30, "C": 40},
+        3: {"A": 30, "B": 30, "C": 40},
+        4: {"A": 30, "B": 30, "C": 40},
+        5: {"A": 30, "B": 30, "C": 40},
+        6: {"A": 30, "B": 30, "C": 40},
         7: {"A": 5, "B": 5, "C": 90},
         8: {"A": 5, "B": 5, "C": 90},
     },

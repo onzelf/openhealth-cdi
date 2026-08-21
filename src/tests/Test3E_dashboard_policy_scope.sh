@@ -321,7 +321,7 @@ run_case \
     ""
 
 run_case \
-    "background" \
+    "debris" \
     "false" \
     "capability_scope_exceeded"
 
@@ -331,7 +331,7 @@ run_case \
     "capability_scope_exceeded"
 
 run_case \
-    "debris" \
+    "background" \
     "false" \
     "reserved_tissue"
 

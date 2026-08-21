@@ -1,11 +1,11 @@
 {
   "constitution": {
     "document_id": "CONST-OPENHEALTH-PATHMNIST-AB",
-    "version": "2.3-draft",
+    "version": "2.4-draft",
     "status": "proof_of_concept",
     "source_mou": {
       "document_id": "MOU-OPENHEALTH-PATHMNIST-AB",
-      "version": "2.3-draft",
+      "version": "2.4-draft",
       "file": "MOU.txt"
     },
     "research_collaboration": {
@@ -93,7 +93,7 @@
       },
       "other_tissue_classes": [
         "adipose",
-        "background",
+        "debris",
         "lymphocytes",
         "mucus",
         "smooth_muscle",
@@ -104,7 +104,7 @@
         "colorectal_adenocarcinoma_epithelium"
       ],
       "reserved_tissue_classes": [
-        "debris"
+        "background"
       ],
       "mou_rules": [
         "AB-LABEL-01",
@@ -117,7 +117,7 @@
     "training_and_evaluation": {
       "authorized_tissue_classes": [
         "adipose",
-        "background",
+        "debris",
         "lymphocytes",
         "mucus",
         "smooth_muscle",
@@ -126,7 +126,7 @@
         "colorectal_adenocarcinoma_epithelium"
       ],
       "reserved_tissue_effects": {
-        "debris": [
+        "background": [
           "excluded_from_local_training_partitions",
           "excluded_from_governed_story_evaluation",
           "outside_authorized_query_scope"
@@ -186,7 +186,7 @@
         "does_not_imply_access_to": [
           "cancer_associated_stroma",
           "colorectal_adenocarcinoma_epithelium",
-          "debris"
+          "background"
         ],
         "mou_rules": [
           "AB-QUERY-01",
@@ -204,7 +204,7 @@
           "colorectal_adenocarcinoma_epithelium"
         ],
         "does_not_imply_access_to": [
-          "debris"
+          "background"
         ],
         "mou_rules": [
           "AB-QUERY-01",
@@ -287,7 +287,7 @@
       "issuer_may_grant_only_authorized_roles": true,
       "issuer_authority_must_not_be_exceeded": true,
       "reserved_tissues_may_not_be_granted": [
-        "debris"
+        "background"
       ],
       "traceability_to_mou_required": true,
       "mou_rules": [

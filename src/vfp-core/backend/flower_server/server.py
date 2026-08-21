@@ -102,7 +102,7 @@ MODE1A_TRAINING_MIN_CLIENTS = 3
 MODE1A_GUEST_PRINCIPAL = "Charlie"
 MODE1A_GUEST_TISSUES = [
     "adipose",
-    "background",
+    "debris",
     "lymphocytes",
     "mucus",
     "smooth_muscle",
