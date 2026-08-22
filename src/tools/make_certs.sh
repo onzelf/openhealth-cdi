@@ -6,8 +6,31 @@ CERT_DIR="$(cd "$(dirname "$0")/.."; pwd)/vfp-governance/verifier/certs"
 mkdir -p "$CERT_DIR"
 cd "$CERT_DIR"
 
-echo "[make_certs] cleaning old material in $CERT_DIR"
-rm -v -f *.key *.crt *.csr *.p12 *.srl 2>/dev/null || true
+# Guard against Docker creating directories for missing bind-mounted files
+for f in \
+  ca.key ca.crt \
+  verifier.key verifier.crt \
+  hub.key hub.crt \
+  HospitalA-admin.key HospitalA-admin.crt \
+  HospitalB-admin.key HospitalB-admin.crt \
+  issuer-proxy.key issuer-proxy.crt
+do
+  if [[ -d "$f" ]]; then
+    echo "ERROR: expected certificate file is a directory: $CERT_DIR/$f" >&2
+    echo "Remove the bogus bind-mount directory before retrying." >&2
+    exit 1
+  fi
+done
+
+echo "[make_certs] cleaning TLS material in $CERT_DIR"
+rm -v -f \
+  ca.key ca.crt ca.srl \
+  verifier.key verifier.crt verifier.csr \
+  hub.key hub.crt hub.csr \
+  HospitalA-admin.key HospitalA-admin.crt HospitalA-admin.csr HospitalA-admin.p12 \
+  HospitalB-admin.key HospitalB-admin.crt HospitalB-admin.csr HospitalB-admin.p12 \
+  issuer-proxy.key issuer-proxy.crt issuer-proxy.csr \
+  2>/dev/null || true
 
 # --------------------------------------------
 # Parameters

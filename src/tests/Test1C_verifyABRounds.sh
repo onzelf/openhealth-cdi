@@ -98,7 +98,7 @@ with open(classes_path, newline="", encoding="utf-8") as handle:
         int(row["class_id"]): row
         for row in csv.DictReader(handle)
     }
-assert int(classes[2]["support"]) == 0, "label 2 must be unavailable"
+assert int(classes[1]["support"]) == 0, "label 1 must be unavailable"
 assert int(classes[7]["support"]) > 0
 assert int(classes[8]["support"]) > 0
 
@@ -115,7 +115,7 @@ for name in sorted(required):
     print(f"  {name}={metrics[-1][name]}")
 PY
 
-pass "Participants and unavailable label 2 verified"
+pass "Participants and unavailable label 1 verified"
 
 status="$(
   docker exec -i fc-hub python - <<'PY2'
