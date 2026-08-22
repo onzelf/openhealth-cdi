@@ -25,7 +25,7 @@ def main() -> None:
     assert abs(cancer_recall - 0.25) < 1e-12
     assert abs(cancer_f1 - 0.30) < 1e-12
 
-    # Label 2 is not part of any story aggregate.
+    # Label 1 is not part of any story aggregate.
     altered = recalls.copy()
     altered[1] = 1.0
     assert float(np.mean(altered[NON_CANCER])) == non_cancer_recall
