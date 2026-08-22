@@ -1,0 +1,105 @@
+{
+  "table": 6,
+  "purpose": "Matched analytical comparison between A+B control and governed A+B+C expansion",
+  "partition_profile": "COMPLEMENTARY_ABC_V1",
+  "active_classes": [
+    0,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8
+  ],
+  "reserved_classes": [
+    1
+  ],
+  "cancer_classes": [
+    7,
+    8
+  ],
+  "non_cancer_classes": [
+    0,
+    2,
+    3,
+    4,
+    5,
+    6
+  ],
+  "allocation_percent": {
+    "0": {
+      "A": 30,
+      "B": 30,
+      "C": 40
+    },
+    "1": {
+      "A": 0,
+      "B": 0,
+      "C": 0
+    },
+    "2": {
+      "A": 30,
+      "B": 30,
+      "C": 40
+    },
+    "3": {
+      "A": 30,
+      "B": 30,
+      "C": 40
+    },
+    "4": {
+      "A": 30,
+      "B": 30,
+      "C": 40
+    },
+    "5": {
+      "A": 30,
+      "B": 30,
+      "C": 40
+    },
+    "6": {
+      "A": 30,
+      "B": 30,
+      "C": 40
+    },
+    "7": {
+      "A": 5,
+      "B": 5,
+      "C": 90
+    },
+    "8": {
+      "A": 5,
+      "B": 5,
+      "C": 90
+    }
+  },
+  "envelope_id": "bdf5b500-8771-4555-9864-b81c96d06977",
+  "runs": [
+    {
+      "run_id": "local-pathmnist-ab-001",
+      "participants": [
+        "A",
+        "B"
+      ],
+      "role": "matched A+B control"
+    },
+    {
+      "run_id": "local-pathmnist-ab-002",
+      "participants": [
+        "A",
+        "B",
+        "C"
+      ],
+      "role": "governed A+B+C expansion"
+    }
+  ],
+  "notes": [
+    "Background class 1 was reserved/excluded.",
+    "Debris class 2 was active.",
+    "The A+B control contained 60% of each active non-cancer allocation and 10% of each cancer-related allocation.",
+    "A+B+C contained the full allocated set.",
+    "The earlier development A+B baseline was not used as the comparative reference because its training duration differed.",
+    "The two publication runs were compared under matched training conditions."
+  ]
+}

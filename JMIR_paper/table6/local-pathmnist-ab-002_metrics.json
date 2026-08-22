@@ -1,0 +1,17 @@
+{
+  "run_id": "local-pathmnist-ab-002",
+  "participants": [
+    "A",
+    "B",
+    "C"
+  ],
+  "metrics": {
+    "accuracy": 0.8643613,
+    "cancer_f1": 0.7112268,
+    "cancer_recall": 0.6739775,
+    "class_7_recall": 0.3990499,
+    "class_8_recall": 0.9489051,
+    "macro_recall": 0.8158684,
+    "non_cancer_recall": 0.8631653
+  }
+}
