@@ -1,11 +1,11 @@
 {
   "constitution": {
     "document_id": "CONST-OPENHEALTH-PATHMNIST-AB",
-    "version": "2.4-draft",
+    "version": "2.5-draft",
     "status": "proof_of_concept",
     "source_mou": {
       "document_id": "MOU-OPENHEALTH-PATHMNIST-AB",
-      "version": "2.4-draft",
+      "version": "2.5-draft",
       "file": "MOU.txt"
     },
     "research_collaboration": {
@@ -213,6 +213,15 @@
           "AB-QUERY-06",
           "AB-QUERY-08"
         ]
+      },
+      "derived_representation_reader": {
+        "description": "Research role limited to policy-authorized derivative representations produced through governed rebind.",
+        "source_consumption_rights_implied": false,
+        "permitted_derivative_representation": "blurred_image_with_qualitative_accuracy",
+        "mou_rules": [
+          "AB-AGENT-05",
+          "AB-AGENT-06"
+        ]
       }
     },
     "participation_grades": {
@@ -247,23 +256,32 @@
         "maximum_sponsors": 1,
         "sponsor_type": "founding_member"
       },
-      "agent_evaluator": {
+
+      "bounded_agent_participant": {
         "actor_type": "agent",
         "constitutional_member": false,
         "quorum_rights": false,
         "explicit_sponsorship_required": true,
         "accountability_terminus": "human_or_legal_sponsor",
-        "authority": "bounded_statistical_inquiry_or_evaluation",
-        "prediction_authority": false,
+        "authorized_operations": [
+          "bounded_inference",
+          "policy_authorized_rebind"
+        ],
+        "general_model_query_rights_implied": false,
+        "source_consumption_rights_implied": false,
+        "transformation_authority": "federation_policy_defined",
+        "minimum_sponsors": 2,
+        "sponsor_type": "founding_member",
         "mou_rules": [
           "AB-AGENT-01",
           "AB-AGENT-02",
           "AB-AGENT-03",
-          "AB-AGENT-04"
-        ],
-        "minimum_sponsors": 2,
-        "sponsor_type": "founding_member"
+          "AB-AGENT-04",
+          "AB-AGENT-05",
+          "AB-AGENT-06"
+        ]
       }
+
     },
     "authorization_context": {
       "principle": "Every authorization is valid only for the particular approved research collaboration for which it was issued.",

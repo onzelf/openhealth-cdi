@@ -114,13 +114,14 @@ section "1. Compiled sponsorship policy"
 
 jq -e '
   .sponsorship_rules["capset:pathmnist_guest_contributor"] as $g
-  | .sponsorship_rules["capset:pathmnist_agent_evaluator"] as $a
+  | .sponsorship_rules["capset:pathmnist_bounded_agent"] as $a
   | ($g.required == true)
     and ($g.min_sponsors == 1)
     and ($g.max_sponsors == 1)
     and ($g.sponsor_type == "founding_member")
     and ($a.required == true)
     and ($a.min_sponsors == 2)
+    and ($a.max_sponsors == 2)
     and ($a.sponsor_type == "founding_member")
     and (.sponsorship_authority.eligible_sponsor_organizations
          == ["org://HospitalA", "org://HospitalB"])

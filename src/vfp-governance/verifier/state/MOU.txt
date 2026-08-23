@@ -3,7 +3,7 @@ OPENHEALTH PATHMNIST A+B RESEARCH COLLABORATION
 Proof-of-Concept Constitutional Agreement
 
 Document ID: MOU-OPENHEALTH-PATHMNIST-AB
-Version: 2.4-draft
+Version: 2.5-draft
 Status: Research proof of concept; not for clinical use
 Parties: Hospital A and Hospital B
 Referenced dataset: PathMNIST
@@ -167,17 +167,22 @@ AB-GUEST-05
 The institution associated with a guest contribution remains the provenance source of the contributed data. Sponsorship does not transfer custody or ownership of that data to the sponsoring hospital.
 
 AB-AGENT-01
-The collaboration may admit a non-human computational participant only under an explicitly declared participation grade and explicit sponsorship by accountable founding hospitals. The AGENT EVALUATOR grade requires at least two sponsoring founding hospitals.
+The collaboration may admit a non-human computational participant only under an explicitly declared participation grade and explicit sponsorship by accountable founding hospitals. The BOUNDED AGENT PARTICIPANT grade requires at least two sponsoring founding hospitals.
 
 AB-AGENT-02
-A non-human participant cannot itself bear accountability. Its accountability path shall terminate in the human or legal parties that sponsor its admission.
+A non-human computational participant does not acquire founding membership, quorum rights, model custody rights, issuer authority, or any other federation authority not explicitly granted by its admission. Its accountability path shall terminate in the human or legal parties that sponsor its admission.
 
 AB-AGENT-03
-Admission grants a non-human participant only the bounded authority explicitly granted by its sponsored admission. Admission does not create autonomous agency.
+Admission grants a non-human computational participant only the bounded authority represented by its admitted capability. Runtime functions, available tools, execution strategy, or technical reachability shall not enlarge that authority.
 
 AB-AGENT-04
-An agent evaluator may be authorized for bounded statistical inquiry or evaluation without receiving prediction or general model-query authority.
+A bounded agent participant may be authorized to perform narrowly scoped model inference and a separately authorized rebind operation without receiving unrestricted model-query or source-consumption authority.
 
+AB-AGENT-05
+A rebind operation transforms a restricted source result into a derivative representation according to federation policy. The permitted transformation shall be established by federation governance and shall not be determined by the computational participant as an independent judgement that the source result is safe to release.
+
+AB-AGENT-06
+Source consumption and derivative consumption are separate governed relations. Authorization to consume a derivative representation shall not grant authority to consume the corresponding unrestricted source result, and shall be evaluated under a separate capability held by the recipient.
 
 7. AUTHORIZATION CONTEXT
 

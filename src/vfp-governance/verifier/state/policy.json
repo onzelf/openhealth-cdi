@@ -1,5 +1,5 @@
 {
-  "version": "2.2",
+  "version": "2.3",
   "ops": {
     "join_pathmnist_ab_envelope": {
       "resource": "openhealth-pathmnist-ab",
@@ -109,27 +109,61 @@
         "AB-TRAIN-03"
       ]
     },
-    "statistical_inquiry_agent_evaluator": {
+    "bounded_inference_agent": {
       "resource": "pathmnist-colon-pathology",
-      "action": "statistical_inquiry",
-      "purpose": "model_evaluation",
+      "action": "bounded_inference",
+      "purpose": "bounded_model_inference",
       "scope": {
         "pathology_labels": [
-          "adipose",
-          "debris",
-          "lymphocytes",
-          "mucus",
-          "smooth_muscle",
-          "normal_colon_mucosa",
           "cancer_associated_stroma",
           "colorectal_adenocarcinoma_epithelium"
         ]
       },
       "mou_rules": [
+        "AB-CUSTODY-05",
+        "AB-CUSTODY-06",
         "AB-AGENT-01",
         "AB-AGENT-02",
         "AB-AGENT-03",
         "AB-AGENT-04"
+      ]
+    },
+    "rebind_agent_derivative": {
+      "resource": "pathmnist-colon-pathology",
+      "action": "rebind",
+      "purpose": "policy_authorized_derivation",
+      "scope": {
+        "pathology_labels": [
+          "cancer_associated_stroma",
+          "colorectal_adenocarcinoma_epithelium"
+        ]
+      },
+      "flags": {
+        "derivative_representation": "blurred_image_with_qualitative_accuracy"
+      },
+      "mou_rules": [
+        "AB-AGENT-03",
+        "AB-AGENT-04",
+        "AB-AGENT-05",
+        "AB-AGENT-06"
+      ]
+    },
+    "consume_rebound_derivative": {
+      "resource": "pathmnist-derived-representation",
+      "action": "consume_derivative",
+      "purpose": "approved_derivative_consumption",
+      "scope": {
+        "pathology_labels": [
+          "cancer_associated_stroma",
+          "colorectal_adenocarcinoma_epithelium"
+        ]
+      },
+      "flags": {
+        "derivative_representation": "blurred_image_with_qualitative_accuracy"
+      },
+      "mou_rules": [
+        "AB-AGENT-05",
+        "AB-AGENT-06"
       ]
     },
     "query_model_other_tissue_reader": {
@@ -191,11 +225,19 @@
         "submit_update_guest_contributor"
       ]
     },
-    "capset:pathmnist_agent_evaluator": {
+
+    "capset:pathmnist_bounded_agent": {
       "cap": [
-        "statistical_inquiry_agent_evaluator"
+        "bounded_inference_agent",
+        "rebind_agent_derivative"
       ]
     },
+    "capset:pathmnist_derivative_reader": {
+      "cap": [
+        "consume_rebound_derivative"
+      ]
+    },
+
     "capset:pathmnist_other_tissue_reader": {
       "cap": [
         "query_model_other_tissue_reader"
@@ -224,12 +266,12 @@
   },
   "meta": {
     "policy_id": "POL-OPENHEALTH-PATHMNIST-AB",
-    "manifest_id": "MOU-OPENHEALTH-PATHMNIST-AB-2.4",
+    "manifest_id": "MOU-OPENHEALTH-PATHMNIST-AB-2.5",
     "mou_file": "MOU.txt",
     "constitution_file": "constitution.json",
     "status": "proof_of_concept",
     "notes": [
-      "This policy is derived from MOU.txt: OPENHEALTH-PATHMNIST-AB version 2.4-draft.",
+      "This policy is derived from MOU.txt: OPENHEALTH-PATHMNIST-AB version 2.5-draft.",
       "The tuple compiler continues to resolve policy.cap_profiles into policy.ops.",
       "scope.pathology_labels contains canonical PathMNIST identifiers.",
       "The verifier must reject any request containing a label listed in caveats.reserved_pathology_labels.",
@@ -251,12 +293,14 @@
       "max_sponsors": 1,
       "sponsor_type": "founding_member"
     },
-    "capset:pathmnist_agent_evaluator": {
-      "required": true,
-      "min_sponsors": 2,
-      "sponsor_type": "founding_member"
+    "capset:pathmnist_bounded_agent": {
+     "required": true,
+     "min_sponsors": 2,
+     "max_sponsors": 2,
+     "sponsor_type": "founding_member"
     }
   },
+
   "sponsorship_authority": {
     "eligible_sponsor_organizations": [
       "org://HospitalA",
