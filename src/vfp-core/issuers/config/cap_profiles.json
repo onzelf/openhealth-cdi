@@ -3,7 +3,8 @@
     "PATHMNIST_PARTICIPANT": "capset:pathmnist_hospital_a_participant",
     "PATHMNIST_OTHER_TISSUE_READER": "capset:pathmnist_other_tissue_reader",
     "PATHMNIST_CANCER_ASSOCIATED_READER": "capset:pathmnist_cancer_associated_reader",
-    "PATHMNIST_GUEST_CONTRIBUTOR": "capset:pathmnist_guest_contributor"
+    "PATHMNIST_GUEST_CONTRIBUTOR": "capset:pathmnist_guest_contributor",
+    "PATHMNIST_BOUNDED_AGENT": "capset:pathmnist_bounded_agent"
   },
   "org://HospitalB": {
     "PATHMNIST_PARTICIPANT": "capset:pathmnist_hospital_b_participant",

@@ -152,6 +152,16 @@ def mint(req: MintReq):
             f"entitlement_profile_not_configured:{profile}",
         )
 
+    # actor_type is issuer-attested metadata, not an authorization selector.
+    actor_type = str(
+        (MEMBER_ENTITLEMENTS.get("actor_types") or {}).get(subject, "human")
+    ).strip()
+    if actor_type not in {"human", "agent"}:
+        raise HTTPException(
+            500,
+            f"invalid_actor_type_assignment:{subject}",
+        )
+
     # Sponsorship is issuer-owned governance state. The caller cannot select it.
     sponsors = (MEMBER_ENTITLEMENTS.get("sponsors") or {}).get(subject, [])
     if not isinstance(sponsors, list) or any(
@@ -179,7 +189,7 @@ def mint(req: MintReq):
                 "cap_profiles": [cap_profile],
                 "envelope_id": req.envelope_id,
                 "sub": m["sub"],
-                "actor_type": "human",
+                "actor_type": actor_type,
                 "sponsors": sponsors,
                 "nbf": nbf,
                 "exp": exp,

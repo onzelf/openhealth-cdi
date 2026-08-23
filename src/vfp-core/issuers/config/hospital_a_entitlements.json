@@ -2,7 +2,11 @@
   "org": "org://HospitalA",
   "members": {
     "Audrey": "PATHMNIST_OTHER_TISSUE_READER",
-    "Charlie": "PATHMNIST_GUEST_CONTRIBUTOR"
+    "Charlie": "PATHMNIST_GUEST_CONTRIBUTOR",
+    "Hal": "PATHMNIST_BOUNDED_AGENT"
+  },
+  "actor_types": {
+    "Hal": "agent"
   },
   "guest_institutions": {
     "Charlie": "org://HospitalC"
@@ -10,6 +14,10 @@
   "sponsors": {
     "Charlie": [
       "org://HospitalA"
+    ],
+    "Hal": [
+      "org://HospitalA",
+      "org://HospitalB"
     ]
   }
 }

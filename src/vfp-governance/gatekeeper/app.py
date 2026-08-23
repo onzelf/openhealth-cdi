@@ -872,7 +872,8 @@ def mint_ect(request: Request, req: MintReq):
     actor_type = req.actor_type.strip()
     if not sub:
         raise HTTPException(400, "invalid_sub")
-    if actor_type != "human":
+    # actor_type is retained as attested metadata; authority comes from capabilities.
+    if actor_type not in {"human", "agent"}:
         raise HTTPException(400, "unsupported_actor_type")
 
     envelope = load_active_envelope(req.envelope_id)
