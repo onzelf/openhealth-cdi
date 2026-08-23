@@ -1,4 +1,4 @@
- terraform {
+terraform {
   required_providers {
     docker = {
       source  = "kreuzwerker/docker"
@@ -79,14 +79,14 @@ variable "pathmnist_partition_seed" {
   default     = 20260728
 }
 
-variable "org_a_id" { 
-  type    = string 
-  default = "org://HospitalA" 
+variable "org_a_id" {
+  type    = string
+  default = "org://HospitalA"
 }
 
-variable "org_b_id" { 
-   type = string
-   default = "org://HospitalB" 
+variable "org_b_id" {
+  type    = string
+  default = "org://HospitalB"
 }
 
 variable "org_c_id" {
@@ -95,8 +95,8 @@ variable "org_c_id" {
 }
 
 variable "issuer_mtls_port" {
-  type = number
-  default     = 9443
+  type    = number
+  default = 9443
 }
 
 variable "bench" {
@@ -113,6 +113,10 @@ locals {
 # -----------------------------
 resource "docker_network" "fc" {
   name = "fc"
+}
+
+resource "docker_network" "agent_edge" {
+  name = "agent-edge"
 }
 
 # -----------------------------
@@ -199,7 +203,7 @@ resource "docker_container" "verifier_app" {
     "FCAC_ENVELOPE_CHANNEL=fcac:envelopes:created",
     "REQUIRE_MTLS_HEADERS=true",
     "KYO_SESSION_TTL=1200",
-    "ENVELOPE_TTL=1209600",    
+    "ENVELOPE_TTL=1209600",
     "BENCH=${var.bench ? "1" : "0"}"
   ]
 
@@ -209,21 +213,21 @@ resource "docker_container" "verifier_app" {
     container_path = "/app/state"
   }
 
- volumes {
+  volumes {
     host_path      = "${local.repo_root}/vfp-governance/verifier/events"
     container_path = "/app/events"
   }
 
-   volumes {
-        host_path      = "${local.repo_root}/vfp-governance/verifier/certs"
-        container_path = "/app/verifier/certs"
-        read_only      = true
+  volumes {
+    host_path      = "${local.repo_root}/vfp-governance/verifier/certs"
+    container_path = "/app/verifier/certs"
+    read_only      = true
   }
 
-  ports { 
-    internal = 9000 
+  ports {
+    internal = 9000
     external = 9000
-    ip = "127.0.0.1"
+    ip       = "127.0.0.1"
   }
 
 
@@ -250,9 +254,9 @@ resource "docker_container" "verifier_proxy" {
   name  = "verifier-proxy"
   image = docker_image.verifier_proxy.name
 
-  networks_advanced { 
-     name = docker_network.fc.name 
-     aliases = ["verifier.local"]  
+  networks_advanced {
+    name    = docker_network.fc.name
+    aliases = ["verifier.local"]
   }
 
   ports {
@@ -354,10 +358,10 @@ resource "docker_container" "issuer_hospitala" {
 
 
   volumes {
-  volume_name    = docker_volume.issuer_registry_hospitala.name
-  container_path = "/vault/registry"
-  read_only      = false
- }
+    volume_name    = docker_volume.issuer_registry_hospitala.name
+    container_path = "/vault/registry"
+    read_only      = false
+  }
 
 
   volumes {
@@ -407,10 +411,10 @@ resource "docker_container" "issuer_hospitalb" {
   ]
 
   volumes {
-  volume_name    = docker_volume.issuer_registry_hospitalb.name
-  container_path = "/vault/registry"
-  read_only      = false
- }
+    volume_name    = docker_volume.issuer_registry_hospitalb.name
+    container_path = "/vault/registry"
+    read_only      = false
+  }
 
 
   volumes {
@@ -443,6 +447,49 @@ resource "docker_container" "issuer_hospitalb" {
 }
 
 
+# -------------------------------------------------------------------
+# Hal identify (AI agent)
+# -------------------------------------------------------------------
+resource "docker_volume" "hal_identity" {
+  name = "hal-identity"
+}
+
+resource "docker_image" "hal" {
+  name = "openhealth/hal:local"
+
+  build {
+    context    = "${local.repo_root}/vfp-core/agents/hal"
+    dockerfile = "${local.repo_root}/vfp-core/agents/hal/Dockerfile"
+    no_cache   = false
+  }
+
+  keep_locally = true
+}
+
+resource "docker_container" "hal" {
+  name  = "hal"
+  image = docker_image.hal.name
+
+  networks_advanced {
+    name = docker_network.agent_edge.name
+  }
+
+  env = [
+    "HAL_IDENTITY_DIR=/var/lib/hal/identity",
+    "HUB_URL=http://fc-hub:8080",
+  ]
+
+  volumes {
+    volume_name    = docker_volume.hal_identity.name
+    container_path = "/var/lib/hal/identity"
+    read_only      = false
+  }
+
+  depends_on = [docker_container.hub]
+
+  must_run = true
+  restart  = "unless-stopped"
+}
 
 
 # -------------------------------------------------------------------
@@ -451,7 +498,7 @@ resource "docker_container" "issuer_hospitalb" {
 resource "docker_image" "hub" {
   name = "fcac/hub:local"
   build {
-    context    = "${local.repo_root}/vfp-core/hub" 
+    context    = "${local.repo_root}/vfp-core/hub"
     dockerfile = "${local.repo_root}/vfp-core/hub/Dockerfile"
     no_cache   = false
   }
@@ -463,6 +510,8 @@ resource "docker_container" "hub" {
   image = docker_image.hub.name
 
   networks_advanced { name = docker_network.fc.name }
+
+  networks_advanced { name = docker_network.agent_edge.name }
 
   # Optional: expose for debugging
   ports {
@@ -492,8 +541,8 @@ resource "docker_container" "hub" {
     container_path = "/run/certs/ca.crt"
     read_only      = true
   }
- 
- volumes {
+
+  volumes {
     host_path      = abspath("${local.repo_root}/vfp-governance/verifier/certs/hub.crt")
     container_path = "/run/certs/hub.crt"
     read_only      = true
@@ -530,7 +579,7 @@ resource "docker_container" "hub" {
 resource "docker_image" "frontend" {
   name = "fcac/frontend:local"
   build {
-    context    = "${local.repo_root}/vfp-core/frontend" 
+    context    = "${local.repo_root}/vfp-core/frontend"
     dockerfile = "${local.repo_root}/vfp-core/frontend/Dockerfile"
     no_cache   = false
   }
@@ -540,9 +589,9 @@ resource "docker_image" "frontend" {
 resource "docker_container" "frontend_even" {
   name  = "fcac-frontend"
   image = docker_image.frontend.name
-  
+
   networks_advanced { name = docker_network.fc.name }
-  
+
   ports {
     internal = 80
     external = 8082
@@ -559,23 +608,23 @@ resource "docker_container" "frontend_even" {
   ]
 
   volumes {
-    host_path      = abspath("${local.repo_root}/vfp-governance/verifier/vault/holder_keys")  
+    host_path      = abspath("${local.repo_root}/vfp-governance/verifier/vault/holder_keys")
     container_path = "/vault/holder_keys"
     read_only      = true
   }
 
-  depends_on = [ docker_container.hub, 
-                 docker_container.verifier_proxy, 
-                 docker_container.issuer_hospitala, 
-                 docker_container.issuer_hospitalb,
-                 docker_container.holder_signer
-               ]
+  depends_on = [docker_container.hub,
+    docker_container.verifier_proxy,
+    docker_container.issuer_hospitala,
+    docker_container.issuer_hospitalb,
+    docker_container.holder_signer
+  ]
 
-  must_run   = true
-  restart    = "unless-stopped"
+  must_run = true
+  restart  = "unless-stopped"
 }
 
- 
+
 # -------------------------------------------------------------------
 # Flower Backend (orchestrator) + 2 clients
 # -------------------------------------------------------------------
@@ -730,7 +779,7 @@ resource "docker_container" "flower_client_b" {
   restart    = "unless-stopped"
 }
 
-  
+
 
 # Flower Client - Hospital C
 # Hospital C is the data source. Charlie remains the sponsored guest principal.
