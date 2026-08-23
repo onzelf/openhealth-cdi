@@ -179,6 +179,40 @@ PATHMNIST_TISSUES = (
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
 
+def class_recall_from_confusion(tissue: Optional[str]) -> Optional[float]:
+    if not tissue:
+        return None
+
+    try:
+        label = PATHMNIST_TISSUES.index(tissue)
+    except ValueError:
+        return None
+
+    path = confusion_normalized_path()
+    if not path.is_file():
+        return None
+
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.reader(handle)
+        next(reader, None)
+
+        for row in reader:
+            if not row:
+                continue
+
+            try:
+                row_label = int(row[0].split(":", 1)[0])
+            except (ValueError, IndexError):
+                continue
+
+            if row_label == label:
+                try:
+                    return float(row[label + 1])
+                except (ValueError, IndexError):
+                    return None
+
+    return None
+
 def model_dict(model: BaseModel) -> Dict[str, Any]:
     if hasattr(model, "model_dump"):
         return model.model_dump()  # type: ignore[attr-defined]
@@ -459,6 +493,7 @@ def predict_image(req: ImagePredictionRequest) -> Dict[str, Any]:
             "model_height": 28,
             "model_mode": "RGB",
         },
+        "class_recall": class_recall_from_confusion(requested_tissue),
         "prediction_label": prediction_label,
         "prediction_tissue": PATHMNIST_TISSUES[prediction_label],
         "topk": [

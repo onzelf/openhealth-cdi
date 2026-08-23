@@ -584,8 +584,11 @@ function BoundaryControlArea({
             <p className="ceremony-bind">Bind evidence <code>{ceremony.bind_id}</code></p>
           ) : <p className="ceremony-description">Begin only when a new collaboration envelope is required.</p>}
 
-          {ceremony.bind_id && !ceremony.envelope_id ? organisations.map((organisation) => {
+          {ceremony.bind_id && !ceremony.envelope_id ? organisations.map((organisation, index) => {
             const approved = approvals[organisation.uri];
+            const previousApproved =
+            index === 0 || Boolean(approvals[organisations[index - 1].uri]);  
+
             return (
               <div className={`organisation-approval ${approved ? "approved" : ""}`} key={organisation.id}>
                 <div>
@@ -594,14 +597,19 @@ function BoundaryControlArea({
                 </div>
                 <input
                   aria-label={`${organisation.label} six-digit code`}
-                  disabled={busy || Boolean(approved)}
+                  disabled={busy || Boolean(approved)  || !previousApproved} 
                   inputMode="numeric"
                   onChange={(event) => updateCode(organisation.id, event.target.value)}
                   placeholder="000000"
                   value={codes[organisation.id]}
                 />
                 <button
-                  disabled={busy || Boolean(approved) || codes[organisation.id].length !== 6}
+                  disabled={ busy ||
+                             Boolean(approved) ||
+                              !previousApproved ||
+                              codes[organisation.id].length !== 6
+                            }
+
                   onClick={() => onApprove(organisation.id, codes[organisation.id])}
                   type="button"
                 >
@@ -699,23 +707,51 @@ function UserModePanel({
                   width={sampleImage.width || 28}
                 />
               ) : null}
+
               <dl>
-                <div><dt>Requested tissue</dt><dd>{prediction.requested_tissue || "—"}</dd></div>
-                <div><dt>Actual label</dt><dd>{prediction.actual_label ?? "—"}</dd></div>
-                <div><dt>Predicted tissue</dt><dd>{prediction.prediction_tissue || "—"}</dd></div>
+                <div>
+                  <dt>Requested tissue</dt>
+                  <dd>{prediction.requested_tissue || "—"}</dd>
+                </div>
+
+                <div>
+                  <dt>Actual label</dt>
+                  <dd>{prediction.actual_label ?? "—"}</dd>
+                </div>
+
+                <div>
+                  <dt>Predicted tissue</dt>
+                  <dd>{prediction.prediction_tissue || "—"}</dd>
+                </div>
+
+                <div>
+                  <dt>Class recall</dt>
+                  <dd>
+                    {prediction.class_recall != null
+                      ? `${(Number(prediction.class_recall) * 100).toFixed(2)}%`
+                      : "—"}
+                  </dd>
+                </div>
               </dl>
+
               {prediction.topk?.length ? (
-                <ol>
-                  {prediction.topk.map((entry) => (
-                    <li key={`${entry.label}-${entry.tissue}`}>
-                      <span>{entry.tissue}</span>
-                      <strong>{Number(entry.probability).toFixed(4)}</strong>
-                    </li>
-                  ))}
-                </ol>
+                <div className="prediction-topk">
+                  <span className="eyebrow">TOP-K</span>
+                  <ol>
+                    {prediction.topk.map((entry) => (
+                      <li key={`${entry.label}-${entry.tissue}`}>
+                        <span>{entry.tissue}</span>
+                        <strong>
+                          {(Number(entry.probability) * 100).toFixed(2)}%
+                        </strong>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
               ) : null}
             </div>
-          ) : null}
+          ) : null}  
+
           {error ? <div className="ceremony-error">{error}</div> : null}
         </div>
       </div>
@@ -1361,8 +1397,10 @@ export default function App() {
         code,
       });
       const approval = result.approval || {};
+
       setCeremony((current) => ({
         ...current,
+        bind_id: approval.envelope_id ? null : current.bind_id,
         approvals: {
           ...current.approvals,
           [result.organization]: {
@@ -1372,6 +1410,8 @@ export default function App() {
         },
         envelope_id: approval.envelope_id || current.envelope_id,
       }));
+
+
       await refreshAdministration();
     } catch (err) {
       setAdministrationError(err.message);
