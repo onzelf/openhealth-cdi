@@ -399,6 +399,7 @@ class ProbeReq(BaseModel):
     agg: Optional[str] = None
     pii: Optional[bool] = None
     contact: Optional[bool] = None
+    derivative_representation: Optional[str] = None
     jti: Optional[str] = None  # echoed in DPoP signed content
 
 class ProbeResp(BaseModel):
@@ -990,6 +991,7 @@ def emit_decision_record(
             "agg": body.agg,
             "pii": body.pii,
             "contact": body.contact,
+            "derivative_representation": body.derivative_representation,
         },
         "presented_ect_sha256": _ect_fingerprint(authorization),
     }
@@ -1272,6 +1274,7 @@ async def _probe_impl(
         "agg": body.agg,
         "pii": body.pii,
         "contact": body.contact,
+        "derivative_representation": body.derivative_representation,
     }
 
     failure_reason = "capability_violation"

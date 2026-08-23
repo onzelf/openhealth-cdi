@@ -133,7 +133,7 @@ def mint(req: MintReq):
     if not m:
         raise HTTPException(404, f"unknown_sub:{subject}")
 
-    # The issuer, not the caller, assigns the authorization profile.
+    # The issuer, not the caller, assigns the authorization profiles.
     entitlement_org = str(MEMBER_ENTITLEMENTS.get("org", "")).strip()
     if entitlement_org != ORG:
         raise HTTPException(
@@ -141,16 +141,31 @@ def mint(req: MintReq):
             f"entitlement_org_mismatch:{entitlement_org}",
         )
 
-    profile = (MEMBER_ENTITLEMENTS.get("members") or {}).get(subject)
-    if not profile:
+    profiles = (MEMBER_ENTITLEMENTS.get("members") or {}).get(subject)
+    if not profiles:
         raise HTTPException(403, f"no_entitlement_for_sub:{subject}")
 
-    cap_profile = CAP_PROFILE_BY_ORG.get(ORG, {}).get(profile)
-    if not cap_profile:
+    if isinstance(profiles, str):
+        profiles = [profiles]
+    if not isinstance(profiles, list) or any(
+        not isinstance(profile, str) or not profile.strip()
+        for profile in profiles
+    ):
         raise HTTPException(
             500,
-            f"entitlement_profile_not_configured:{profile}",
+            f"invalid_entitlement_assignment:{subject}",
         )
+
+    cap_profiles = []
+    for profile in [profile.strip() for profile in profiles]:
+        cap_profile = CAP_PROFILE_BY_ORG.get(ORG, {}).get(profile)
+        if not cap_profile:
+            raise HTTPException(
+                500,
+                f"entitlement_profile_not_configured:{profile}",
+            )
+        if cap_profile not in cap_profiles:
+            cap_profiles.append(cap_profile)
 
     # actor_type is issuer-attested metadata, not an authorization selector.
     actor_type = str(
@@ -186,7 +201,7 @@ def mint(req: MintReq):
             f"{VERIFIER_URL}/mint_ect",
             json={
                 "holder_pub_b64": holder_pub_b64,
-                "cap_profiles": [cap_profile],
+                "cap_profiles": cap_profiles,
                 "envelope_id": req.envelope_id,
                 "sub": m["sub"],
                 "actor_type": actor_type,

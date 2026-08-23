@@ -35,7 +35,9 @@
     {
       "principal": "Hal",
       "actor_type": "agent",
-      "status": "planned",
+      "status": "active",
+      "issuer_organization": "org://HospitalA",
+      "dpop_signer_url": "http://hal:8088",
       "modes": [
         "mode1b"
       ]

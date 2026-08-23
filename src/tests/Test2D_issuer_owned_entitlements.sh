@@ -81,14 +81,14 @@ mint() {
   }
 }
 
-has_tissue() {
+has_query_tissue() {
   jq -e --arg t "$2" \
-    '[.cap[]?.scope.pathology_labels[]?] | index($t) != null' "$1" >/dev/null
+    '[.cap[]? | select(.action == "query_model") | .scope.pathology_labels[]?] | index($t) != null' "$1" >/dev/null
 }
 
-lacks_tissue() {
+lacks_query_tissue() {
   jq -e --arg t "$2" \
-    '[.cap[]?.scope.pathology_labels[]?] | index($t) == null' "$1" >/dev/null
+    '[.cap[]? | select(.action == "query_model") | .scope.pathology_labels[]?] | index($t) == null' "$1" >/dev/null
 }
 
 section "1. Hub cannot select an authorization profile"
@@ -113,28 +113,35 @@ jq -e '.detail[] | select((.loc[-1] // "") == "profile")' \
   "${FORGED}" >/dev/null || fail "Issuer did not reject the profile field"
 pass "Hub sends no profile and issuer rejects profile injection"
 
-section "2. Audrey receives only her issuer-owned entitlement"
+section "2. Audrey receives issuer-owned source and derivative entitlements"
 
-A_PROFILE="$(jq -r '.members.Audrey // empty' "${ENT_A}")"
-A_CAPSET="$(jq -r --arg p "${A_PROFILE}" \
-  '."org://HospitalA"[$p] // empty' "${CAPS}")"
-[[ "${A_PROFILE}" == "PATHMNIST_OTHER_TISSUE_READER" ]] \
-  || fail "Unexpected Audrey entitlement: ${A_PROFILE:-missing}"
-[[ "${A_CAPSET}" == "capset:pathmnist_other_tissue_reader" ]] \
-  || fail "Unexpected Audrey capset: ${A_CAPSET:-missing}"
+jq -e '.members.Audrey == [
+  "PATHMNIST_OTHER_TISSUE_READER",
+  "PATHMNIST_DERIVATIVE_READER"
+]' "${ENT_A}" >/dev/null \
+  || fail "Unexpected Audrey entitlement assignment"
+jq -e '."org://HospitalA".PATHMNIST_OTHER_TISSUE_READER == "capset:pathmnist_other_tissue_reader"
+  and ."org://HospitalA".PATHMNIST_DERIVATIVE_READER == "capset:pathmnist_derivative_reader"' \
+  "${CAPS}" >/dev/null || fail "Unexpected Audrey capset mapping"
 
 mint issuer-hospitala.local "${A_CRT}" "${A_KEY}" Audrey "${TMP}/audrey.json"
 decode "$(jq -r '.ect' "${TMP}/audrey.json")" "${TMP}/audrey-claims.json"
 for tissue in mucus normal_colon_mucosa lymphocytes; do
-  has_tissue "${TMP}/audrey-claims.json" "${tissue}" \
+  has_query_tissue "${TMP}/audrey-claims.json" "${tissue}" \
     || fail "Audrey ECT is missing ${tissue}"
 done
 for tissue in background cancer_associated_stroma \
   colorectal_adenocarcinoma_epithelium debris; do
-  lacks_tissue "${TMP}/audrey-claims.json" "${tissue}" \
+  lacks_query_tissue "${TMP}/audrey-claims.json" "${tissue}" \
     || fail "Audrey ECT unexpectedly contains ${tissue}"
 done
-pass "Audrey receives only the other-tissue capability"
+jq -e '[.cap[]? | select(
+  .resource == "pathmnist-derived-representation"
+  and .action == "consume_derivative"
+  and .purpose == "approved_derivative_consumption"
+)] | length == 1' "${TMP}/audrey-claims.json" >/dev/null \
+  || fail "Audrey ECT is missing derivative-consumption authority"
+pass "Audrey keeps other-tissue source query and gains derivative consumption only"
 
 section "3. Bob receives only his issuer-owned entitlement"
 
@@ -149,11 +156,11 @@ B_CAPSET="$(jq -r --arg p "${B_PROFILE}" \
 mint issuer-hospitalb.local "${B_CRT}" "${B_KEY}" Bob "${TMP}/bob.json"
 decode "$(jq -r '.ect' "${TMP}/bob.json")" "${TMP}/bob-claims.json"
 for tissue in cancer_associated_stroma colorectal_adenocarcinoma_epithelium; do
-  has_tissue "${TMP}/bob-claims.json" "${tissue}" \
+  has_query_tissue "${TMP}/bob-claims.json" "${tissue}" \
     || fail "Bob ECT is missing ${tissue}"
 done
 for tissue in background mucus normal_colon_mucosa lymphocytes debris; do
-  lacks_tissue "${TMP}/bob-claims.json" "${tissue}" \
+  lacks_query_tissue "${TMP}/bob-claims.json" "${tissue}" \
     || fail "Bob ECT unexpectedly contains ${tissue}"
 done
 pass "Bob receives only the cancer-associated capability"
@@ -194,8 +201,6 @@ pass "Actor scenario metadata is disconnected from authorization"
 
 section "6. Issuer assignments determine the minted capability"
 
-[[ "${A_CAPSET}" != "${B_CAPSET}" ]] \
-  || fail "Issuer assignments resolve to the same capset"
 jq -e --slurpfile a "${TMP}/audrey-claims.json" \
   '.cap != $a[0].cap' "${TMP}/bob-claims.json" >/dev/null \
   || fail "Distinct issuer assignments produced identical ECT capabilities"

@@ -1,7 +1,10 @@
 {
   "org": "org://HospitalA",
   "members": {
-    "Audrey": "PATHMNIST_OTHER_TISSUE_READER",
+    "Audrey": [
+      "PATHMNIST_OTHER_TISSUE_READER",
+      "PATHMNIST_DERIVATIVE_READER"
+    ],
     "Charlie": "PATHMNIST_GUEST_CONTRIBUTOR",
     "Hal": "PATHMNIST_BOUNDED_AGENT"
   },

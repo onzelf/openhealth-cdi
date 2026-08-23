@@ -166,6 +166,9 @@ def load_actor_catalog(path: Path) -> Dict[str, Dict[str, Any]]:
                 raise RuntimeError(
                     f"actor_catalog_invalid:duplicate_principal:{principal}"
                 )
+            issuer_organization = str(
+                entry.get("issuer_organization") or organisation
+            )
             actors[principal] = {
                 **entry,
                 "principal": principal,
@@ -174,7 +177,8 @@ def load_actor_catalog(path: Path) -> Dict[str, Dict[str, Any]]:
                     str(organisation),
                     str(organisation),
                 ),
-                "issuer_url": ISSUER_URLS.get(str(organisation)),
+                "issuer_organization": issuer_organization,
+                "issuer_url": ISSUER_URLS.get(issuer_organization),
                 "modes": list(entry.get("modes") or []),
             }
     return actors
@@ -377,13 +381,16 @@ def request_prediction_admission(
     authorization: str,
     dpop: str,
     dpop_nonce: str,
+    action: str = "query_model",
+    purpose: str = "approved_model_query",
+    event_type: str = "prediction_admission",
 ) -> Dict[str, Any]:
     admission_request = {
         "envelope_id": envelope_id,
         "run_id": run_id,
         "resource": "pathmnist-colon-pathology",
-        "action": "query_model",
-        "purpose": "approved_model_query",
+        "action": action,
+        "purpose": purpose,
         "requested_tissues": requested_tissues,
         "jti": jti,
     }
@@ -413,11 +420,13 @@ def request_prediction_admission(
         raise HTTPException(502, f"verifier_error:{exc}") from exc
 
     append_event(
-        "prediction_admission",
+        event_type,
         run_id=run_id,
         envelope_id=envelope_id,
         requested_tissues=requested_tissues,
         jti=jti,
+        action=action,
+        purpose=purpose,
         **admission,
     )
     return admission
@@ -526,10 +535,12 @@ def sign_principal_dpop(
     envelope_id: str,
     nonce: str,
     jti: str,
+    signer_url: Optional[str] = None,
 ) -> str:
+    target_signer = (signer_url or SIGNER_URL).rstrip("/")
     try:
         response = requests.post(
-            SIGNER_URL + "/dpop/sign",
+            target_signer + "/dpop/sign",
             json={
                 "sub": principal,
                 "htu": DPOP_HTU,
@@ -1259,6 +1270,7 @@ def administration_boundary() -> Dict[str, Any]:
                 "principal": principal,
                 "organization": context["organisation"],
                 "actor_type": context.get("actor_type"),
+                "modes": context.get("modes", []),
             }
             for principal, context in ACTOR_CONTEXTS.items()
             if actor_is_operational(context)
@@ -2013,6 +2025,127 @@ async def mode1a_guest_contribution_admission(
         "admission": admission,
         "executed": False,
     }
+
+
+@app.post("/mode1b/inference")
+def mode1b_inference(req: UserInferenceRequest) -> Dict[str, Any]:
+    """Execute bounded inference only after Hal's own DPoP admission succeeds."""
+    if req.run_id != RUN_ID:
+        raise HTTPException(404, f"unknown_run:{req.run_id}")
+
+    bounded_tissues = {
+        "cancer_associated_stroma",
+        "colorectal_adenocarcinoma_epithelium",
+    }
+    if req.requested_tissue not in bounded_tissues:
+        raise HTTPException(400, f"mode1b_tissue_out_of_scope:{req.requested_tissue}")
+
+    binding_state = selected_envelope_binding_state()
+    selected_id = binding_state.get("selected_envelope_id")
+    if not selected_id:
+        raise HTTPException(409, "no_envelope_selected")
+    if req.envelope_id != selected_id:
+        raise HTTPException(409, "envelope_mismatch")
+    if not binding_state.get("bound", False):
+        raise HTTPException(409, "envelope_not_bound")
+
+    principal_context = ACTOR_CONTEXTS.get(req.principal)
+    if principal_context is None:
+        raise HTTPException(400, f"unknown_principal:{req.principal}")
+    if not actor_is_operational(principal_context):
+        raise HTTPException(409, f"actor_not_operational:{req.principal}")
+    if "mode1b" not in principal_context.get("modes", []):
+        raise HTTPException(403, "mode1b_participant_required")
+
+    signer_url = str(principal_context.get("dpop_signer_url") or "").strip()
+    if not signer_url:
+        raise HTTPException(409, "holder_signer_not_configured")
+
+    credential_key = principal_runtime_key(selected_id, req.principal)
+    credential = holder_runtime_credentials.get(credential_key)
+    if not credential:
+        raise HTTPException(409, "ect_not_ready")
+
+    expires_at = credential.get("expires_at")
+    if expires_at and int(expires_at) <= int(time.time()):
+        credential["expired"] = True
+        raise HTTPException(409, "ect_expired")
+
+    nonce = "nonce-" + secrets.token_urlsafe(18)
+    jti = "jti-" + secrets.token_urlsafe(18)
+    dpop = sign_principal_dpop(
+        req.principal,
+        selected_id,
+        nonce,
+        jti,
+        signer_url=signer_url,
+    )
+    admission = request_prediction_admission(
+        envelope_id=selected_id,
+        run_id=req.run_id,
+        requested_tissues=[req.requested_tissue],
+        jti=jti,
+        authorization=f"ECT {credential['ect']}",
+        dpop=dpop,
+        dpop_nonce=nonce,
+        action="bounded_inference",
+        purpose="bounded_model_inference",
+        event_type="mode1b_bounded_inference_admission",
+    )
+
+    model_evidence = envelope_model_evidence(selected_id)
+    response: Dict[str, Any] = {
+        "principal": req.principal,
+        "capability": "bounded_inference",
+        "request": {
+            "envelope_id": selected_id,
+            "run_id": req.run_id,
+            "requested_tissue": req.requested_tissue,
+            "jti": jti,
+        },
+        "admission": admission,
+        "executed": False,
+        "model_run_id": model_evidence.get("run_id"),
+    }
+    if not admission.get("allow", False):
+        return response
+
+    try:
+        backend = requests.post(
+            FLOWER_BACKEND_URL + "/predict_image",
+            json={
+                "envelope_id": selected_id,
+                "run_id": req.run_id,
+                "requested_tissue": req.requested_tissue,
+                "topk": req.topk,
+            },
+            timeout=30,
+        )
+        backend.raise_for_status()
+        prediction = backend.json()
+    except Exception as exc:
+        raise HTTPException(502, f"prediction_error:{exc}") from exc
+
+    append_event(
+        "mode1b_bounded_inference_executed",
+        run_id=req.run_id,
+        envelope_id=selected_id,
+        principal=req.principal,
+        requested_tissues=[req.requested_tissue],
+        jti=jti,
+        image_sha256=prediction.get("image_sha256"),
+    )
+    response.update(
+        {
+            "executed": True,
+            "model_run_id": (
+                prediction.get("run_id")
+                or model_evidence.get("run_id")
+            ),
+            "prediction": prediction,
+        }
+    )
+    return response
 
 
 @app.post("/user/inference")

@@ -27,6 +27,10 @@ const USER_TISSUES = [
   "cancer_associated_stroma",
   "colorectal_adenocarcinoma_epithelium",
 ];
+const MODE1B_TISSUES = [
+  "cancer_associated_stroma",
+  "colorectal_adenocarcinoma_epithelium",
+];
 
 const SCENARIOS = [
   {
@@ -641,6 +645,7 @@ function UserModePanel({
   busy,
   error,
   result,
+  scenarioId,
 }) {
   const selectedId = administration.selected_envelope_id;
   const selectedEnvelope = (administration.envelopes || []).find(
@@ -648,6 +653,8 @@ function UserModePanel({
   );
   const inferenceActors = administration.inference_actors || [];
   const holder = (administration.holders || []).find((item) => item.principal === selectedPrincipal) || null;
+  const mode1b = scenarioId === "mode1b";
+  const tissueOptions = mode1b ? MODE1B_TISSUES : USER_TISSUES;
   const prediction = result?.prediction || null;
   const sampleImage = prediction?.sample_image;
   const sampleImageSrc = sampleImage?.image_b64
@@ -658,7 +665,11 @@ function UserModePanel({
     <div className="governed-inference">
       <div className="user-mode-layout">
         <div className="workspace-controls">
-          <p>Use the administrator-minted ECT for the selected boundary. Each request generates fresh DPoP before Gatekeeper admission.</p>
+          <p>
+            {mode1b
+              ? "Use Hal's administrator-minted bounded-agent ECT. Hal signs fresh DPoP inside its isolated container before Gatekeeper admission."
+              : "Use the administrator-minted ECT for the selected boundary. Each request generates fresh DPoP before Gatekeeper admission."}
+          </p>
           <label className="compact-select">
             <span>Holder</span>
             <select
@@ -679,13 +690,13 @@ function UserModePanel({
           <label className="compact-select">
             <span>Tissue</span>
             <select onChange={(event) => onTissueChange(event.target.value)} value={selectedTissue}>
-              {USER_TISSUES.map((tissue) => (
+              {tissueOptions.map((tissue) => (
                 <option key={tissue} value={tissue}>{tissue}</option>
               ))}
             </select>
           </label>
           <button disabled={busy || !selectedId || !holder || holder.ect_status !== "ready"} onClick={onRunInference} type="button">
-            RUN GOVERNED INFERENCE
+            {mode1b ? "RUN HAL BOUNDED INFERENCE" : "RUN GOVERNED INFERENCE"}
           </button>
         </div>
 
@@ -693,6 +704,7 @@ function UserModePanel({
           <div><span className="eyebrow">BOUNDARY</span><strong className="mono">{selectedId || "No envelope selected"}</strong></div>
           <div><span className="eyebrow">ECT STATUS</span><strong>{holder ? (holder.ect_status === "ready" ? "Ready" : holder.ect_status === "expired" ? "Expired" : "Not ready") : "Unavailable"}</strong></div>
           <div><span className="eyebrow">MODEL RUN</span><strong className="mono">{result?.model_run_id || selectedEnvelope?.model_run_id || "—"}</strong></div>
+          {mode1b ? <div><span className="eyebrow">CAPABILITY</span><strong>bounded_inference</strong></div> : null}
           <div><span className="eyebrow">ADMISSION</span><strong>{result ? (result.admission?.allow ? "ALLOW" : "DENY") : "Awaiting request"}</strong></div>
           {result?.admission?.reason ? (
             <div><span className="eyebrow">REASON</span><strong>{result.admission.reason}</strong></div>
@@ -1456,7 +1468,10 @@ export default function App() {
     setUserError("");
     setUserInferenceResult(null);
     try {
-      const result = await postJson("/user/inference", {
+      const inferencePath = activeScenarioId === "mode1b"
+        ? "/mode1b/inference"
+        : "/user/inference";
+      const result = await postJson(inferencePath, {
         principal: userPrincipal,
         envelope_id: administration.selected_envelope_id,
         requested_tissue: userTissue,
@@ -1528,6 +1543,13 @@ export default function App() {
       setUserInferenceResult(null);
     }
   }, [scenarioAdministration.inference_actors, userPrincipal]);
+
+  useEffect(() => {
+    if (activeScenarioId === "mode1b" && !MODE1B_TISSUES.includes(userTissue)) {
+      setUserTissue(MODE1B_TISSUES[0]);
+      setUserInferenceResult(null);
+    }
+  }, [activeScenarioId, userTissue]);
 
   return (
     <>
@@ -1633,6 +1655,7 @@ export default function App() {
                 setUserError("");
               }}
               result={userInferenceResult}
+              scenarioId={activeScenarioId}
               selectedPrincipal={userPrincipal}
               selectedTissue={userTissue}
             />

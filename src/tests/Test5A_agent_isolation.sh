@@ -16,7 +16,7 @@ set -euo pipefail
 # Test5A — Hal network and cryptographic-custody isolation
 #
 # Gate 5A proves architecture and custody only.
-# Hal must have identity but no operational FCaC authority.
+# Later gates may activate Hal without changing these isolation invariants.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -232,7 +232,7 @@ docker exec "${HAL_CONTAINER}" test ! -e /run/certs ||
 pass "Hal has no verifier vault or shared certificate mount"
 
 
-section "7. Actor remains non-operational"
+section "7. Runtime activation preserves isolation"
 
 HAL_STATUS="$(
     jq -r '
@@ -243,10 +243,10 @@ HAL_STATUS="$(
     ' "${ACTORS_JSON}"
 )"
 
-[[ "${HAL_STATUS}" == "planned" ]] ||
-    fail "Hal status is ${HAL_STATUS}, expected planned"
+[[ "${HAL_STATUS}" == "active" ]] ||
+    fail "Hal status is ${HAL_STATUS}, expected active after Gate 5C"
 
-pass "Hal remains planned and has no operational authority"
+pass "Hal is active; Gate 5A remains a topology and custody invariant"
 
 
 section "8. Gate 5A invariant"
@@ -255,7 +255,7 @@ printf '\n'
 printf 'Hal exists with dedicated cryptographic custody.\n'
 printf 'Hal can reach only the Hub federation aperture.\n'
 printf 'Hal cannot directly reach federation internals.\n'
-printf 'Hal remains non-operational at the governance layer.\n'
+printf 'Hal activation does not create a direct federation route.\n'
 printf '\n'
 
 pass "Gate 5A GREEN"
