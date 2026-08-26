@@ -16,3 +16,8 @@ LOCAL_BASE_COMMIT.txt
 src/tests/holder_keys/
 __pycache__/
 *.py[cod]
+
+# Local secrets
+secrets/
+.env
+*.env

@@ -257,7 +257,13 @@ function trainingPhaseForScenario(scenarioId) {
   throw new Error(`Scenario ${scenarioId} does not support training`);
 }
 
-function ScenarioStrip({ activeScenarioId, executionStatus, onSelect }) {
+function ScenarioStrip({
+  activeScenarioId,
+  executionStatus,
+  onSelect,
+  mode1bUseCase,
+  onMode1bUseCaseChange,
+}) {
   return (
     <section className="scenario-section" aria-labelledby="scenario-heading">
       <div className="section-heading">
@@ -304,11 +310,58 @@ function ScenarioStrip({ activeScenarioId, executionStatus, onSelect }) {
               <strong className="scenario-organisations">
                 {scenario.organisations}
               </strong>
-              <p className="scenario-actors">
-                <span>{scenario.id === "mode1b" ? "People / agent" : "People"}</span>
-                {scenario.actors}
-              </p>
-              <p className="scenario-detail">{scenario.detail}</p>
+              {scenario.id === "mode1b" ? (
+                <>
+                  <div
+                    className="mode1b-use-case-selector"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <span>Use case</span>
+
+                    <button
+                      className={mode1bUseCase === "governance" ? "selected" : ""}
+                      onClick={() => onMode1bUseCaseChange("governance")}
+                      type="button"
+                    >
+                      Governance Agent
+                    </button>
+
+                    <button
+                      className={mode1bUseCase === "llm" ? "selected" : ""}
+                      onClick={() => onMode1bUseCaseChange("llm")}
+                      type="button"
+                    >
+                      LLM Agent
+                    </button>
+                  </div>
+
+                  <p className="scenario-actors">
+                    <span>Agent</span>
+                    Hal
+                  </p>
+
+                  {mode1bUseCase === "llm" ? (
+                    <p className="scenario-actors">
+                      <span>Requesters</span>
+                      Audrey · Bob
+                    </p>
+                  ) : null}
+
+                  <p className="scenario-detail">
+                    {mode1bUseCase === "governance"
+                      ? "Bounded AI task · reuse A+B+C"
+                      : "Agent-mediated request · reuse A+B+C"}
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="scenario-actors">
+                    <span>People</span>
+                    {scenario.actors}
+                  </p>
+                  <p className="scenario-detail">{scenario.detail}</p>
+                </>
+              )}
             </article>
           );
         })}
@@ -635,6 +688,7 @@ function BoundaryControlArea({
   );
 }
 
+ 
 function UserModePanel({
   administration,
   selectedPrincipal,
@@ -646,19 +700,60 @@ function UserModePanel({
   error,
   result,
   scenarioId,
+  mode1bUseCase,
+  requesterPrincipal,
+  onRequesterChange,
 }) {
   const selectedId = administration.selected_envelope_id;
+
   const selectedEnvelope = (administration.envelopes || []).find(
     (envelope) => envelope.envelope_id === selectedId
   );
+
   const inferenceActors = administration.inference_actors || [];
-  const holder = (administration.holders || []).find((item) => item.principal === selectedPrincipal) || null;
+
+  const holder =
+    (administration.holders || []).find(
+      (item) => item.principal === selectedPrincipal
+    ) || null;
+
   const mode1b = scenarioId === "mode1b";
-  const tissueOptions = mode1b ? MODE1B_TISSUES : USER_TISSUES;
+  const llmAgent = mode1b && mode1bUseCase === "llm";
+
+  const requesters = llmAgent
+    ? (administration.holders || []).filter(
+        (actor) => (actor.modes || []).includes("ab")
+      )
+    : [];
+
+  const requesterHolder = llmAgent
+    ? (administration.holders || []).find(
+        (actor) => actor.principal === requesterPrincipal
+      ) || null
+    : null;
+
+  const halHolder = llmAgent
+    ? (administration.holders || []).find(
+        (actor) => actor.principal === "Hal"
+      ) || null
+    : null;
+
+  const requesterEctReady =
+    requesterHolder?.ect_status === "ready";
+
+  const halEctReady =
+    halHolder?.ect_status === "ready";
+
+  const llmAgentReady =
+    llmAgent && requesterEctReady && halEctReady;
+
   const prediction = result?.prediction || null;
   const sampleImage = prediction?.sample_image;
+
   const sampleImageSrc = sampleImage?.image_b64
-    ? `data:${sampleImage.mime_type || "image/png"};base64,${sampleImage.image_b64}`
+    ? `data:${sampleImage.mime_type || "image/png"};base64,${
+        sampleImage.image_b64
+      }`
     : null;
 
   return (
@@ -666,54 +761,153 @@ function UserModePanel({
       <div className="user-mode-layout">
         <div className="workspace-controls">
           <p>
-            {mode1b
-              ? "Use Hal's administrator-minted bounded-agent ECT. Hal signs fresh DPoP inside its isolated container before Gatekeeper admission."
-              : "Use the administrator-minted ECT for the selected boundary. Each request generates fresh DPoP before Gatekeeper admission."}
+            Use the administrator-minted ECT for the selected boundary.
+            Each request generates fresh DPoP before Gatekeeper admission.
           </p>
+
+          {llmAgent && (
+            <>
+              <label>
+                Requester
+                <select
+                  value={requesterPrincipal}
+                  onChange={(event) =>
+                    onRequesterChange(event.target.value)
+                  }
+                >
+                  {requesters.map((actor) => (
+                    <option
+                      key={actor.principal}
+                      value={actor.principal}
+                    >
+                      {actor.principal}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label>
+                Agent
+                <input value="Hal" readOnly />
+              </label>
+            </>
+          )}
+
+          {!llmAgent && (
+            <>
+              <label className="compact-select">
+                <span>Holder</span>
+                <select
+                  disabled={!inferenceActors.length}
+                  onChange={(event) =>
+                    onPrincipalChange(event.target.value)
+                  }
+                  value={selectedPrincipal}
+                >
+                  {!inferenceActors.length ? (
+                    <option value="">
+                      No operational holders
+                    </option>
+                  ) : null}
+
+                  {inferenceActors.map((actor) => (
+                    <option
+                      key={actor.principal}
+                      value={actor.principal}
+                    >
+                      {actor.principal} · {actor.organization}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </>
+          )}
+
           <label className="compact-select">
-            <span>Holder</span>
+            <span>Tissue</span>
             <select
-              disabled={!inferenceActors.length}
-              onChange={(event) => onPrincipalChange(event.target.value)}
-              value={selectedPrincipal}
+              onChange={(event) =>
+                onTissueChange(event.target.value)
+              }
+              value={selectedTissue}
             >
-              {!inferenceActors.length ? (
-                <option value="">No operational holders</option>
-              ) : null}
-              {inferenceActors.map((actor) => (
-                <option key={actor.principal} value={actor.principal}>
-                  {actor.principal} · {actor.organization}
+              {USER_TISSUES.map((tissue) => (
+                <option key={tissue} value={tissue}>
+                  {tissue}
                 </option>
               ))}
             </select>
           </label>
-          <label className="compact-select">
-            <span>Tissue</span>
-            <select onChange={(event) => onTissueChange(event.target.value)} value={selectedTissue}>
-              {tissueOptions.map((tissue) => (
-                <option key={tissue} value={tissue}>{tissue}</option>
-              ))}
-            </select>
-          </label>
-          <button disabled={busy || !selectedId || !holder || holder.ect_status !== "ready"} onClick={onRunInference} type="button">
-            {mode1b ? "RUN HAL BOUNDED INFERENCE" : "RUN GOVERNED INFERENCE"}
+
+          <button
+            disabled={
+              busy ||
+              !selectedId ||
+              !holder ||
+              holder.ect_status !== "ready"
+            }
+            onClick={onRunInference}
+            type="button"
+          >
+            RUN GOVERNED INFERENCE
           </button>
         </div>
 
         <div className="user-mode-result-card">
-          <div><span className="eyebrow">BOUNDARY</span><strong className="mono">{selectedId || "No envelope selected"}</strong></div>
-          <div><span className="eyebrow">ECT STATUS</span><strong>{holder ? (holder.ect_status === "ready" ? "Ready" : holder.ect_status === "expired" ? "Expired" : "Not ready") : "Unavailable"}</strong></div>
-          <div><span className="eyebrow">MODEL RUN</span><strong className="mono">{result?.model_run_id || selectedEnvelope?.model_run_id || "—"}</strong></div>
-          {mode1b ? <div><span className="eyebrow">CAPABILITY</span><strong>bounded_inference</strong></div> : null}
-          <div><span className="eyebrow">ADMISSION</span><strong>{result ? (result.admission?.allow ? "ALLOW" : "DENY") : "Awaiting request"}</strong></div>
+          <div>
+            <span className="eyebrow">BOUNDARY</span>
+            <strong className="mono">
+              {selectedId || "No envelope selected"}
+            </strong>
+          </div>
+
+          <div>
+            <span className="eyebrow">ECT STATUS</span>
+            <strong>
+              {holder
+                ? holder.ect_status === "ready"
+                  ? "Ready"
+                  : holder.ect_status === "expired"
+                  ? "Expired"
+                  : "Not ready"
+                : "Unavailable"}
+            </strong>
+          </div>
+
+          <div>
+            <span className="eyebrow">MODEL RUN</span>
+            <strong className="mono">
+              {result?.model_run_id ||
+                selectedEnvelope?.model_run_id ||
+                "—"}
+            </strong>
+          </div>
+
+          <div>
+            <span className="eyebrow">ADMISSION</span>
+            <strong>
+              {result
+                ? result.admission?.allow
+                  ? "ALLOW"
+                  : "DENY"
+                : "Awaiting request"}
+            </strong>
+          </div>
+
           {result?.admission?.reason ? (
-            <div><span className="eyebrow">REASON</span><strong>{result.admission.reason}</strong></div>
+            <div>
+              <span className="eyebrow">REASON</span>
+              <strong>{result.admission.reason}</strong>
+            </div>
           ) : null}
+
           {prediction ? (
             <div className="prediction-result">
               {sampleImageSrc ? (
                 <img
-                  alt={`PathMNIST sample for ${prediction.requested_tissue}`}
+                  alt={`PathMNIST sample for ${
+                    prediction.requested_tissue
+                  }`}
                   height={sampleImage.height || 28}
                   src={sampleImageSrc}
                   width={sampleImage.width || 28}
@@ -723,53 +917,52 @@ function UserModePanel({
               <dl>
                 <div>
                   <dt>Requested tissue</dt>
-                  <dd>{prediction.requested_tissue || "—"}</dd>
+                  <dd>
+                    {prediction.requested_tissue || "—"}
+                  </dd>
                 </div>
 
                 <div>
                   <dt>Actual label</dt>
-                  <dd>{prediction.actual_label ?? "—"}</dd>
+                  <dd>
+                    {prediction.actual_label ?? "—"}
+                  </dd>
                 </div>
 
                 <div>
                   <dt>Predicted tissue</dt>
-                  <dd>{prediction.prediction_tissue || "—"}</dd>
-                </div>
-
-                <div>
-                  <dt>Class recall</dt>
                   <dd>
-                    {prediction.class_recall != null
-                      ? `${(Number(prediction.class_recall) * 100).toFixed(2)}%`
-                      : "—"}
+                    {prediction.prediction_tissue || "—"}
                   </dd>
                 </div>
               </dl>
 
               {prediction.topk?.length ? (
-                <div className="prediction-topk">
-                  <span className="eyebrow">TOP-K</span>
-                  <ol>
-                    {prediction.topk.map((entry) => (
-                      <li key={`${entry.label}-${entry.tissue}`}>
-                        <span>{entry.tissue}</span>
-                        <strong>
-                          {(Number(entry.probability) * 100).toFixed(2)}%
-                        </strong>
-                      </li>
-                    ))}
-                  </ol>
-                </div>
+                <ol>
+                  {prediction.topk.map((entry) => (
+                    <li
+                      key={`${entry.label}-${entry.tissue}`}
+                    >
+                      <span>{entry.tissue}</span>
+                      <strong>
+                        {Number(entry.probability).toFixed(4)}
+                      </strong>
+                    </li>
+                  ))}
+                </ol>
               ) : null}
             </div>
-          ) : null}  
+          ) : null}
 
-          {error ? <div className="ceremony-error">{error}</div> : null}
+          {error ? (
+            <div className="ceremony-error">{error}</div>
+          ) : null}
         </div>
       </div>
     </div>
   );
-}
+} 
+ 
 
 function MetricsTable({ rows }) {
   if (!rows.length) {
@@ -1253,6 +1446,7 @@ export default function App() {
   const [dashboardMode, setDashboardMode] = useState("administration");
   const [activeTab, setActiveTab] = useState("training");
   const [selectedScenarioId, setSelectedScenarioId] = useState("ab");
+  const [mode1bUseCase, setMode1bUseCase] = useState("governance");
   const [status, setStatus] = useState({});
   const [experiment, setExperiment] = useState({});
   const [metrics, setMetrics] = useState([]);
@@ -1269,6 +1463,7 @@ export default function App() {
   const [administrationBusy, setAdministrationBusy] = useState(false);
   const [administrationError, setAdministrationError] = useState("");
   const [userPrincipal, setUserPrincipal] = useState("Audrey");
+  const [requesterPrincipal, setRequesterPrincipal] = useState("Audrey");
   const [userTissue, setUserTissue] = useState("lymphocytes");
   const [userBusy, setUserBusy] = useState(false);
   const [userError, setUserError] = useState("");
@@ -1307,18 +1502,29 @@ export default function App() {
   const scenarioRegisteredClients = registeredClients.filter((orgId) =>
     activeScenario.participantOrgIds.includes(orgId)
   );
+
+
   const scenarioAdministration = useMemo(
-    () => ({
-      ...administration,
-      holders: (administration.holders || []).filter((actor) =>
-        actorVisibleInScenario(actor, activeScenarioId)
-      ),
-      inference_actors: (administration.inference_actors || []).filter((actor) =>
-        actorVisibleInScenario(actor, activeScenarioId)
-      ),
+  () => ({
+    ...administration,
+    holders: (administration.holders || []).filter((actor) => {
+      if (activeScenarioId === "mode1b" && mode1bUseCase === "llm") {
+        return (
+          actorVisibleInScenario(actor, "mode1b") ||
+          actorVisibleInScenario(actor, "ab")
+        );
+      }
+
+      return actorVisibleInScenario(actor, activeScenarioId);
     }),
-    [administration, activeScenarioId]
-  );
+    inference_actors: (administration.inference_actors || []).filter((actor) =>
+      actorVisibleInScenario(actor, activeScenarioId)
+    ),
+  }),
+  [administration, activeScenarioId, mode1bUseCase]
+);
+
+
   const selectedModelRunId = (administration.envelopes || []).find(
     (envelope) => envelope.envelope_id === administration.selected_envelope_id
   )?.model_run_id;
@@ -1468,15 +1674,34 @@ export default function App() {
     setUserError("");
     setUserInferenceResult(null);
     try {
-      const inferencePath = activeScenarioId === "mode1b"
-        ? "/mode1b/inference"
-        : "/user/inference";
-      const result = await postJson(inferencePath, {
-        principal: userPrincipal,
-        envelope_id: administration.selected_envelope_id,
-        requested_tissue: userTissue,
-        topk: 3,
-      });
+
+      const llmAgent =
+        activeScenarioId === "mode1b" && mode1bUseCase === "llm";
+
+      const governanceAgent =
+        activeScenarioId === "mode1b" && mode1bUseCase === "governance";
+
+      const inferencePath = llmAgent
+        ? "/mode1b/agent/request"
+        : governanceAgent
+          ? "/mode1b/inference"
+          : "/user/inference";
+
+      const requestBody = llmAgent
+        ? {
+            requester: requesterPrincipal,
+            envelope_id: administration.selected_envelope_id,
+            requested_tissue: userTissue,
+            topk: 3,
+          }
+        : {
+            principal: userPrincipal,
+            envelope_id: administration.selected_envelope_id,
+            requested_tissue: userTissue,
+            topk: 3,
+          };
+
+    const result = await postJson(inferencePath, requestBody);
       setUserInferenceResult(result);
     } catch (err) {
       setUserError(err.message);
@@ -1582,6 +1807,8 @@ export default function App() {
           activeScenarioId={activeScenarioId}
           executionStatus={status.status}
           onSelect={setSelectedScenarioId}
+          mode1bUseCase={mode1bUseCase}
+          onMode1bUseCaseChange={setMode1bUseCase}
         />
 
         <Overview
@@ -1643,6 +1870,13 @@ export default function App() {
               administration={scenarioAdministration}
               busy={userBusy}
               error={userError}
+              mode1bUseCase={mode1bUseCase}
+              requesterPrincipal={requesterPrincipal}
+              onRequesterChange={(principal) => {
+                setRequesterPrincipal(principal);
+                setUserInferenceResult(null);
+                setUserError("");
+              }}
               onPrincipalChange={(principal) => {
                 setUserPrincipal(principal);
                 setUserInferenceResult(null);

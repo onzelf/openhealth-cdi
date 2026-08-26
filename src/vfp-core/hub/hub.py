@@ -274,6 +274,12 @@ class UserInferenceRequest(BaseModel):
     requested_tissue: str
     topk: int = Field(default=3, ge=1, le=9)
 
+class AgentMediatedInferenceRequest(BaseModel):
+    requester: str
+    envelope_id: str
+    run_id: str = RUN_ID
+    requested_tissue: str
+    topk: int = Field(default=3, ge=1, le=9)
 
 # ---------------------------------------------------------------------
 # Runtime state
@@ -384,6 +390,7 @@ def request_prediction_admission(
     action: str = "query_model",
     purpose: str = "approved_model_query",
     event_type: str = "prediction_admission",
+    derivative_representation: Optional[str] = None,
 ) -> Dict[str, Any]:
     admission_request = {
         "envelope_id": envelope_id,
@@ -394,6 +401,9 @@ def request_prediction_admission(
         "requested_tissues": requested_tissues,
         "jti": jti,
     }
+
+    if derivative_representation:
+        admission_request["derivative_representation"] = derivative_representation
 
     try:
         verifier = requests.post(
@@ -2027,6 +2037,102 @@ async def mode1a_guest_contribution_admission(
     }
 
 
+def runtime_credential(
+    principal: str,
+    envelope_id: str,
+) -> Dict[str, Any]:
+    key = principal_runtime_key(envelope_id, principal)
+    credential = holder_runtime_credentials.get(key)
+
+    if not credential:
+        raise HTTPException(409, f"ect_not_ready:{principal}")
+
+    expires_at = credential.get("expires_at")
+    if expires_at and int(expires_at) <= int(time.time()):
+        credential["expired"] = True
+        raise HTTPException(409, f"ect_expired:{principal}")
+
+    return credential
+
+
+def admit_principal_operation(
+    *,
+    principal: str,
+    envelope_id: str,
+    run_id: str,
+    tissue: str,
+    action: str,
+    purpose: str,
+    derivative_representation: Optional[str] = None,
+    event_type: str,
+) -> Dict[str, Any]:
+    context = ACTOR_CONTEXTS.get(principal)
+    if context is None:
+        raise HTTPException(400, f"unknown_principal:{principal}")
+
+    credential = runtime_credential(principal, envelope_id)
+
+    nonce = "nonce-" + secrets.token_urlsafe(18)
+    jti = "jti-" + secrets.token_urlsafe(18)
+
+    signer_url = str(
+        context.get("dpop_signer_url") or ""
+    ).strip() or None
+
+    dpop = sign_principal_dpop(
+        principal,
+        envelope_id,
+        nonce,
+        jti,
+        signer_url=signer_url,
+    )
+
+    return request_prediction_admission(
+        envelope_id=envelope_id,
+        run_id=run_id,
+        requested_tissues=[tissue],
+        jti=jti,
+        authorization=f"ECT {credential['ect']}",
+        dpop=dpop,
+        dpop_nonce=nonce,
+        action=action,
+        purpose=purpose,
+        derivative_representation=derivative_representation,
+        event_type=event_type,
+    )
+
+
+def hal_decide(payload: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        response = requests.post(
+            "http://hal:8088/decide",
+            json=payload,
+            timeout=40,
+        )
+        response.raise_for_status()
+        return response.json()
+    except Exception as exc:
+        raise HTTPException(
+            502,
+            f"hal_reasoning_error:{exc}",
+        ) from exc
+
+
+def hal_blur(image_b64: str) -> Dict[str, Any]:
+    try:
+        response = requests.post(
+            "http://hal:8088/tools/blur",
+            json={"image_b64": image_b64},
+            timeout=20,
+        )
+        response.raise_for_status()
+        return response.json()
+    except Exception as exc:
+        raise HTTPException(
+            502,
+            f"hal_blur_error:{exc}",
+        ) from exc
+
 @app.post("/mode1b/inference")
 def mode1b_inference(req: UserInferenceRequest) -> Dict[str, Any]:
     """Execute bounded inference only after Hal's own DPoP admission succeeds."""
@@ -2146,6 +2252,197 @@ def mode1b_inference(req: UserInferenceRequest) -> Dict[str, Any]:
         }
     )
     return response
+
+@app.post("/mode1b/agent/request")
+def mode1b_agent_request(
+    req: AgentMediatedInferenceRequest,
+) -> Dict[str, Any]:
+    if req.run_id != RUN_ID:
+        raise HTTPException(404, f"unknown_run:{req.run_id}")
+
+    bounded_tissues = {
+        "cancer_associated_stroma",
+        "colorectal_adenocarcinoma_epithelium",
+    }
+    if req.requested_tissue not in bounded_tissues:
+        raise HTTPException(
+            400,
+            f"mode1b_tissue_out_of_scope:{req.requested_tissue}",
+        )
+
+    binding_state = selected_envelope_binding_state()
+    selected_id = binding_state.get("selected_envelope_id")
+
+    if not selected_id:
+        raise HTTPException(409, "no_envelope_selected")
+    if req.envelope_id != selected_id:
+        raise HTTPException(409, "envelope_mismatch")
+    if not binding_state.get("bound", False):
+        raise HTTPException(409, "envelope_not_bound")
+
+    runtime_credential(req.requester, selected_id)
+    runtime_credential("Hal", selected_id)
+
+    source_admission = admit_principal_operation(
+        principal=req.requester,
+        envelope_id=selected_id,
+        run_id=req.run_id,
+        tissue=req.requested_tissue,
+        action="query_model",
+        purpose="approved_model_query",
+        event_type="mode1b_requester_source_admission",
+    )
+
+    source_authorized = bool(
+        source_admission.get("allow", False)
+    )
+
+    available_actions = [
+        "blur_image",
+        "minimal_statistics",
+        "refuse",
+    ]
+
+    if source_authorized:
+        available_actions.insert(0, "no_transform")
+
+    decision = hal_decide({
+        "request_goal":
+            "Inspect the pathology image associated with the prediction",
+        "requester_context": {
+            "source_representation_authorized":
+                source_authorized,
+            "derivative_representation_authorized":
+                True,
+        },
+        "resource_context": {
+            "type": "pathology_image",
+            "contains_cancer_related_collateral": True,
+            "requested_tissue": req.requested_tissue,
+        },
+        "available_actions": available_actions,
+    })
+
+    action = str(decision.get("action") or "")
+
+    if action == "refuse":
+        return {
+            "requester": req.requester,
+            "source_admission": source_admission,
+            "agent_decision": decision,
+            "executed": False,
+        }
+
+    hal_inference = mode1b_inference(
+        UserInferenceRequest(
+            principal="Hal",
+            envelope_id=selected_id,
+            run_id=req.run_id,
+            requested_tissue=req.requested_tissue,
+            topk=req.topk,
+        )
+    )
+
+    if not hal_inference.get("executed"):
+        return {
+            "requester": req.requester,
+            "source_admission": source_admission,
+            "agent_decision": decision,
+            "hal_inference": hal_inference,
+            "executed": False,
+        }
+
+    prediction = dict(hal_inference["prediction"])
+
+    if action == "no_transform":
+        if not source_authorized:
+            raise HTTPException(
+                403,
+                "agent_selected_no_transform_without_source_authority",
+            )
+
+        return {
+            "requester": req.requester,
+            "source_admission": source_admission,
+            "agent_decision": decision,
+            "hal_inference": hal_inference,
+            "executed": True,
+            "representation": "source",
+            "prediction": prediction,
+        }
+
+    if action == "blur_image":
+        derivative_name = (
+            "blurred_image_with_qualitative_accuracy"
+        )
+
+        rebind_admission = admit_principal_operation(
+            principal="Hal",
+            envelope_id=selected_id,
+            run_id=req.run_id,
+            tissue=req.requested_tissue,
+            action="rebind",
+            purpose="policy_authorized_derivation",
+            derivative_representation=derivative_name,
+            event_type="mode1b_rebind_admission",
+        )
+
+        if not rebind_admission.get("allow", False):
+            return {
+                "requester": req.requester,
+                "source_admission": source_admission,
+                "agent_decision": decision,
+                "rebind_admission": rebind_admission,
+                "executed": False,
+            }
+
+        derivative = hal_blur(
+            prediction["sample_image"]["image_b64"]
+        )
+
+        prediction["derivative_image"] = {
+            "mime_type": derivative["mime_type"],
+            "image_b64": derivative["image_b64"],
+            "width": derivative["width"],
+            "height": derivative["height"],
+        }
+        prediction["derivative_representation"] = (
+            derivative_name
+        )
+        prediction["derivative_sha256"] = derivative["sha256"]
+
+        return {
+            "requester": req.requester,
+            "source_admission": source_admission,
+            "agent_decision": decision,
+            "hal_inference": hal_inference,
+            "rebind_admission": rebind_admission,
+            "executed": True,
+            "representation": "derivative",
+            "prediction": prediction,
+        }
+
+    if action == "minimal_statistics":
+        return {
+            "requester": req.requester,
+            "source_admission": source_admission,
+            "agent_decision": decision,
+            "executed": True,
+            "representation": "minimal_statistics",
+            "statistics": {
+                "prediction_tissue":
+                    prediction.get("prediction_tissue"),
+                "class_recall":
+                    prediction.get("class_recall"),
+            },
+        }
+
+    raise HTTPException(
+        500,
+        "unsupported_agent_action",
+    )
+
+
 
 
 @app.post("/user/inference")

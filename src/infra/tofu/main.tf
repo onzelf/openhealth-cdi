@@ -477,12 +477,20 @@ resource "docker_container" "hal" {
   env = [
     "HAL_IDENTITY_DIR=/var/lib/hal/identity",
     "HUB_URL=http://fc-hub:8080",
+    "OPENAI_ENV_FILE=/run/secrets/openai.env",
+    "OPENAI_MODEL=gpt-5.6-luna",
   ]
 
   volumes {
     volume_name    = docker_volume.hal_identity.name
     container_path = "/var/lib/hal/identity"
     read_only      = false
+  }
+
+  volumes {
+    host_path      = abspath("${local.repo_root}/../secrets/.env")
+    container_path = "/run/secrets/openai.env"
+    read_only      = true
   }
 
   depends_on = [docker_container.hub]

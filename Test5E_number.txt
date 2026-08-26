@@ -1,0 +1,313 @@
+     1	#!/usr/bin/env bash
+     2	set -euo pipefail
+     3	
+     4	# Test5D — executable reproduction of paper Table 7.
+     5	# Usage: ./Test5D_mode1b_table7_conformance.sh <active-envelope-id>
+     6	#
+     7	# Expected decision sequence:
+     8	#   DENY / ALLOW / ALLOW / ALLOW / DENY
+     9	
+    10	ENVELOPE_ID="${1:-}"
+    11	[[ -n "${ENVELOPE_ID}" ]] || {
+    12	  echo "Usage: $0 <active-envelope-id>" >&2
+    13	  exit 1
+    14	}
+    15	
+    16	SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    17	SRC_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+    18	ISSUER_IP="${ISSUER_IP:-192.168.1.25}"
+    19	ISSUER_PORT="${ISSUER_PORT:-9443}"
+    20	VERIFIER_IP="${VERIFIER_IP:-192.168.1.25}"
+    21	VERIFIER_PORT="${VERIFIER_PORT:-8443}"
+    22	RUN_ID="${RUN_ID:-local-pathmnist-ab-001}"
+    23	HAL_CONTAINER="${HAL_CONTAINER:-hal}"
+    24	DPOP_HTU="https://verifier.local/admission/check"
+    25	TISSUE="${TISSUE:-cancer_associated_stroma}"
+    26	DERIVATIVE_REPRESENTATION="blurred_image_with_qualitative_accuracy"
+    27	
+    28	CA="${SRC_DIR}/vfp-governance/verifier/certs/ca.crt"
+    29	A_CRT="${SRC_DIR}/vfp-governance/verifier/certs/HospitalA-admin.crt"
+    30	A_KEY="${SRC_DIR}/vfp-governance/verifier/certs/HospitalA-admin.key"
+    31	HUB_CRT="${SRC_DIR}/vfp-governance/verifier/certs/hub.crt"
+    32	HUB_KEY="${SRC_DIR}/vfp-governance/verifier/certs/hub.key"
+    33	EVIDENCE_PUBLIC_KEY="${SRC_DIR}/vfp-governance/verifier/certs/fcac-evidence.pub"
+    34	EVIDENCE_VERIFIER="${SRC_DIR}/tools/verify_fcac_evidence.py"
+    35	EVIDENCE_KEY_KID="${EVIDENCE_KEY_KID:-fcac-evidence-key-1}"
+    36	DECISIONS_DIR="${SRC_DIR}/vfp-governance/verifier/state/events/decisions"
+    37	AUDREY_PRIVATE="${SRC_DIR}/vfp-governance/verifier/vault/holder_keys/Audrey.privhex"
+    38	GEN_MEMBER_KEYS="${SRC_DIR}/tools/gen_member_keys.py"
+    39	MAKE_DPOP="${SRC_DIR}/tools/make_dpop_jwt_eddsa.py"
+    40	TMP="$(mktemp -d)"
+    41	trap 'rm -rf "${TMP}"' EXIT
+    42	
+    43	pass() { printf '\033[32m✓\033[0m %s\n' "$*"; }
+    44	fail() { printf '\033[31m✗\033[0m %s\n' "$*" >&2; exit 1; }
+    45	section() { printf '\n============================================================\n%s\n============================================================\n' "$1"; }
+    46	
+    47	for cmd in curl jq python3 docker; do
+    48	  command -v "${cmd}" >/dev/null 2>&1 || fail "Missing command: ${cmd}"
+    49	done
+    50	for f in "${CA}" "${A_CRT}" "${A_KEY}" "${HUB_CRT}" "${HUB_KEY}" \
+    51	  "${EVIDENCE_PUBLIC_KEY}" "${EVIDENCE_VERIFIER}" "${AUDREY_PRIVATE}" \
+    52	  "${GEN_MEMBER_KEYS}" "${MAKE_DPOP}"; do
+    53	  [[ -s "${f}" ]] || fail "Missing file: ${f}"
+    54	done
+    55	
+    56	issuer_curl() {
+    57	  curl -sS --resolve "issuer-hospitala.local:${ISSUER_PORT}:${ISSUER_IP}" \
+    58	    --cacert "${CA}" --cert "${A_CRT}" --key "${A_KEY}" "$@"
+    59	}
+    60	
+    61	verifier_curl() {
+    62	  curl -sS --resolve "verifier.local:${VERIFIER_PORT}:${VERIFIER_IP}" \
+    63	    --cacert "${CA}" --cert "${HUB_CRT}" --key "${HUB_KEY}" "$@"
+    64	}
+    65	
+    66	decode_ect() {
+    67	  python3 - "$1" <<'PY2'
+    68	import base64, json, sys
+    69	payload = sys.argv[1].split('.')[1]
+    70	payload += '=' * ((4 - len(payload) % 4) % 4)
+    71	print(json.dumps(json.loads(base64.urlsafe_b64decode(payload)), indent=2, sort_keys=True))
+    72	PY2
+    73	}
+    74	
+    75	hal_sign_dpop() {
+    76	  docker exec -i "${HAL_CONTAINER}" python - "$1" "$2" "${DPOP_HTU}" "${ENVELOPE_ID}" <<'PY2'
+    77	import base64, json, sys, time
+    78	from pathlib import Path
+    79	from cryptography.hazmat.primitives import serialization
+    80	nonce, jti, htu, envelope_id = sys.argv[1:5]
+    81	identity = Path('/var/lib/hal/identity')
+    82	key = serialization.load_pem_private_key((identity / 'holder.key').read_bytes(), password=None)
+    83	jwk = json.loads((identity / 'holder.jwk').read_text())
+    84	b64 = lambda raw: base64.urlsafe_b64encode(raw).rstrip(b'=').decode()
+    85	enc = lambda obj: b64(json.dumps(obj, sort_keys=True, separators=(',', ':')).encode())
+    86	header = enc({'typ': 'dpop+jwt', 'alg': 'EdDSA', 'jwk': jwk})
+    87	payload = enc({
+    88	    'htu': htu,
+    89	    'htm': 'POST',
+    90	    'iat': int(time.time()),
+    91	    'jti': jti,
+    92	    'nonce': nonce,
+    93	    'envelope_id': envelope_id,
+    94	})
+    95	print(f'{header}.{payload}.{b64(key.sign(f"{header}.{payload}".encode()))}')
+    96	PY2
+    97	}
+    98	
+    99	AUDREY_IDENTITY="$(
+   100	  python3 "${GEN_MEMBER_KEYS}" \
+   101	    --derive \
+   102	    --private-key "${AUDREY_PRIVATE}" \
+   103	    --format json
+   104	)"
+   105	AUDREY_PUB_B64="$(jq -er '.pub_b64' <<<"${AUDREY_IDENTITY}")"
+   106	AUDREY_JKT="$(jq -er '.jkt' <<<"${AUDREY_IDENTITY}")"
+   107	AUDREY_PRIV_HEX="$(tr -d '\r\n' <"${AUDREY_PRIVATE}")"
+   108	
+   109	audrey_sign_dpop() {
+   110	  python3 "${MAKE_DPOP}" \
+   111	    "${AUDREY_PRIV_HEX}" \
+   112	    "${AUDREY_PUB_B64}" \
+   113	    "$1" \
+   114	    "$2" \
+   115	    POST \
+   116	    "${DPOP_HTU}" \
+   117	    "${ENVELOPE_ID}"
+   118	}
+   119	
+   120	ensure_member() {
+   121	  local subject="$1" member_id="$2" pub="$3" jkt="$4"
+   122	  local members existing_jkt body out
+   123	  members="$(issuer_curl "https://issuer-hospitala.local:${ISSUER_PORT}/members")"
+   124	  existing_jkt="$(printf '%s' "${members}" | jq -r --arg s "${subject}" \
+   125	    '.members[]? | select(.sub==$s) | .jkt' | head -n1)"
+   126	  if [[ -z "${existing_jkt}" ]]; then
+   127	    body="$(jq -nc --arg id "${member_id}" --arg sub "${subject}" \
+   128	      --arg pub "${pub}" --arg jkt "${jkt}" \
+   129	      '{org_id:"org://HospitalA",member_id:$id,sub:$sub,pub_b64:$pub,jkt:$jkt}')"
+   130	    out="$(issuer_curl -H 'content-type: application/json' -d "${body}" \
+   131	      "https://issuer-hospitala.local:${ISSUER_PORT}/members/register")"
+   132	    printf '%s' "${out}" | jq -e '.status == "ok"' >/dev/null \
+   133	      || fail "Registration failed for ${subject}"
+   134	  else
+   135	    [[ "${existing_jkt}" == "${jkt}" ]] \
+   136	      || fail "${subject} is enrolled with a different JKT"
+   137	  fi
+   138	}
+   139	
+   140	mint_ect() {
+   141	  local subject="$1" out="$2" response
+   142	  response="$(issuer_curl -H 'content-type: application/json' \
+   143	    -d "$(jq -nc --arg s "${subject}" --arg e "${ENVELOPE_ID}" \
+   144	      '{sub:$s,envelope_id:$e}')" \
+   145	    "https://issuer-hospitala.local:${ISSUER_PORT}/mint")"
+   146	  printf '%s' "${response}" | jq -e '.ect | type == "string" and length > 0' >/dev/null \
+   147	    || { printf '%s\n' "${response}" | jq . >&2; fail "ECT mint failed for ${subject}"; }
+   148	  printf '%s' "${response}" | jq -r '.ect' >"${out}"
+   149	}
+   150	
+   151	verify_decision_record() {
+   152	  local decision_id="$1" subject="$2" action="$3" expected="$4" derivative="$5"
+   153	  local record="${DECISIONS_DIR}/${decision_id}.json"
+   154	  [[ -s "${record}" ]] || fail "Decision record missing: ${decision_id}"
+   155	  python3 "${EVIDENCE_VERIFIER}" \
+   156	    --public-key "${EVIDENCE_PUBLIC_KEY}" \
+   157	    --artifact "${record}" \
+   158	    --expected-type fcac_admission_decision \
+   159	    --expected-kid "${EVIDENCE_KEY_KID}" >/dev/null \
+   160	    || fail "Decision evidence verification failed: ${decision_id}"
+   161	  jq -e --arg s "${subject}" --arg a "${action}" --arg e "${expected}" \
+   162	    '.sub==$s and .requested_action==$a and .allow_or_deny==$e' \
+   163	    "${record}" >/dev/null || fail "Decision record contract mismatch: ${decision_id}"
+   164	  if [[ -n "${derivative}" ]]; then
+   165	    jq -e --arg d "${derivative}" '.request.derivative_representation==$d' \
+   166	      "${record}" >/dev/null || fail "Derivative policy flag missing from evidence"
+   167	  fi
+   168	}
+   169	
+   170	admission_case() {
+   171	  local case_no="$1" label="$2" signer="$3" subject="$4" ect="$5"
+   172	  local resource="$6" action="$7" purpose="$8" tissue="$9"
+   173	  local derivative="${10}" expected="${11}" expected_reason="${12}"
+   174	  local nonce jti dpop body response allow reason decision_id
+   175	
+   176	  nonce="nonce-$(python3 -c 'import secrets; print(secrets.token_urlsafe(12))')"
+   177	  jti="jti-$(python3 -c 'import secrets; print(secrets.token_urlsafe(12))')"
+   178	  if [[ "${signer}" == "hal" ]]; then
+   179	    dpop="$(hal_sign_dpop "${nonce}" "${jti}")"
+   180	  else
+   181	    dpop="$(audrey_sign_dpop "${nonce}" "${jti}")"
+   182	  fi
+   183	
+   184	  body="$(jq -nc \
+   185	    --arg e "${ENVELOPE_ID}" --arg r "${RUN_ID}" \
+   186	    --arg resource "${resource}" --arg action "${action}" --arg purpose "${purpose}" \
+   187	    --arg tissue "${tissue}" --arg jti "${jti}" --arg derivative "${derivative}" \
+   188	    '{envelope_id:$e,run_id:$r,resource:$resource,action:$action,purpose:$purpose,
+   189	      requested_tissues:[$tissue],jti:$jti}
+   190	     + (if $derivative == "" then {} else {derivative_representation:$derivative} end)')"
+   191	
+   192	  response="$(verifier_curl \
+   193	    -H "Authorization: ECT ${ect}" \
+   194	    -H "DPoP: ${dpop}" \
+   195	    -H "X-DPoP-Nonce: ${nonce}" \
+   196	    -H 'content-type: application/json' \
+   197	    -d "${body}" \
+   198	    "https://verifier.local:${VERIFIER_PORT}/admission/check")"
+   199	
+   200	  allow="$(printf '%s' "${response}" | jq -r '.allow')"
+   201	  reason="$(printf '%s' "${response}" | jq -r '.reason // ""')"
+   202	  decision_id="$(printf '%s' "${response}" | jq -r '.decision_id // empty')"
+   203	  [[ -n "${decision_id}" ]] || { printf '%s\n' "${response}" | jq . >&2; fail "Case ${case_no}: no decision_id"; }
+   204	
+   205	  if [[ "${expected}" == "ALLOW" ]]; then
+   206	    [[ "${allow}" == "true" ]] || { printf '%s\n' "${response}" | jq . >&2; fail "Case ${case_no}: expected ALLOW"; }
+   207	  else
+   208	    [[ "${allow}" == "false" ]] || { printf '%s\n' "${response}" | jq . >&2; fail "Case ${case_no}: expected DENY"; }
+   209	  fi
+   210	  if [[ -n "${expected_reason}" ]]; then
+   211	    [[ "${reason}" == "${expected_reason}" ]] \
+   212	      || fail "Case ${case_no}: expected reason ${expected_reason}, got ${reason:-none}"
+   213	  fi
+   214	
+   215	  verify_decision_record "${decision_id}" "${subject}" "${action}" "${expected}" "${derivative}"
+   216	  pass "Table 7 case ${case_no}: ${label} -> ${expected}"
+   217	}
+   218	
+   219	section "1. Holder identities and issuer bindings"
+   220	
+   221	docker inspect "${HAL_CONTAINER}" >/dev/null 2>&1 || fail "Hal container is unavailable"
+   222	HAL_JWK="$(docker exec "${HAL_CONTAINER}" cat /var/lib/hal/identity/holder.jwk)"
+   223	HAL_JKT="$(docker exec "${HAL_CONTAINER}" cat /var/lib/hal/identity/holder.jkt | tr -d '\r\n')"
+   224	HAL_PUB="$(printf '%s' "${HAL_JWK}" | jq -r '.x // empty')"
+   225	[[ -n "${HAL_PUB}" && -n "${HAL_JKT}" ]] || fail "Hal public identity is incomplete"
+   226	
+   227	ensure_member "Hal" "hal-mode1b" "${HAL_PUB}" "${HAL_JKT}"
+   228	ensure_member "Audrey" "audrey-mode1b" "${AUDREY_PUB_B64}" "${AUDREY_JKT}"
+   229	pass "Hal and Audrey holder identities match Hospital A enrollment"
+   230	
+   231	section "2. Envelope-bound credentials"
+   232	
+   233	mint_ect "Hal" "${TMP}/hal.ect"
+   234	mint_ect "Audrey" "${TMP}/audrey.ect"
+   235	HAL_ECT="$(cat "${TMP}/hal.ect")"
+   236	AUDREY_ECT="$(cat "${TMP}/audrey.ect")"
+   237	decode_ect "${HAL_ECT}" >"${TMP}/hal-claims.json"
+   238	decode_ect "${AUDREY_ECT}" >"${TMP}/audrey-claims.json"
+   239	
+   240	jq -e --arg e "${ENVELOPE_ID}" --arg jkt "${HAL_JKT}" '
+   241	  .sub=="Hal" and .actor_type=="agent" and .envelope_id==$e and .cnf.jkt==$jkt
+   242	  and (.cap_profiles | index("capset:pathmnist_bounded_agent") != null)
+   243	  and ([.cap[].action] | index("bounded_inference") != null)
+   244	  and ([.cap[].action] | index("rebind") != null)
+   245	  and ([.cap[].action] | index("join_envelope") == null)
+   246	' "${TMP}/hal-claims.json" >/dev/null || fail "Hal ECT contract mismatch"
+   247	
+   248	jq -e --arg e "${ENVELOPE_ID}" --arg jkt "${AUDREY_JKT}" '
+   249	  .sub=="Audrey" and .actor_type=="human" and .envelope_id==$e and .cnf.jkt==$jkt
+   250	  and (.cap_profiles | index("capset:pathmnist_other_tissue_reader") != null)
+   251	  and (.cap_profiles | index("capset:pathmnist_derivative_reader") != null)
+   252	  and ([.cap[] | select(.action=="consume_derivative")] | length == 1)
+   253	  and ([.cap[] | select(.action=="query_model") | .scope.pathology_labels[]?]
+   254	       | index("cancer_associated_stroma") == null)
+   255	' "${TMP}/audrey-claims.json" >/dev/null || fail "Audrey ECT contract mismatch"
+   256	pass "Credentials preserve separate source-query, agent, and derivative relations"
+   257	
+   258	section "3. Table 7 executable conformance"
+   259	
+   260	admission_case 1 \
+   261	  "requester asks for unrestricted cancer source" \
+   262	  audrey Audrey "${AUDREY_ECT}" \
+   263	  pathmnist-colon-pathology query_model approved_model_query "${TISSUE}" \
+   264	  "" DENY capability_scope_exceeded
+   265	
+   266	admission_case 2 \
+   267	  "agent performs bounded inference" \
+   268	  hal Hal "${HAL_ECT}" \
+   269	  pathmnist-colon-pathology bounded_inference bounded_model_inference "${TISSUE}" \
+   270	  "" ALLOW ""
+   271	
+   272	admission_case 3 \
+   273	  "agent invokes policy-authorized rebind" \
+   274	  hal Hal "${HAL_ECT}" \
+   275	  pathmnist-colon-pathology rebind policy_authorized_derivation "${TISSUE}" \
+   276	  "${DERIVATIVE_REPRESENTATION}" ALLOW ""
+   277	
+   278	admission_case 4 \
+   279	  "requester consumes governed derivative" \
+   280	  audrey Audrey "${AUDREY_ECT}" \
+   281	  pathmnist-derived-representation consume_derivative approved_derivative_consumption "${TISSUE}" \
+   282	  "${DERIVATIVE_REPRESENTATION}" ALLOW ""
+   283	
+   284	admission_case 5 \
+   285	  "agent attempts privileged governance operation" \
+   286	  hal Hal "${HAL_ECT}" \
+   287	  openhealth-pathmnist-ab join_envelope federated_participation "${TISSUE}" \
+   288	  "" DENY capability_violation
+   289	
+   290	# Row 5 also requires the alternate privileged route to remain physically absent.
+   291	if docker exec -i "${HAL_CONTAINER}" python - <<'PY2'
+   292	import socket, sys
+   293	try:
+   294	    with socket.create_connection(("verifier-app", 9000), timeout=1):
+   295	        sys.exit(0)
+   296	except OSError:
+   297	    sys.exit(1)
+   298	PY2
+   299	then
+   300	  fail "Table 7 case 5: Hal unexpectedly reached verifier-app:9000"
+   301	fi
+   302	pass "Table 7 case 5 route check: verifier-app remains unreachable from Hal"
+   303	
+   304	section "4. Table 7 result"
+   305	printf '%-6s %-56s %s\n' "CASE" "GOVERNED OPERATION" "OBSERVED"
+   306	printf '%s\n' "--------------------------------------------------------------------------------"
+   307	printf '%-6s %-56s %s\n' "1" "Requester unrestricted cancer source" "DENY"
+   308	printf '%-6s %-56s %s\n' "2" "Hal bounded inference" "ALLOW"
+   309	printf '%-6s %-56s %s\n' "3" "Hal policy-authorized rebind" "ALLOW"
+   310	printf '%-6s %-56s %s\n' "4" "Requester governed derivative consumption" "ALLOW"
+   311	printf '%-6s %-56s %s\n' "5" "Hal privileged governance path" "DENY"
+   312	printf '\n'
+   313	pass "TABLE 7 GREEN: 5 / 5 conformance cases reproduced with signed evidence"

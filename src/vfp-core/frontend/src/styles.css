@@ -226,6 +226,38 @@ main {
   margin-bottom: 5px;
 }
 
+.mode1b-use-case-selector {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 12px 0 8px;
+}
+
+.mode1b-use-case-selector > span {
+  color: #78909c;
+  font-size: 11px;
+  font-weight: 700;
+  margin-right: 4px;
+  text-transform: uppercase;
+}
+
+.mode1b-use-case-selector button {
+  background: #f3f6f7;
+  border: 1px solid #d8e1e3;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 5px 8px;
+}
+
+.mode1b-use-case-selector button.selected {
+  background: #e6f5f3;
+  border-color: #15998f;
+  font-weight: 700;
+}
+
+
 .run-chip strong {
   display: block;
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;

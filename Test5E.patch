@@ -1,0 +1,295 @@
+--- a/src/tests/Test5E_mode1b_contextual_agent.sh
++++ b/src/tests/Test5E_mode1b_contextual_agent.sh
+@@ -1,11 +1,12 @@
+ #!/usr/bin/env bash
+ set -euo pipefail
+ 
+-# Test5D — executable reproduction of paper Table 7.
+-# Usage: ./Test5D_mode1b_table7_conformance.sh <active-envelope-id>
++# Test5E — contextual LLM-mediated Mode 1B execution.
++# Usage: ./Test5E_mode1b_contextual_agent.sh <active-envelope-id>
+ #
+-# Expected decision sequence:
+-#   DENY / ALLOW / ALLOW / ALLOW / DENY
++# Expected contextual sequence:
++#   Audrey -> source DENY -> blur_image -> rebind ALLOW -> derivative
++#   Bob    -> source ALLOW -> no_transform -> source
+ 
+ ENVELOPE_ID="${1:-}"
+ [[ -n "${ENVELOPE_ID}" ]] || {
+@@ -19,6 +20,7 @@
+ ISSUER_PORT="${ISSUER_PORT:-9443}"
+ VERIFIER_IP="${VERIFIER_IP:-192.168.1.25}"
+ VERIFIER_PORT="${VERIFIER_PORT:-8443}"
++HUB_URL="${HUB_URL:-http://127.0.0.1:8080}"
+ RUN_ID="${RUN_ID:-local-pathmnist-ab-001}"
+ HAL_CONTAINER="${HAL_CONTAINER:-hal}"
+ DPOP_HTU="https://verifier.local/admission/check"
+@@ -28,6 +30,8 @@
+ CA="${SRC_DIR}/vfp-governance/verifier/certs/ca.crt"
+ A_CRT="${SRC_DIR}/vfp-governance/verifier/certs/HospitalA-admin.crt"
+ A_KEY="${SRC_DIR}/vfp-governance/verifier/certs/HospitalA-admin.key"
++B_CRT="${SRC_DIR}/vfp-governance/verifier/certs/HospitalB-admin.crt"
++B_KEY="${SRC_DIR}/vfp-governance/verifier/certs/HospitalB-admin.key"
+ HUB_CRT="${SRC_DIR}/vfp-governance/verifier/certs/hub.crt"
+ HUB_KEY="${SRC_DIR}/vfp-governance/verifier/certs/hub.key"
+ EVIDENCE_PUBLIC_KEY="${SRC_DIR}/vfp-governance/verifier/certs/fcac-evidence.pub"
+@@ -35,6 +39,7 @@
+ EVIDENCE_KEY_KID="${EVIDENCE_KEY_KID:-fcac-evidence-key-1}"
+ DECISIONS_DIR="${SRC_DIR}/vfp-governance/verifier/state/events/decisions"
+ AUDREY_PRIVATE="${SRC_DIR}/vfp-governance/verifier/vault/holder_keys/Audrey.privhex"
++BOB_PRIVATE="${SRC_DIR}/vfp-governance/verifier/vault/holder_keys/Bob.privhex"
+ GEN_MEMBER_KEYS="${SRC_DIR}/tools/gen_member_keys.py"
+ MAKE_DPOP="${SRC_DIR}/tools/make_dpop_jwt_eddsa.py"
+ TMP="$(mktemp -d)"
+@@ -47,15 +52,20 @@
+ for cmd in curl jq python3 docker; do
+   command -v "${cmd}" >/dev/null 2>&1 || fail "Missing command: ${cmd}"
+ done
+-for f in "${CA}" "${A_CRT}" "${A_KEY}" "${HUB_CRT}" "${HUB_KEY}" \
+-  "${EVIDENCE_PUBLIC_KEY}" "${EVIDENCE_VERIFIER}" "${AUDREY_PRIVATE}" \
+-  "${GEN_MEMBER_KEYS}" "${MAKE_DPOP}"; do
++for f in "${CA}" "${A_CRT}" "${A_KEY}" "${B_CRT}" "${B_KEY}" \
++  "${HUB_CRT}" "${HUB_KEY}" "${EVIDENCE_PUBLIC_KEY}" "${EVIDENCE_VERIFIER}" \
++  "${AUDREY_PRIVATE}" "${BOB_PRIVATE}" "${GEN_MEMBER_KEYS}" "${MAKE_DPOP}"; do
+   [[ -s "${f}" ]] || fail "Missing file: ${f}"
+ done
+ 
+ issuer_curl() {
+   curl -sS --resolve "issuer-hospitala.local:${ISSUER_PORT}:${ISSUER_IP}" \
+     --cacert "${CA}" --cert "${A_CRT}" --key "${A_KEY}" "$@"
++}
++
++issuer_b_curl() {
++  curl -sS --resolve "issuer-hospitalb.local:${ISSUER_PORT}:${ISSUER_IP}" \
++    --cacert "${CA}" --cert "${B_CRT}" --key "${B_KEY}" "$@"
+ }
+ 
+ verifier_curl() {
+@@ -106,6 +116,16 @@
+ AUDREY_JKT="$(jq -er '.jkt' <<<"${AUDREY_IDENTITY}")"
+ AUDREY_PRIV_HEX="$(tr -d '\r\n' <"${AUDREY_PRIVATE}")"
+ 
++BOB_IDENTITY="$(
++  python3 "${GEN_MEMBER_KEYS}" \
++    --derive \
++    --private-key "${BOB_PRIVATE}" \
++    --format json
++)"
++BOB_PUB_B64="$(jq -er '.pub_b64' <<<"${BOB_IDENTITY}")"
++BOB_JKT="$(jq -er '.jkt' <<<"${BOB_IDENTITY}")"
++BOB_PRIV_HEX="$(tr -d '\r\n' <"${BOB_PRIVATE}")"
++
+ audrey_sign_dpop() {
+   python3 "${MAKE_DPOP}" \
+     "${AUDREY_PRIV_HEX}" \
+@@ -137,6 +157,26 @@
+   fi
+ }
+ 
++ensure_bob_member() {
++  local members existing_jkt body out
++  members="$(issuer_b_curl "https://issuer-hospitalb.local:${ISSUER_PORT}/members")"
++  existing_jkt="$(printf '%s' "${members}" | jq -r \
++    '.members[]? | select(.sub=="Bob") | .jkt' | head -n1)"
++  if [[ -z "${existing_jkt}" ]]; then
++    body="$(jq -nc \
++      --arg pub "${BOB_PUB_B64}" \
++      --arg jkt "${BOB_JKT}" \
++      '{org_id:"org://HospitalB",member_id:"bob-mode1b",sub:"Bob",pub_b64:$pub,jkt:$jkt}')"
++    out="$(issuer_b_curl -H 'content-type: application/json' -d "${body}" \
++      "https://issuer-hospitalb.local:${ISSUER_PORT}/members/register")"
++    printf '%s' "${out}" | jq -e '.status == "ok"' >/dev/null \
++      || fail "Registration failed for Bob"
++  else
++    [[ "${existing_jkt}" == "${BOB_JKT}" ]] \
++      || fail "Bob is enrolled with a different JKT"
++  fi
++}
++
+ mint_ect() {
+   local subject="$1" out="$2" response
+   response="$(issuer_curl -H 'content-type: application/json' \
+@@ -146,6 +186,26 @@
+   printf '%s' "${response}" | jq -e '.ect | type == "string" and length > 0' >/dev/null \
+     || { printf '%s\n' "${response}" | jq . >&2; fail "ECT mint failed for ${subject}"; }
+   printf '%s' "${response}" | jq -r '.ect' >"${out}"
++}
++
++mint_bob_ect() {
++  local response
++  response="$(issuer_b_curl -H 'content-type: application/json' \
++    -d "$(jq -nc --arg e "${ENVELOPE_ID}" '{sub:"Bob",envelope_id:$e}')" \
++    "https://issuer-hospitalb.local:${ISSUER_PORT}/mint")"
++  printf '%s' "${response}" | jq -e '.ect | type == "string" and length > 0' >/dev/null \
++    || { printf '%s\n' "${response}" | jq . >&2; fail "ECT mint failed for Bob"; }
++  printf '%s' "${response}" | jq -r '.ect' >"${TMP}/bob.ect"
++}
++
++hub_runtime_mint() {
++  local principal="$1" response
++  response="$(curl -sS \
++    -H 'content-type: application/json' \
++    -d "$(jq -nc --arg e "${ENVELOPE_ID}" '{envelope_id:$e}')" \
++    "${HUB_URL}/administration/holders/${principal}/mint-ect")"
++  printf '%s' "${response}" | jq -e '.ready == true' >/dev/null \
++    || { printf '%s\n' "${response}" | jq . >&2; fail "Hub runtime ECT mint failed for ${principal}"; }
+ }
+ 
+ verify_decision_record() {
+@@ -226,16 +286,20 @@
+ 
+ ensure_member "Hal" "hal-mode1b" "${HAL_PUB}" "${HAL_JKT}"
+ ensure_member "Audrey" "audrey-mode1b" "${AUDREY_PUB_B64}" "${AUDREY_JKT}"
+-pass "Hal and Audrey holder identities match Hospital A enrollment"
++ensure_bob_member
++pass "Hal, Audrey and Bob holder identities match issuer enrollment"
+ 
+ section "2. Envelope-bound credentials"
+ 
+ mint_ect "Hal" "${TMP}/hal.ect"
+ mint_ect "Audrey" "${TMP}/audrey.ect"
++mint_bob_ect
+ HAL_ECT="$(cat "${TMP}/hal.ect")"
+ AUDREY_ECT="$(cat "${TMP}/audrey.ect")"
++BOB_ECT="$(cat "${TMP}/bob.ect")"
+ decode_ect "${HAL_ECT}" >"${TMP}/hal-claims.json"
+ decode_ect "${AUDREY_ECT}" >"${TMP}/audrey-claims.json"
++decode_ect "${BOB_ECT}" >"${TMP}/bob-claims.json"
+ 
+ jq -e --arg e "${ENVELOPE_ID}" --arg jkt "${HAL_JKT}" '
+   .sub=="Hal" and .actor_type=="agent" and .envelope_id==$e and .cnf.jkt==$jkt
+@@ -253,61 +317,76 @@
+   and ([.cap[] | select(.action=="query_model") | .scope.pathology_labels[]?]
+        | index("cancer_associated_stroma") == null)
+ ' "${TMP}/audrey-claims.json" >/dev/null || fail "Audrey ECT contract mismatch"
+-pass "Credentials preserve separate source-query, agent, and derivative relations"
+-
+-section "3. Table 7 executable conformance"
+-
+-admission_case 1 \
+-  "requester asks for unrestricted cancer source" \
+-  audrey Audrey "${AUDREY_ECT}" \
+-  pathmnist-colon-pathology query_model approved_model_query "${TISSUE}" \
+-  "" DENY capability_scope_exceeded
+-
+-admission_case 2 \
+-  "agent performs bounded inference" \
+-  hal Hal "${HAL_ECT}" \
+-  pathmnist-colon-pathology bounded_inference bounded_model_inference "${TISSUE}" \
+-  "" ALLOW ""
+-
+-admission_case 3 \
+-  "agent invokes policy-authorized rebind" \
+-  hal Hal "${HAL_ECT}" \
+-  pathmnist-colon-pathology rebind policy_authorized_derivation "${TISSUE}" \
+-  "${DERIVATIVE_REPRESENTATION}" ALLOW ""
+-
+-admission_case 4 \
+-  "requester consumes governed derivative" \
+-  audrey Audrey "${AUDREY_ECT}" \
+-  pathmnist-derived-representation consume_derivative approved_derivative_consumption "${TISSUE}" \
+-  "${DERIVATIVE_REPRESENTATION}" ALLOW ""
+-
+-admission_case 5 \
+-  "agent attempts privileged governance operation" \
+-  hal Hal "${HAL_ECT}" \
+-  openhealth-pathmnist-ab join_envelope federated_participation "${TISSUE}" \
+-  "" DENY capability_violation
+-
+-# Row 5 also requires the alternate privileged route to remain physically absent.
+-if docker exec -i "${HAL_CONTAINER}" python - <<'PY2'
+-import socket, sys
+-try:
+-    with socket.create_connection(("verifier-app", 9000), timeout=1):
+-        sys.exit(0)
+-except OSError:
+-    sys.exit(1)
+-PY2
+-then
+-  fail "Table 7 case 5: Hal unexpectedly reached verifier-app:9000"
+-fi
+-pass "Table 7 case 5 route check: verifier-app remains unreachable from Hal"
+-
+-section "4. Table 7 result"
+-printf '%-6s %-56s %s\n' "CASE" "GOVERNED OPERATION" "OBSERVED"
+-printf '%s\n' "--------------------------------------------------------------------------------"
+-printf '%-6s %-56s %s\n' "1" "Requester unrestricted cancer source" "DENY"
+-printf '%-6s %-56s %s\n' "2" "Hal bounded inference" "ALLOW"
+-printf '%-6s %-56s %s\n' "3" "Hal policy-authorized rebind" "ALLOW"
+-printf '%-6s %-56s %s\n' "4" "Requester governed derivative consumption" "ALLOW"
+-printf '%-6s %-56s %s\n' "5" "Hal privileged governance path" "DENY"
++jq -e --arg e "${ENVELOPE_ID}" --arg jkt "${BOB_JKT}" '
++  .sub=="Bob" and .envelope_id==$e and .cnf.jkt==$jkt
++  and (.cap_profiles | index("capset:pathmnist_cancer_associated_reader") != null)
++  and ([.cap[] | select(.action=="query_model") | .scope.pathology_labels[]?]
++       | index("cancer_associated_stroma") != null)
++' "${TMP}/bob-claims.json" >/dev/null || fail "Bob ECT contract mismatch"
++
++pass "Credentials preserve distinct Audrey, Bob and Hal capability relations"
++
++hub_runtime_mint "Hal"
++hub_runtime_mint "Audrey"
++hub_runtime_mint "Bob"
++pass "Hub runtime credentials are ready for contextual execution"
++
++section "3. Contextual LLM-mediated execution"
++
++AUDREY_RESPONSE="$(
++  curl -sS \
++    -H 'content-type: application/json' \
++    -d "$(jq -nc \
++      --arg e "${ENVELOPE_ID}" \
++      --arg r "${RUN_ID}" \
++      --arg t "${TISSUE}" \
++      '{requester:"Audrey",envelope_id:$e,run_id:$r,requested_tissue:$t,topk:3}')" \
++    "${HUB_URL}/mode1b/agent/request"
++)"
++
++jq -e --arg d "${DERIVATIVE_REPRESENTATION}" '
++  .source_admission.allow == false
++  and .agent_decision.action == "blur_image"
++  and .agent_decision.fallback == false
++  and .rebind_admission.allow == true
++  and .representation == "derivative"
++  and .prediction.derivative_representation == $d
++  and ((.prediction.derivative_image.image_b64 // "") | length > 0)
++' <<<"${AUDREY_RESPONSE}" >/dev/null || {
++  printf '%s\n' "${AUDREY_RESPONSE}" | jq . >&2
++  fail "Gate 5E case 1: Audrey contextual result mismatch"
++}
++pass "Gate 5E case 1: Audrey -> source DENY -> blur_image -> rebind ALLOW -> derivative"
++
++BOB_RESPONSE="$(
++  curl -sS \
++    -H 'content-type: application/json' \
++    -d "$(jq -nc \
++      --arg e "${ENVELOPE_ID}" \
++      --arg r "${RUN_ID}" \
++      --arg t "${TISSUE}" \
++      '{requester:"Bob",envelope_id:$e,run_id:$r,requested_tissue:$t,topk:3}')" \
++    "${HUB_URL}/mode1b/agent/request"
++)"
++
++jq -e '
++  .source_admission.allow == true
++  and .agent_decision.action == "no_transform"
++  and .agent_decision.fallback == false
++  and .representation == "source"
++  and ((.prediction.sample_image.image_b64 // "") | length > 0)
++  and (.rebind_admission == null)
++' <<<"${BOB_RESPONSE}" >/dev/null || {
++  printf '%s\n' "${BOB_RESPONSE}" | jq . >&2
++  fail "Gate 5E case 2: Bob contextual result mismatch"
++}
++pass "Gate 5E case 2: Bob -> source ALLOW -> no_transform -> source"
++
++section "4. Gate 5E result"
++printf '%-6s %-10s %-10s %-18s %-14s\n' "CASE" "REQUESTER" "SOURCE" "LLM ACTION" "REPRESENTATION"
++printf '%s\n' "-----------------------------------------------------------------------"
++printf '%-6s %-10s %-10s %-18s %-14s\n' "1" "Audrey" "DENY" "blur_image" "derivative"
++printf '%-6s %-10s %-10s %-18s %-14s\n' "2" "Bob" "ALLOW" "no_transform" "source"
+ printf '\n'
+-pass "TABLE 7 GREEN: 5 / 5 conformance cases reproduced with signed evidence"
++pass "GATE 5E GREEN: contextual LLM-mediated execution reproduced"
++pass "Same Hal, different governed capability context, different selected action"
