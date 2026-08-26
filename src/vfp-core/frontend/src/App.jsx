@@ -747,12 +747,19 @@ function UserModePanel({
   const llmAgentReady =
     llmAgent && requesterEctReady && halEctReady;
 
+  const tissueOptions = mode1b ? MODE1B_TISSUES : USER_TISSUES;
+  const activeAdmission = llmAgent
+    ? result?.source_admission
+    : result?.admission;
   const prediction = result?.prediction || null;
-  const sampleImage = prediction?.sample_image;
+  const presentedImage =
+    llmAgent && result?.representation === "derivative"
+      ? prediction?.derivative_image
+      : prediction?.sample_image;
 
-  const sampleImageSrc = sampleImage?.image_b64
-    ? `data:${sampleImage.mime_type || "image/png"};base64,${
-        sampleImage.image_b64
+  const presentedImageSrc = presentedImage?.image_b64
+    ? `data:${presentedImage.mime_type || "image/png"};base64,${
+        presentedImage.image_b64
       }`
     : null;
 
@@ -831,7 +838,7 @@ function UserModePanel({
               }
               value={selectedTissue}
             >
-              {USER_TISSUES.map((tissue) => (
+              {tissueOptions.map((tissue) => (
                 <option key={tissue} value={tissue}>
                   {tissue}
                 </option>
@@ -843,13 +850,18 @@ function UserModePanel({
             disabled={
               busy ||
               !selectedId ||
-              !holder ||
-              holder.ect_status !== "ready"
+              (llmAgent
+                ? !llmAgentReady
+                : !holder || holder.ect_status !== "ready")
             }
             onClick={onRunInference}
             type="button"
           >
-            RUN GOVERNED INFERENCE
+            {llmAgent
+              ? "RUN LLM AGENT REQUEST"
+              : mode1b
+              ? "RUN HAL BOUNDED INFERENCE"
+              : "RUN GOVERNED INFERENCE"}
           </button>
         </div>
 
@@ -878,6 +890,7 @@ function UserModePanel({
             <span className="eyebrow">MODEL RUN</span>
             <strong className="mono">
               {result?.model_run_id ||
+                result?.hal_inference?.model_run_id ||
                 selectedEnvelope?.model_run_id ||
                 "—"}
             </strong>
@@ -887,30 +900,53 @@ function UserModePanel({
             <span className="eyebrow">ADMISSION</span>
             <strong>
               {result
-                ? result.admission?.allow
+                ? activeAdmission?.allow
                   ? "ALLOW"
                   : "DENY"
                 : "Awaiting request"}
             </strong>
           </div>
 
-          {result?.admission?.reason ? (
+          {activeAdmission?.reason ? (
             <div>
               <span className="eyebrow">REASON</span>
-              <strong>{result.admission.reason}</strong>
+              <strong>{activeAdmission.reason}</strong>
+            </div>
+          ) : null}
+
+          {llmAgent && result?.agent_decision?.action ? (
+            <div>
+              <span className="eyebrow">HAL ACTION</span>
+              <strong>{result.agent_decision.action}</strong>
+            </div>
+          ) : null}
+
+          {llmAgent && result?.rebind_admission ? (
+            <div>
+              <span className="eyebrow">REBIND</span>
+              <strong>
+                {result.rebind_admission.allow ? "ALLOW" : "DENY"}
+              </strong>
+            </div>
+          ) : null}
+
+          {llmAgent && result?.representation ? (
+            <div>
+              <span className="eyebrow">REPRESENTATION</span>
+              <strong>{result.representation}</strong>
             </div>
           ) : null}
 
           {prediction ? (
             <div className="prediction-result">
-              {sampleImageSrc ? (
+              {presentedImageSrc ? (
                 <img
                   alt={`PathMNIST sample for ${
                     prediction.requested_tissue
                   }`}
-                  height={sampleImage.height || 28}
-                  src={sampleImageSrc}
-                  width={sampleImage.width || 28}
+                  height={presentedImage.height || 28}
+                  src={presentedImageSrc}
+                  width={presentedImage.width || 28}
                 />
               ) : null}
 
@@ -1808,7 +1844,11 @@ export default function App() {
           executionStatus={status.status}
           onSelect={setSelectedScenarioId}
           mode1bUseCase={mode1bUseCase}
-          onMode1bUseCaseChange={setMode1bUseCase}
+          onMode1bUseCaseChange={(useCase) => {
+            setMode1bUseCase(useCase);
+            setUserInferenceResult(null);
+            setUserError("");
+          }}
         />
 
         <Overview
