@@ -25,6 +25,7 @@ ACTORS_JSON="${SRC_DIR}/vfp-core/issuers/config/actors.json"
 
 HAL_CONTAINER="${HAL_CONTAINER:-hal}"
 HUB_CONTAINER="${HUB_CONTAINER:-fc-hub}"
+LAN_IP="${LAN_IP:?Set LAN_IP to the address passed to OpenTofu as -var=lan_ip}"
 
 pass() {
     printf '\033[32m✓\033[0m %s\n' "$*"
@@ -166,6 +167,11 @@ assert_unreachable "redis" 6379
 assert_unreachable "holder-signer" 8090
 assert_unreachable "verifier-app" 9000
 assert_unreachable "verifier-proxy" 8443
+
+# Host-published federation edges must also be unreachable from Hal.
+assert_unreachable "${LAN_IP}" 8443
+assert_unreachable "${LAN_IP}" 9443
+
 assert_unreachable "issuer-hospitala" 8080
 assert_unreachable "issuer-hospitalb" 8080
 assert_unreachable "issuer-proxy" 8443
@@ -206,14 +212,33 @@ MOUNTS="$(
         jq -r '.[0].Mounts[].Destination'
 )"
 
-EXPECTED_MOUNT="/var/lib/hal/identity"
+EXPECTED_MOUNTS="$(
+    printf '%s\n' \
+        "/run/secrets/openai.env" \
+        "/var/lib/hal/identity" |
+        sort
+)"
 
-[[ "${MOUNTS}" == "${EXPECTED_MOUNT}" ]] || {
+MOUNTS_SORTED="$(printf '%s\n' "${MOUNTS}" | sort)"
+
+[[ "${MOUNTS_SORTED}" == "${EXPECTED_MOUNTS}" ]] || {
     printf 'Observed Hal mounts:\n%s\n' "${MOUNTS}" >&2
     fail "Hal has unexpected mounts"
 }
 
-pass "Hal has only its dedicated identity mount"
+pass "Hal has only its identity and LLM credential mounts"
+
+OPENAI_SECRET_RW="$(
+    docker inspect "${HAL_CONTAINER}" |
+        jq -r '.[0].Mounts[]
+            | select(.Destination == "/run/secrets/openai.env")
+            | .RW'
+)"
+
+[[ "${OPENAI_SECRET_RW}" == "false" ]] ||
+    fail "Hal OpenAI credential mount is not read-only"
+
+pass "Hal LLM credential mount is read-only"
 
 if docker exec "${HAL_CONTAINER}" sh -c \
     'find / -name fcac-evidence.key -print -quit 2>/dev/null | grep -q .'
