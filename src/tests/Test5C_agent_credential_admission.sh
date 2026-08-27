@@ -76,7 +76,7 @@ admission() {
     -H "Authorization: ECT ${ECT}" -H "DPoP: ${dpop}" -H "X-DPoP-Nonce: ${nonce}" \
     -H 'content-type: application/json' \
     -d "$(jq -nc --arg e "${ENVELOPE_ID}" --arg r "${RUN_ID}" --arg a "${action}" --arg p "${purpose}" --arg j "${jti}" \
-      '{envelope_id:$e,run_id:$r,resource:"pathmnist-colon-pathology",action:$a,purpose:$p,requested_tissues:["cancer_associated_stroma"],jti:$j}')" \
+      '{envelope_id:$e,run_id:$r,resource:"pathmnist-colon-pathology",action:$a,purpose:$p,requested_tissues:["colorectal_adenocarcinoma_epithelium"],jti:$j}')" \
     "https://verifier.local:${VERIFIER_PORT}/admission/check")"
   printf '%s\n' "${response}" | jq .
   if [[ "${expected}" == "ALLOW" ]]; then

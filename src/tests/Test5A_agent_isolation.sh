@@ -168,9 +168,72 @@ assert_unreachable "holder-signer" 8090
 assert_unreachable "verifier-app" 9000
 assert_unreachable "verifier-proxy" 8443
 
-# Host-published federation edges must also be unreachable from Hal.
-assert_unreachable "${LAN_IP}" 8443
-assert_unreachable "${LAN_IP}" 9443
+# Host-published federation edges may be routable from agent-edge.
+# The invariant is that Hal cannot authenticate through those governed edges.
+assert_edge_denied() {
+    local host="$1"
+    local port="$2"
+    local server_name="$3"
+    local method="$4"
+    local path="$5"
+    local result
+
+    result="$(
+        docker exec -i \
+            -e TARGET_HOST="${host}" \
+            -e TARGET_PORT="${port}" \
+            -e SERVER_NAME="${server_name}" \
+            -e HTTP_METHOD="${method}" \
+            -e TARGET_PATH="${path}" \
+            "${HAL_CONTAINER}" \
+            python - <<'PY2'
+import os
+import socket
+import ssl
+
+host = os.environ["TARGET_HOST"]
+port = int(os.environ["TARGET_PORT"])
+server_name = os.environ["SERVER_NAME"]
+method = os.environ["HTTP_METHOD"]
+path = os.environ["TARGET_PATH"]
+
+context = ssl.create_default_context()
+context.check_hostname = False
+context.verify_mode = ssl.CERT_NONE
+
+try:
+    with socket.create_connection((host, port), timeout=3) as raw:
+        with context.wrap_socket(raw, server_hostname=server_name) as tls:
+            request = (
+                f"{method} {path} HTTP/1.1\r\n"
+                f"Host: {server_name}\r\n"
+                "Content-Length: 0\r\n"
+                "Connection: close\r\n\r\n"
+            )
+            tls.sendall(request.encode("ascii"))
+            response = tls.recv(4096)
+except (OSError, ssl.SSLError):
+    print("transport_or_tls_denied")
+    raise SystemExit(0)
+
+status_line = response.split(b"\r\n", 1)[0].decode("ascii", "replace")
+parts = status_line.split()
+print(parts[1] if len(parts) >= 2 else "invalid_response")
+PY2
+    )"
+
+    case "${result}" in
+        transport_or_tls_denied|400|401|403)
+            pass "Hal is denied by ${server_name}:${port}${path} (${result})"
+            ;;
+        *)
+            fail "Hal obtained unexpected access via ${server_name}:${port}${path}: ${result}"
+            ;;
+    esac
+}
+
+assert_edge_denied "${LAN_IP}" 8443 "verifier.local" POST "/admission/check"
+assert_edge_denied "${LAN_IP}" 9443 "issuer-hospitala.local" GET "/members"
 
 assert_unreachable "issuer-hospitala" 8080
 assert_unreachable "issuer-hospitalb" 8080

@@ -1,5 +1,27 @@
 {
-  "version": "2.3",
+  "version": "2.4",
+  "constitutive": {
+    "participants": [
+      {
+        "org": "org://HospitalA",
+        "sigma_part": {
+          "jurisdiction": "EU",
+          "sensitivity": "CLINICAL"
+        }
+      },
+      {
+        "org": "org://HospitalB",
+        "sigma_part": {
+          "jurisdiction": "US",
+          "sensitivity": "PHI"
+        }
+      }
+    ],
+    "quorum": {
+      "k": 2,
+      "n": 2
+    }
+  },
   "ops": {
     "join_pathmnist_ab_envelope": {
       "resource": "openhealth-pathmnist-ab",

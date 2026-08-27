@@ -91,28 +91,6 @@ KYO_ORGANISATIONS = {
     "hospital-a": "org://HospitalA",
     "hospital-b": "org://HospitalB",
 }
-KYO_BIND_PAYLOAD = {
-    "participants": [
-        {
-            "org": "org://HospitalA",
-            "sigma_part": {
-                "jurisdiction": "EU",
-                "sensitivity": "CLINICAL",
-            },
-        },
-        {
-            "org": "org://HospitalB",
-            "sigma_part": {
-                "jurisdiction": "US",
-                "sensitivity": "PHI",
-            },
-        },
-    ],
-    "quorum": {"k": 2, "n": 2},
-    "scope": {"model": "FedMNIST-v1", "backend": "flower_server"},
-    "allowed_ops": ["start", "train", "predict"],
-}
-
 PATHMNIST_QUERY_TISSUES = [
     "adipose",
     "debris",
@@ -825,7 +803,6 @@ async def bind_envelope_to_backend(
 ) -> bool:
     """Record an envelope binding without changing experiment status."""
     envelope_id = envelope.get("envelope_id")
-    scope = envelope.get("scope") or {}
     envelope_key = str(envelope_id)
 
     async with envelope_binding_lock:
@@ -834,11 +811,9 @@ async def bind_envelope_to_backend(
 
         bind_payload = {
             "envelope_id": envelope_id,
-            "allowed_ops": envelope.get("allowed_ops", []),
             "policy_hash": envelope.get("policy_hash"),
             "valid_until": envelope.get("valid_until"),
             "participants": envelope.get("participants", []),
-            "scope": scope,
         }
 
         try:
@@ -883,9 +858,7 @@ async def retry_pending_envelope_bindings() -> None:
         await asyncio.sleep(BIND_RETRY_SECONDS)
 
         for envelope in list(pending_envelopes.values()):
-            scope = envelope.get("scope") or {}
-            backend_type = scope.get("backend", "flower_server")
-            backend = backend_for_type(backend_type)
+            backend = backend_for_type("flower_server")
             if backend is not None:
                 await bind_envelope_to_backend(envelope, backend)
 
@@ -901,8 +874,7 @@ async def handle_envelope_created(envelope: Dict[str, Any]) -> None:
         )
         return
 
-    scope = envelope.get("scope") or {}
-    backend_type = scope.get("backend", "flower_server")
+    backend_type = "flower_server"
     pending_envelopes[str(envelope_id)] = envelope
 
     append_event(
@@ -910,7 +882,6 @@ async def handle_envelope_created(envelope: Dict[str, Any]) -> None:
         envelope_id=envelope_id,
         backend_type=backend_type,
         policy_hash=envelope.get("policy_hash"),
-        scope=scope,
     )
 
     backend = backend_for_type(backend_type)
@@ -1042,14 +1013,11 @@ async def backend_register(req: Request) -> Dict[str, Any]:
             active_envelope_id
         ]
 
-    matching_envelopes = [
-        envelope
-        for envelope in list(pending_envelopes.values())
-        if (envelope.get("scope") or {}).get(
-            "backend",
-            "flower_server",
-        ) == backend["backend_type"]
-    ]
+    matching_envelopes = (
+        list(pending_envelopes.values())
+        if backend["backend_type"] == "flower_server"
+        else []
+    )
     for envelope in matching_envelopes:
         await bind_envelope_to_backend(envelope, backend)
 
@@ -1404,17 +1372,15 @@ async def administration_envelope_select(envelope_id: str) -> Dict[str, Any]:
     if envelope.get("exp") and float(envelope["exp"]) <= time.time():
         raise HTTPException(409, "selected_envelope_expired")
 
-    backend = backend_for_type((envelope.get("scope") or {}).get("backend", "flower_server"))
+    backend = backend_for_type("flower_server")
     if backend is None:
         raise HTTPException(409, "flower_backend_not_registered")
 
     binding = {
         "envelope_id": envelope_id,
-        "allowed_ops": envelope.get("allowed_ops", []),
         "policy_hash": envelope.get("policy_hash"),
         "valid_until": envelope.get("exp"),
         "participants": envelope.get("participants", []),
-        "scope": envelope.get("scope", {}),
     }
     pending_envelopes[envelope_id] = binding
     if not await bind_envelope_to_backend(binding, backend):
@@ -1429,8 +1395,8 @@ async def administration_envelope_select(envelope_id: str) -> Dict[str, Any]:
 
 @app.post("/administration/kyo/binds")
 def administration_kyo_begin() -> Dict[str, Any]:
-    """Proxy the same fixed A+B bind initialization used by Test1A."""
-    result = verifier_request("POST", "/beta/bind/init", json=KYO_BIND_PAYLOAD)
+    """Initiate the policy-owned A+B binding ceremony."""
+    result = verifier_request("POST", "/beta/bind/init", json={})
     append_event(
         "kyo_ceremony_started",
         bind_id=result["bind_id"],

@@ -12,18 +12,7 @@ bold() { printf "\033[1m%s\033[0m\n" "$*"; }
 
 bold "=== Step 1: Initialize Bind ==="
 
-PAYLOAD=$(cat <<'JSON'
-{
-  "participants":[
-    {"org":"org://HospitalA","sigma_part":{"jurisdiction":"EU","sensitivity":"CLINICAL"}},
-    {"org":"org://HospitalB","sigma_part":{"jurisdiction":"US","sensitivity":"PHI"}}
-  ],
-  "quorum":{"k":2,"n":2},
-  "scope":{"model":"FedMNIST-v1","backend":"flower_server"},
-  "allowed_ops":["start","train","predict"]
-}
-JSON
-)
+PAYLOAD='{}'
 
 BIND_ID=$(curl -sk --cert "$CRT" --key "$KEY" \
   -H 'Content-Type: application/json' \

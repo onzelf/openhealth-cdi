@@ -339,7 +339,7 @@ then
 fi
 pass "Table 7 case 5 route check: verifier-app remains unreachable from Hal"
 
-section "4. Table 7 result"
+#section "4. Table 7 result"
 section "4. Table 7 result"
 
 printf '%-6s %-56s %-10s %s\n' \

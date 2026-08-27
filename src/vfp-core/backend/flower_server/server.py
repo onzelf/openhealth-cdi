@@ -146,11 +146,9 @@ training_state_lock = threading.Lock()
 
 class EnvelopeBinding(BaseModel):
     envelope_id: str
-    allowed_ops: List[str] = Field(default_factory=list)
     policy_hash: Optional[str] = None
     valid_until: Optional[int] = None
     participants: List[str] = Field(default_factory=list)
-    scope: Dict[str, Any] = Field(default_factory=dict)
 
 
 class PredictionRequest(BaseModel):

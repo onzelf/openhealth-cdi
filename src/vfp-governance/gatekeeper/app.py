@@ -273,7 +273,7 @@ def load_policy() -> Dict[str, Any]:
     pol = _read_json(POLICY_PATH)
     if not pol:
         raise RuntimeError(f"policy.json not found at {POLICY_PATH}")
-    for k in ("version", "ops", "cap_profiles", "meta"):
+    for k in ("version", "constitutive", "ops", "cap_profiles", "meta"):
         if k not in pol:
             raise RuntimeError(f"policy.json missing '{k}'")
     return pol
@@ -450,9 +450,8 @@ def _load_env_summary(p: Path):
             "state": e.get("state"),
             "exp": e.get("exp") or e.get("valid_until"),
             "policy_hash": e.get("policy_hash"),
-            "scope": e.get("scope", {}),
-            "allowed_ops": e.get("allowed_ops", []),
             "participants": [pp.get("org") for pp in e.get("participants", [])],
+            "quorum": e.get("quorum", {}),
         }
     except Exception:
         return None
@@ -551,27 +550,94 @@ def session_claim(code: str):
 # -----------------------------------------------
 # POST /abeta/bind/init
 # ----------------------------------------------
+def _constitutive_bind_terms():
+    config = _policy.get("constitutive")
+    if not isinstance(config, dict):
+        raise RuntimeError("policy constitutive block invalid")
+
+    participants = config.get("participants")
+    quorum = config.get("quorum")
+
+    if not isinstance(participants, list) or not participants:
+        raise RuntimeError("policy constitutive participants invalid")
+
+    orgs = []
+    for participant in participants:
+        if (
+            not isinstance(participant, dict)
+            or not isinstance(participant.get("org"), str)
+            or not participant["org"]
+        ):
+            raise RuntimeError("policy constitutive participant invalid")
+        orgs.append(participant["org"])
+
+    if len(set(orgs)) != len(orgs):
+        raise RuntimeError("policy constitutive participants duplicated")
+
+    if not isinstance(quorum, dict):
+        raise RuntimeError("policy constitutive quorum invalid")
+
+    k = quorum.get("k")
+    n = quorum.get("n")
+    if (
+        not isinstance(k, int)
+        or isinstance(k, bool)
+        or not isinstance(n, int)
+        or isinstance(n, bool)
+        or n != len(participants)
+        or not 1 <= k <= n
+    ):
+        raise RuntimeError("policy constitutive quorum invalid")
+
+    # Copy because bind approval enriches participant records with admin_cn.
+    return (
+        json.loads(json.dumps(participants)),
+        {"k": k, "n": n},
+    )
+
+
 @app.post("/beta/bind/init")
 async def bind_init(req: Request):
-    b = await req.json()
-    bid = "b" + uuid.uuid4().hex[:12]
+    try:
+        caller = await req.json()
+    except Exception:
+        caller = {}
 
-    # Bind the ceremony to the exact policy loaded by this Gatekeeper process.
+    if not isinstance(caller, dict):
+        raise HTTPException(400, "bind_init_body_must_be_object")
+
+    policy_owned = {"participants", "quorum", "scope", "allowed_ops"}
+    attempted = sorted(policy_owned.intersection(caller))
+    if attempted:
+        raise HTTPException(
+            400,
+            "bind_terms_are_policy_owned:" + ",".join(attempted),
+        )
+    if caller:
+        raise HTTPException(400, "unsupported_bind_init_fields")
+
+    participants, quorum = _constitutive_bind_terms()
+    bid = "b" + uuid.uuid4().hex[:12]
     ph = _policy_hash
 
     rec = {
         "bind_id": bid,
         "state": "PENDING",
-        "participants": b.get("participants", []),
-        "quorum": b.get("quorum", {"k": 2, "n": 2}),
-        "scope": b.get("scope", {}),
-        "allowed_ops": b.get("allowed_ops", []),
+        "participants": participants,
+        "quorum": quorum,
         "approvals": [],
         "policy_hash": ph,
         "ts": now_epoch(),
     }
     bind_save(rec)
-    append_event({"bind_init": {"bind_id": bid, "policy_hash": ph}})
+    append_event({
+        "bind_init": {
+            "bind_id": bid,
+            "policy_hash": ph,
+            "participants": [p["org"] for p in participants],
+            "quorum": quorum,
+        }
+    })
     return {"ok": True, "bind_id": bid, "policy_hash": ph}
 
 # -----------------------------------------------
@@ -650,8 +716,6 @@ async def bind_approve(req: Request):
         "created_at": now_epoch(),
         "activated_at": now_epoch(),
         "valid_until": now_epoch() + ENVELOPE_TTL,
-        "scope": b["scope"],
-        "allowed_ops": b["allowed_ops"],
         "participants": b["participants"],
         "policy_hash": b["policy_hash"],
         "quorum": b["quorum"],
@@ -671,11 +735,9 @@ async def bind_approve(req: Request):
         r = await get_redis()
         envelope_event = {
             "envelope_id": eid,
-            "allowed_ops": env["allowed_ops"],
             "policy_hash": env["policy_hash"],
             "valid_until": env["valid_until"],
             "participants": [p.get("org") for p in env["participants"]],
-            "scope": env.get("scope", {}),
             "created_at": now_epoch(),
         }
         await r.publish(REDIS_CHANNEL_ENVELOPES_CREATED, json.dumps(envelope_event))
@@ -1398,6 +1460,7 @@ async def guest_contribution_admission(
         agg = None
         pii = None
         contact = None
+        derivative_representation = None
 
         def __init__(self):
             self.envelope_id = envelope_id

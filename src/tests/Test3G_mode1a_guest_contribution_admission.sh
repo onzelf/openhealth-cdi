@@ -12,8 +12,9 @@ SRC_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 HUB_URL="${HUB_URL:-http://127.0.0.1:8080}"
 PRINCIPAL="${PRINCIPAL:-Charlie}"
+RUN_ID="${RUN_ID:-local-pathmnist-ab-001}"
 DECISIONS_DIR="${SRC_DIR}/vfp-governance/verifier/state/events/decisions"
-MODEL_EVIDENCE="${SRC_DIR}/vfp-governance/verifier/vault/${ENVELOPE_ID}/run.json"
+MODEL_ARTIFACT="${SRC_DIR}/vfp-governance/verifier/vault/runs/${RUN_ID}/model.pt"
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "${TMP_DIR}"' EXIT
@@ -27,8 +28,8 @@ for command_name in curl jq; do
         fail "Missing command: ${command_name}"
 done
 
-[[ -s "${MODEL_EVIDENCE}" ]] ||
-    fail "Missing envelope model evidence: ${MODEL_EVIDENCE}"
+[[ -s "${MODEL_ARTIFACT}" ]] ||
+    fail "Missing trained model artifact: ${MODEL_ARTIFACT}"
 
 ALL_TISSUES='[
   "adipose",
@@ -59,11 +60,11 @@ CHARLIE_ECT_STATUS="$(
 [[ "${CHARLIE_ECT_STATUS}" == "ready" ]] ||
     fail "Charlie ECT is ${CHARLIE_ECT_STATUS:-missing}; run Test3F first"
 
-MODEL_BEFORE="$(jq -r '.run_id // empty' "${MODEL_EVIDENCE}")"
+MODEL_BEFORE="$(sha256sum "${MODEL_ARTIFACT}" | awk '{print $1}')"
 [[ -n "${MODEL_BEFORE}" ]] ||
-    fail "Envelope run.json does not contain run_id"
+    fail "Unable to hash trained model artifact"
 
-pass "Charlie ECT is ready; E2 model pointer is ${MODEL_BEFORE}"
+pass "Charlie ECT is ready; trained model artifact is present"
 
 section "2. Full non-reserved guest partition is ALLOW"
 
@@ -204,9 +205,9 @@ pass "Charlie cannot query any non-reserved PathMNIST tissue"
 
 section "5. Gate 3B did not move the model"
 
-MODEL_AFTER="$(jq -r '.run_id // empty' "${MODEL_EVIDENCE}")"
+MODEL_AFTER="$(sha256sum "${MODEL_ARTIFACT}" | awk '{print $1}')"
 [[ "${MODEL_AFTER}" == "${MODEL_BEFORE}" ]] ||
-    fail "Model pointer moved from ${MODEL_BEFORE} to ${MODEL_AFTER}"
+    fail "Model artifact changed during guest admission"
 
-pass "E2 still points to ${MODEL_AFTER}; no Flower execution occurred"
+pass "Trained model artifact is unchanged; no Flower execution occurred"
 printf '\n\033[32mPASS\033[0m Gate 3B guest contribution aperture\n'
