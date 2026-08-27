@@ -22,7 +22,7 @@ VERIFIER_PORT="${VERIFIER_PORT:-8443}"
 RUN_ID="${RUN_ID:-local-pathmnist-ab-001}"
 HAL_CONTAINER="${HAL_CONTAINER:-hal}"
 DPOP_HTU="https://verifier.local/admission/check"
-TISSUE="${TISSUE:-cancer_associated_stroma}"
+TISSUE="${TISSUE:-colorectal_adenocarcinoma_epithelium}"
 DERIVATIVE_REPRESENTATION="blurred_image_with_qualitative_accuracy"
 
 CA="${SRC_DIR}/vfp-governance/verifier/certs/ca.crt"
@@ -167,6 +167,11 @@ verify_decision_record() {
   fi
 }
 
+
+CASE_LABELS=()
+CASE_RESULTS=()
+CASE_DECISION_IDS=()
+
 admission_case() {
   local case_no="$1" label="$2" signer="$3" subject="$4" ect="$5"
   local resource="$6" action="$7" purpose="$8" tissue="$9"
@@ -212,8 +217,20 @@ admission_case() {
       || fail "Case ${case_no}: expected reason ${expected_reason}, got ${reason:-none}"
   fi
 
+  if [[ "${allow}" == "true" ]]; then
+    observed="ALLOW"
+  else
+    observed="DENY"
+  fi
+
+
   verify_decision_record "${decision_id}" "${subject}" "${action}" "${expected}" "${derivative}"
-  pass "Table 7 case ${case_no}: ${label} -> ${expected}"
+
+  CASE_LABELS+=("${label}")
+  CASE_RESULTS+=("${observed}")
+  CASE_DECISION_IDS+=("${decision_id}")
+
+  pass "Table 7 case ${case_no}: ${label} -> ${observed}"
 }
 
 section "1. Holder identities and issuer bindings"
@@ -242,6 +259,20 @@ jq -e --arg e "${ENVELOPE_ID}" --arg jkt "${HAL_JKT}" '
   and (.cap_profiles | index("capset:pathmnist_bounded_agent") != null)
   and ([.cap[].action] | index("bounded_inference") != null)
   and ([.cap[].action] | index("rebind") != null)
+  and (
+    [.cap[]
+      | select(.action=="bounded_inference")
+      | .scope.pathology_labels[]?] | sort
+    ==
+    ["colorectal_adenocarcinoma_epithelium","mucus"]
+  )
+  and (
+    [.cap[]
+      | select(.action=="rebind")
+      | .scope.pathology_labels[]?] | sort
+    ==
+    ["colorectal_adenocarcinoma_epithelium","mucus"]
+  )
   and ([.cap[].action] | index("join_envelope") == null)
 ' "${TMP}/hal-claims.json" >/dev/null || fail "Hal ECT contract mismatch"
 
@@ -250,10 +281,17 @@ jq -e --arg e "${ENVELOPE_ID}" --arg jkt "${AUDREY_JKT}" '
   and (.cap_profiles | index("capset:pathmnist_other_tissue_reader") != null)
   and (.cap_profiles | index("capset:pathmnist_derivative_reader") != null)
   and ([.cap[] | select(.action=="consume_derivative")] | length == 1)
+  and (
+    [.cap[]
+      | select(.action=="consume_derivative")
+      | .scope.pathology_labels[]?] | sort
+    ==
+    ["colorectal_adenocarcinoma_epithelium","mucus"]
+  )
   and ([.cap[] | select(.action=="query_model") | .scope.pathology_labels[]?]
-       | index("cancer_associated_stroma") == null)
+       | index("colorectal_adenocarcinoma_epithelium") == null)
 ' "${TMP}/audrey-claims.json" >/dev/null || fail "Audrey ECT contract mismatch"
-pass "Credentials preserve separate source-query, agent, and derivative relations"
+pass "Credentials preserve separate relations and the two-tissue Mode 1B scope"
 
 section "3. Table 7 executable conformance"
 
@@ -302,12 +340,20 @@ fi
 pass "Table 7 case 5 route check: verifier-app remains unreachable from Hal"
 
 section "4. Table 7 result"
-printf '%-6s %-56s %s\n' "CASE" "GOVERNED OPERATION" "OBSERVED"
-printf '%s\n' "--------------------------------------------------------------------------------"
-printf '%-6s %-56s %s\n' "1" "Requester unrestricted cancer source" "DENY"
-printf '%-6s %-56s %s\n' "2" "Hal bounded inference" "ALLOW"
-printf '%-6s %-56s %s\n' "3" "Hal policy-authorized rebind" "ALLOW"
-printf '%-6s %-56s %s\n' "4" "Requester governed derivative consumption" "ALLOW"
-printf '%-6s %-56s %s\n' "5" "Hal privileged governance path" "DENY"
+section "4. Table 7 result"
+
+printf '%-6s %-56s %-10s %s\n' \
+  "CASE" "GOVERNED OPERATION" "OBSERVED" "DECISION ID"
+printf '%s\n' \
+  "---------------------------------------------------------------------------------------------------------------"
+
+for i in "${!CASE_RESULTS[@]}"; do
+  printf '%-6s %-56s %-10s %s\n' \
+    "$((i + 1))" \
+    "${CASE_LABELS[$i]}" \
+    "${CASE_RESULTS[$i]}" \
+    "${CASE_DECISION_IDS[$i]}"
+done
+
 printf '\n'
-pass "TABLE 7 GREEN: 5 / 5 conformance cases reproduced with signed evidence"
+pass "TABLE 7 GREEN: ${#CASE_RESULTS[@]} / 5 conformance cases reproduced with signed evidence"

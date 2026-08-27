@@ -1,6 +1,9 @@
 {
   "org": "org://HospitalB",
   "members": {
-    "Bob": "PATHMNIST_CANCER_ASSOCIATED_READER"
+    "Bob": [
+      "PATHMNIST_CANCER_ASSOCIATED_READER",
+      "PATHMNIST_DERIVATIVE_READER"
+    ]
   }
 }

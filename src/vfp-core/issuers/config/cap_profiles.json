@@ -10,6 +10,7 @@
   "org://HospitalB": {
     "PATHMNIST_PARTICIPANT": "capset:pathmnist_hospital_b_participant",
     "PATHMNIST_OTHER_TISSUE_READER": "capset:pathmnist_other_tissue_reader",
-    "PATHMNIST_CANCER_ASSOCIATED_READER": "capset:pathmnist_cancer_associated_reader"
+    "PATHMNIST_CANCER_ASSOCIATED_READER": "capset:pathmnist_cancer_associated_reader",
+    "PATHMNIST_DERIVATIVE_READER": "capset:pathmnist_derivative_reader"
   }
 }

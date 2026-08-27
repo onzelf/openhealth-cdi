@@ -115,7 +115,7 @@
       "purpose": "bounded_model_inference",
       "scope": {
         "pathology_labels": [
-          "cancer_associated_stroma",
+          "mucus",
           "colorectal_adenocarcinoma_epithelium"
         ]
       },
@@ -134,7 +134,7 @@
       "purpose": "policy_authorized_derivation",
       "scope": {
         "pathology_labels": [
-          "cancer_associated_stroma",
+          "mucus",
           "colorectal_adenocarcinoma_epithelium"
         ]
       },
@@ -154,7 +154,7 @@
       "purpose": "approved_derivative_consumption",
       "scope": {
         "pathology_labels": [
-          "cancer_associated_stroma",
+          "mucus",
           "colorectal_adenocarcinoma_epithelium"
         ]
       },
@@ -225,7 +225,6 @@
         "submit_update_guest_contributor"
       ]
     },
-
     "capset:pathmnist_bounded_agent": {
       "cap": [
         "bounded_inference_agent",
@@ -237,7 +236,6 @@
         "consume_rebound_derivative"
       ]
     },
-
     "capset:pathmnist_other_tissue_reader": {
       "cap": [
         "query_model_other_tissue_reader"
@@ -294,13 +292,12 @@
       "sponsor_type": "founding_member"
     },
     "capset:pathmnist_bounded_agent": {
-     "required": true,
-     "min_sponsors": 2,
-     "max_sponsors": 2,
-     "sponsor_type": "founding_member"
+      "required": true,
+      "min_sponsors": 2,
+      "max_sponsors": 2,
+      "sponsor_type": "founding_member"
     }
   },
-
   "sponsorship_authority": {
     "eligible_sponsor_organizations": [
       "org://HospitalA",

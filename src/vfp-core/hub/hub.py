@@ -389,13 +389,14 @@ def request_prediction_admission(
     dpop_nonce: str,
     action: str = "query_model",
     purpose: str = "approved_model_query",
+    resource: str = "pathmnist-colon-pathology",
     event_type: str = "prediction_admission",
     derivative_representation: Optional[str] = None,
 ) -> Dict[str, Any]:
     admission_request = {
         "envelope_id": envelope_id,
         "run_id": run_id,
-        "resource": "pathmnist-colon-pathology",
+        "resource": resource,
         "action": action,
         "purpose": purpose,
         "requested_tissues": requested_tissues,
@@ -435,6 +436,7 @@ def request_prediction_admission(
         envelope_id=envelope_id,
         requested_tissues=requested_tissues,
         jti=jti,
+        resource=resource,
         action=action,
         purpose=purpose,
         **admission,
@@ -2063,6 +2065,7 @@ def admit_principal_operation(
     tissue: str,
     action: str,
     purpose: str,
+    resource: str = "pathmnist-colon-pathology",
     derivative_representation: Optional[str] = None,
     event_type: str,
 ) -> Dict[str, Any]:
@@ -2097,6 +2100,7 @@ def admit_principal_operation(
         dpop_nonce=nonce,
         action=action,
         purpose=purpose,
+        resource=resource,
         derivative_representation=derivative_representation,
         event_type=event_type,
     )
@@ -2138,13 +2142,6 @@ def mode1b_inference(req: UserInferenceRequest) -> Dict[str, Any]:
     """Execute bounded inference only after Hal's own DPoP admission succeeds."""
     if req.run_id != RUN_ID:
         raise HTTPException(404, f"unknown_run:{req.run_id}")
-
-    bounded_tissues = {
-        "cancer_associated_stroma",
-        "colorectal_adenocarcinoma_epithelium",
-    }
-    if req.requested_tissue not in bounded_tissues:
-        raise HTTPException(400, f"mode1b_tissue_out_of_scope:{req.requested_tissue}")
 
     binding_state = selected_envelope_binding_state()
     selected_id = binding_state.get("selected_envelope_id")
@@ -2260,16 +2257,6 @@ def mode1b_agent_request(
     if req.run_id != RUN_ID:
         raise HTTPException(404, f"unknown_run:{req.run_id}")
 
-    bounded_tissues = {
-        "cancer_associated_stroma",
-        "colorectal_adenocarcinoma_epithelium",
-    }
-    if req.requested_tissue not in bounded_tissues:
-        raise HTTPException(
-            400,
-            f"mode1b_tissue_out_of_scope:{req.requested_tissue}",
-        )
-
     binding_state = selected_envelope_binding_state()
     selected_id = binding_state.get("selected_envelope_id")
 
@@ -2312,8 +2299,6 @@ def mode1b_agent_request(
         "requester_context": {
             "source_representation_authorized":
                 source_authorized,
-            "derivative_representation_authorized":
-                True,
         },
         "resource_context": {
             "type": "pathology_image",
@@ -2354,6 +2339,13 @@ def mode1b_agent_request(
 
     prediction = dict(hal_inference["prediction"])
 
+    # Hal's inference result is internal execution state.  The composed
+    # response exposes its governance/evidence metadata but not the source
+    # prediction payload.  The permitted representation is returned
+    # separately below.
+    hal_inference_public = dict(hal_inference)
+    hal_inference_public.pop("prediction", None)
+
     if action == "no_transform":
         if not source_authorized:
             raise HTTPException(
@@ -2365,7 +2357,7 @@ def mode1b_agent_request(
             "requester": req.requester,
             "source_admission": source_admission,
             "agent_decision": decision,
-            "hal_inference": hal_inference,
+            "hal_inference": hal_inference_public,
             "executed": True,
             "representation": "source",
             "prediction": prediction,
@@ -2396,9 +2388,37 @@ def mode1b_agent_request(
                 "executed": False,
             }
 
+        release_admission = admit_principal_operation(
+            principal=req.requester,
+            envelope_id=selected_id,
+            run_id=req.run_id,
+            tissue=req.requested_tissue,
+            resource="pathmnist-derived-representation",
+            action="consume_derivative",
+            purpose="approved_derivative_consumption",
+            derivative_representation=derivative_name,
+            event_type="mode1b_derivative_release_admission",
+        )
+
+        if not release_admission.get("allow", False):
+            return {
+                "requester": req.requester,
+                "source_admission": source_admission,
+                "agent_decision": decision,
+                "hal_inference": hal_inference_public,
+                "rebind_admission": rebind_admission,
+                "release_admission": release_admission,
+                "executed": False,
+            }
+
         derivative = hal_blur(
             prediction["sample_image"]["image_b64"]
         )
+
+        # The source image was available only to Hal's admitted inference.
+        # It must not cross the requester disclosure boundary when the
+        # governed result is a derivative representation.
+        prediction.pop("sample_image", None)
 
         prediction["derivative_image"] = {
             "mime_type": derivative["mime_type"],
@@ -2415,8 +2435,9 @@ def mode1b_agent_request(
             "requester": req.requester,
             "source_admission": source_admission,
             "agent_decision": decision,
-            "hal_inference": hal_inference,
+            "hal_inference": hal_inference_public,
             "rebind_admission": rebind_admission,
+            "release_admission": release_admission,
             "executed": True,
             "representation": "derivative",
             "prediction": prediction,
