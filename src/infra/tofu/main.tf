@@ -224,13 +224,6 @@ resource "docker_container" "verifier_app" {
     read_only      = true
   }
 
-  ports {
-    internal = 9000
-    external = 9000
-    ip       = "127.0.0.1"
-  }
-
-
   depends_on = [docker_container.redis]
   must_run   = true
   restart    = "unless-stopped"
