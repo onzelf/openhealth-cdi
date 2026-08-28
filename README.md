@@ -1,260 +1,121 @@
-# OpenHealth CDI
-
-OpenHealth CDI is a research proof of concept for governed admission in
-cross-organizational federated health-data collaboration.
-
-The implementation separates execution from authority. Human participants and
-the non-human participant Hal act through holder-bound credentials, while a
-deterministic governance plane evaluates the admitted relation before an
-operation can reach the data or model plane.
-
-The repository implements the three scenarios used in the accompanying paper.
-
-| Scenario | Demonstrated relation | Status |
-| --- | --- | --- |
-| Mode A+B | Founding Hospitals A and B train and query under an active sovereignty envelope | Complete |
-| Mode 1A | Sponsored Hospital C contributes to training without acquiring ordinary member or model-consumption authority | Complete |
-| Mode 1B | Hal participates as a bounded non-human actor with independently governed inference and rebind authority | Complete for the paper governance experiment |
+# OpenHealth-CDI
 
 <p align="center">
 <img src="doc/slide_0.png" width="75%">
 </p>
 
-## What is being demonstrated
+**OpenHealth-CDI is a research reference implementation of governed cross-organizational Federated Computing.**
 
-The proof of concept combines the following mechanisms.
+It is not a production system or an MVP. Its purpose is to make federation architecture, governance relations, trust boundaries, and behavioural invariants executable, inspectable, and reproducible.
 
-- sovereignty-envelope creation through quorum approval
-- issuer-owned entitlements compiled into envelope-bound capability tokens
-- holder binding through DPoP
-- capability and scope evaluation at the Gatekeeper
-- explicit sponsorship relations
-- signed ALLOW and DENY decision evidence
-- separation of contribution authority from model-consumption authority
-- isolation of the Mode 1B agent from privileged federation paths
+The central design principle is simple. **Authority and execution are separate.** Organisations retain authority over their resources, while participation in a federated activity is established through explicit relations defining who may participate, under whose authority, for which purpose, within which scope, and with what evidence.
 
-Mode 1B deliberately separates the governed participant from any future LLM
-reasoning runtime. Hal is the governance-side non-human participant. Its
-identity, sponsors, capabilities and envelope binding remain deterministic
-even if a stochastic reasoning engine is later attached to it.
+## Three executable modes
 
-The security invariant is therefore independent of the reasoning mechanism.
-Execution may vary, but execution cannot enlarge admitted authority.
-
-## Repository layout
-
-```text
-src/
-  infra/tofu/                  OpenTofu deployment
-  tests/                       executable conformance and smoke tests
-  tools/                       certificate, holder and DPoP utilities
-  vfp-core/
-    agents/hal/                isolated Mode 1B participant
-    backend/                   Flower and PathMNIST execution plane
-    frontend/                  demonstration dashboard
-    hub/                       coordination layer
-    issuers/                   issuer services and entitlements
-  vfp-governance/
-    gatekeeper/                admission decision service
-    verifier/                  policy, constitution, evidence and vault
-
-JMIR_paper/
-  table7/                      Mode 1B Table 7 conformance evidence
-  table8/                      admission microbenchmark evidence
-```
-
-## Bootstrap
-
-### Prerequisites
-
-The reference environment uses:
-
-- Docker
-- OpenTofu
-- Python 3
-- `jq`
-- `curl`
-- OpenSSL
-- an NVIDIA GPU and NVIDIA Container Toolkit for PathMNIST training
-
-The OpenTofu configuration exposes the mTLS edge on the host LAN address.
-`verifier.local` must resolve to the same host when reproducing the quorum
-ceremony.
-
-### Generate the local PKI
-
-From the repository root:
-
-```bash
-./src/tools/make_certs.sh true
-```
-
-The optional `true` argument also creates the Android-compatible administrator
-PKCS#12 bundles used by the two-party KYO demonstration.
-
-### Provision the complete environment
-
-```bash
-cd src/infra/tofu
-
-tofu init
-tofu apply -auto-approve -var='lan_ip=<HOST_LAN_IP>'
-```
-
-The dashboard is exposed locally at:
-
-```text
-http://127.0.0.1:8082
-```
-
-### Create and activate a sovereignty envelope
-
-```bash
-cd ../../tests
-
-./Test1A_createEnvelope.sh
-```
-
-`Test1A_createEnvelope.sh` performs the two-party approval ceremony and prints
-the resulting envelope identifier. Export it for the remaining tests.
-
-```bash
-export ENVELOPE_ID=<ENVELOPE_ID_PRINTED_BY_TEST1A>
-```
-
-The post-envelope smoke test binds the execution plane and produces the
-baseline A+B model.
-
-```bash
-./Test1B_postEnvelope.sh "$ENVELOPE_ID"
-```
-
-## Mode A+B
-
-Mode A+B is the governed founding collaboration. Hospitals A and B are members
-of the active envelope, train the baseline PathMNIST model and consume model
-predictions under issuer-owned capabilities.
-
-The principal end-to-end smoke test is:
-
-```bash
-./Test3A_run_pathmnist_e2e.sh "$ENVELOPE_ID"
-```
-
-This exercises the full path from policy and issuer enrollment through ECT and
-DPoP admission to real model execution. It also checks that model consumption
-remains capability- and tissue-scoped.
-
-## Mode 1A
-
-Mode 1A introduces Hospital C without turning it into a founding member.
-Charlie is a sponsored guest contributor. Contribution authority is admitted
-independently from model-consumption authority.
-
-The relevant governance smoke tests are:
-
-```bash
-./Test3F_mode1a_guest_admission.sh "$ENVELOPE_ID"
-./Test3G_mode1a_guest_contribution_admission.sh "$ENVELOPE_ID"
-```
-
-These tests verify the sponsored guest relation, holder-bound credential,
-training-only capability, permitted contribution scope, reserved-tissue DENY,
-and absence of model-query authority.
-
-The dashboard also exposes the Mode 1A A+B+C training scenario.
-
-## Mode 1B
-
-Mode 1B introduces Hal as a non-human participant sponsored by Hospitals A and
-B. Hal has its own Ed25519 holder identity and runs on an isolated
-`agent-edge` network. It has no direct route to the verifier, issuers,
-holder-signer, Redis or Flower services.
-
-Its admitted capabilities are intentionally narrow.
-
-- bounded inference on the declared cancer-related scope
-- policy-authorized rebind on that same scope
-- no ordinary member participation capability
-- no training capability
-- no unrestricted model-query capability
-- no privileged governance path
-
-The isolation and credential-bound admission tests are:
-
-```bash
-./Test5A_agent_isolation.sh
-./Test5C_agent_credential_admission.sh "$ENVELOPE_ID"
-```
-
-The paper-level Mode 1B conformance test is:
-
-```bash
-./Test5D_mode1b_table7_conformance.sh "$ENVELOPE_ID"
-```
-
-It reproduces the five decisions reported in Table 7.
-
-| Table 7 case | Expected decision |
+| Mode | Governed evolution |
 | --- | --- |
-| Audrey requests unrestricted cancer-related source output | DENY |
-| Hal performs bounded inference | ALLOW |
-| Hal invokes policy-authorized rebind | ALLOW |
-| Audrey consumes the corresponding derivative representation | ALLOW |
-| Hal attempts a privileged governance path | DENY |
+| **A+B** | Hospitals A and B establish the founding federation, perform federated training, and consume the resulting model under governed capabilities. |
+| **Mode 1A** | Hospital C participates as a sponsored contributor without becoming an equivalent federation member or acquiring model-consumption rights. |
+| **Mode 1B** | Hal participates as a governed computational participant with bounded inference and policy-authorised transformation capabilities. |
 
-The expected summary is:
+The modes are not different governance architectures. They exercise progressively different **relations among participants, resources, and operations** while preserving the same federation-governance model.
 
-```text
-TABLE 7 RESULT
-5 / 5 GREEN
-```
+---
 
-The rebind test concerns governance of the transformation relation. The
-concrete image transformation is a data-plane operation and is not required
-for the admission result. A future LLM-backed Hal may select among permitted
-image manipulations or statistical queries without changing the governance
-model.
+## From the JMIR paper to the reference implementation
 
-## Cross-cutting regression checks
+The accompanying JMIR paper introduced the OpenHealth governance model and its progression from a fixed A+B federation to differentiated organisational and computational participation.
 
-Two compact regression tests exercise the shared governance substrate across
-the scenarios.
+<p align="center">
+<img src="doc/JMIR_architecture.png" width="90%">
+</p>
 
-```bash
-./Test2E_fcac_conformance.sh "$ENVELOPE_ID"
-./Test4C_sponsorship_regression.sh "$ENVELOPE_ID"
-```
+<p align="center"><em>Architecture presented in the JMIR manuscript.</em></p>
 
-## Publication evidence
+This figure is retained unchanged because it represents the state of the system described by the manuscript.
 
-Evidence generated for the paper is retained under:
+At manuscript completion, **Mode 1B had not yet been implemented**. Its expected behaviour was therefore expressed as governance and conformance requirements, including the cases reported in Table 7, rather than as observations from a completed execution path.
 
-```text
-JMIR_paper/table7/
-JMIR_paper/table8/
-```
+The repository should consequently be read as the **implementation continuation of the JMIR study, not as a correction of it**.
 
-Table 7 contains the Mode 1B conformance execution evidence. Table 8 contains
-the admission latency measurements.
+The subsequent implementation operationalises those requirements. Mode 1B now provides a holder-bound computational participant, bounded inference, policy-authorised rebind, independently governed derivative consumption, execution-path isolation, and negative tests verifying that execution cannot enlarge the authority established by admission.
 
-The signed admission records generated during execution are stored by the
-verifier under its decision-evidence state and are independently verifiable
-against the pinned evidence public key.
+The implementation also goes beyond the original single requester scenario. The same agent is exercised across different requester-resource relations. Whether the source can be returned directly or must first be transformed therefore depends on the governed relation among **requester, resource, capability, purpose, and context**, not on the identity or internal behaviour of the agent alone.
 
-## Scope
+---
 
-This repository is a proof of concept, not a production healthcare platform.
-The purpose is to make the governance relations executable and inspectable.
-The current Mode 1B dashboard exposes bounded inference, while the complete
-Table 7 governance experiment is exercised through the conformance test.
+## Current OpenHealth-CDI architecture
 
-The next engineering layer can attach an LLM reasoning runtime and additional
-data-plane tools to Hal. That extension does not require the LLM to become an
-authority source. The governance plane remains the authoritative representation
-of what the participant may do.
+<p align="center">
+<img src="doc/OpenHealth_architecture.png" width="95%">
+</p>
+
+<p align="center"><em>Current OpenHealth-CDI C4 container and trust-boundary view.</em></p>
+
+The current architecture makes explicit several properties that were only requirements when the JMIR manuscript was completed.
+
+The Hub is the controlled operational aperture into the federation. Governance state, model/run state, credential issuance, holder signing, admission, analytical execution, and agent execution remain distinct responsibilities.
+
+Hospital C remains a **sponsored contributor**, not a founding member. Contribution authority does not imply model-consumption authority.
+
+Mode 1B adds a separate agent execution boundary. **Hal is the governed participant, not the LLM.** An LLM reasoning runtime may act through Hal, but it cannot enlarge Hal's admitted authority. Agent execution, federation admission, policy-authorised transformation, and requester release remain separate relations.
+
+The implementation also keeps **model lifecycle and governance-envelope lifecycle distinct**. An existing model artefact may be used under a later governed context without implying that the model was trained under that envelope.
+
+---
+
+## Executable conformance
+
+The repository tests governance as an executable systems property rather than inferring it from configuration or documentation.
+
+The principal regression families cover federation-envelope establishment, issuer-owned capabilities, holder binding and DPoP, sponsorship, contribution-versus-consumption separation, signed ALLOW/DENY evidence, agent isolation, bounded agent authority, policy-authorised rebind, derivative release, and contextual agent-mediated execution.
+
+In particular:
+
+`Test2E_fcac_conformance.sh` verifies the shared admission-governance substrate.
+
+`Test4C_sponsorship_regression.sh` verifies sponsorship without collapsing provenance, membership, or delegated authority.
+
+`Test5A_agent_isolation.sh` verifies the Mode 1B execution boundary.
+
+`Test5C_agent_credential_admission.sh` verifies Hal's holder-bound admitted capability relation.
+
+`Test5D_mode1b_table7_conformance.sh` makes the JMIR Table 7 requirements executable.
+
+`Test5E_mode1b_contextual_agent.sh` extends the experiment across different requester-resource relations.
+
+Detailed prerequisites, commands, expected results, and the invariant established by every test are documented separately.
+
+---
+
+## Documentation
+
+Detailed documentation is organised by concern:
+
+- [Architecture and trust boundaries](doc/ARCHITECTURE.md)
+- [Governance model](doc/GOVERNANCE.md)
+- [Executable scenarios](doc/SCENARIOS.md)
+- [Mode 1B and agent participation](doc/MODE1B.md)
+- [Tests and conformance evidence](doc/TESTING.md)
+- [Deployment](doc/DEPLOYMENT.md)
+- [AWS porting guide](doc/AWS-PORTING.md)
+- [Troubleshooting](doc/TROUBLESHOOTING.md)
+- [Release and reproducibility](doc/RELEASE.md)
+
+The final JMIR manuscript will also be retained under `doc/`, keeping the original paper architecture, the implemented architecture, and the executable evidence together.
+
+---
+
+## Status
+
+The `delivery` branch contains the complete executable baseline for **A+B, Mode 1A, and Mode 1B**.
+
+The current release is a **research reference implementation**. It demonstrates governed federation evolution and provides reproducible evidence for the implemented invariants. It does not claim clinical effectiveness, production-scale deployment, or general-purpose AI-agent safety.
+
+A stable tagged release and corresponding Zenodo version will provide the archival reference for this implementation.
 
 ## License
 
-OpenHealth CDI is released under the GNU Affero General Public License v3.0.
-See `LICENSE`.
+OpenHealth-CDI is released under the **GNU Affero General Public License v3.0**.
+
+See [LICENSE](LICENSE).
