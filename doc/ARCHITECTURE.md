@@ -1,120 +1,33 @@
 # OpenHealth-CDI Architecture and Trust Boundaries
+## 1. Purpose of this document
+OpenHealth-CDI is a research reference implementation of governed cross-organizational Federated Computing. It demonstrates how independently governed organisations can participate in shared computational activities without transferring general authority over their resources to a central platform. The implementation uses federated learning as its principal computational example and later extends the same governance architecture to sponsored contributors and a computational agent. This document explains how the system is structured, why its components are separated, which relationships are architecturally significant, and which implementation details may be changed without altering the architecture.
+A reader should not need prior knowledge of the OpenHealth project, the accompanying JMIR paper, FCaC, or the development history to understand this document. Where historical identifiers such as `fcac` or `vfp` remain in source paths or container names, they should be treated as implementation names rather than as prerequisites for understanding the architecture.
+The central architectural principle is that **authority and execution are separate**. A process may be technically capable of performing an operation without being authorised to perform it. A participant may exist without being a member of the federation. A model may exist without being available to every contributor. A network route may exist without establishing governance authority. OpenHealth-CDI therefore makes the relationships among participants, resources, operations, authorities, and evidence explicit rather than inferring them from the existence of system objects.
+## 2. Architecture is not an inventory of objects
+A conventional deployment description often begins by listing components such as servers, containers, users, datasets, models, certificates, databases, and APIs. OpenHealth-CDI contains all of these, but such a list does not explain its federation architecture. The same objects could be assembled into a centralised service, an ordinary distributed application, or an ungoverned federated-learning experiment.
+What distinguishes OpenHealth-CDI is the set of relations that determines how those objects may interact. Hospitals A and B are not architecturally important merely because two hospital objects exist. They are important because they retain independent authority while jointly constituting an approved collaboration. Hospital C is not equivalent to them merely because it also runs a Flower client. Its contribution occurs through sponsorship and does not grant constitutive membership or model-consumption rights. Hal is not privileged merely because it is an AI agent. It participates through a bounded capability relation and remains subject to admission in the same way that other governed operations are subject to admission.
+The distinction can be illustrated by comparing object descriptions with architectural descriptions.
 
-## 1. Purpose
-
-This document describes the architecture of the OpenHealth-CDI research reference implementation.
-
-The architecture is not defined by its inventory of containers, services, users, datasets, models, credentials, agents, or network interfaces. Those objects are necessary to implement and exercise the system, but they do not by themselves define a federation.
-
-The architecture is defined by the **relations and invariants that must hold when operations cross independently governed domains**.
-
-This distinction is fundamental.
-
-An inventory answers questions such as which services exist, which ports they use, where a model is stored, or which process executes an operation.
-
-An architecture answers different questions. It establishes who may interact with whom, under whose authority, for what purpose, within what scope, through which governed path, subject to which conditions, and with what evidence.
-
-The implementation can therefore change substantially while preserving the architecture. Docker may become ECS. Redis may be replaced. Flower may be upgraded or substituted. The React frontend may disappear. An OpenAI reasoning runtime may become another model or another service. None of these substitutions necessarily changes the federation architecture.
-
-Conversely, a deployment may contain exactly the same objects and nevertheless violate the architecture if one relation changes. Giving Hal direct privileged access to federation services, treating Hospital C as a founding member, allowing a caller to define its own capability, or returning a derivative without independently admitting its consumption would all change the architecture even if every container remained present.
-
-The primary reading rule for this document is therefore:
-
-> **Objects realise the system. Relations define the federation. Invariants define the architecture.**
-
-The root [README](../README.md) provides the short project overview. This document provides the complete architectural interpretation of the implemented system.
-
----
-
-## 2. Scope and non-claims
-
-OpenHealth-CDI is a **research reference implementation** of governed cross-organizational Federated Computing.
-
-It is not a production deployment, an MVP, a clinical system, a general-purpose agent-security framework, or evidence of clinical effectiveness.
-
-Its architectural purpose is narrower and more precise. It makes governance relations executable and allows their preservation or violation to be tested.
-
-The implementation demonstrates:
-
-- independently governed organisational participation
-- policy-owned federation constitution
-- explicit capability issuance
-- holder binding and DPoP
-- admission before governed operations
-- signed ALLOW and DENY evidence
-- sponsored contribution without membership equivalence
-- separation of contribution and consumption authority
-- bounded participation by a computational agent
-- separation between the governed agent and its reasoning runtime
-- independently governed transformation and derivative release
-- separation between model lifecycle and governance-envelope lifecycle
-- network and cryptographic boundaries that make the admitted path load-bearing
-
-The implementation does **not** claim that admission governance solves model alignment, prompt injection, arbitrary code containment, tool safety, model correctness, hallucination, or general-purpose AI-agent safety.
-
-Those are separate concerns.
-
----
-
-## 3. Architecture is not an object inventory
-
-A common way to describe a distributed system is to enumerate its components.
-
-OpenHealth-CDI contains organisations, users, a dashboard, a Hub, issuers, credentials, a verifier, policies, envelopes, Redis, Flower clients and server, models, datasets, a signer, an AI agent, an LLM reasoning runtime, network interfaces, certificates, decisions, and evidence.
-
-That list is useful operationally. It is insufficient architecturally.
-
-The same object may participate in different relations. Different objects may participate in the same relation. Adding an object does not necessarily add a new architectural category.
-
-Examples are important here.
-
-| Inventory statement | Architectural statement |
+| Object inventory | Architectural meaning |
 | --- | --- |
-| Hospital A and Hospital B exist | A and B are the constitutive participants whose governed approval establishes the founding collaboration |
-| Hospital C exists and runs a Flower client | C participates through sponsorship and contribution authority without becoming equivalent to a founding member |
-| Charlie is a user | Charlie's relevant standing is the sponsored contributor relation under Hospital A with Hospital C provenance |
-| Hal is a process in a container | Hal is a governed computational participant whose operations remain bounded by admitted capability |
-| An LLM is called by Hal | The LLM is an execution mechanism and does not acquire federation standing or authority |
-| An ECT exists | Its architectural meaning is the capability relation that an issuer asserts for a holder within a governed envelope |
-| A DPoP signature exists | It binds exercise of capability to the holder rather than making possession of a token sufficient |
-| Redis exists | State transport or persistence does not grant Redis governance authority |
-| Flower exists | Federated learning is one governed operation, not the definition of federation |
-| A model file exists | A model artefact has a lifecycle distinct from the governance envelope under which later operations may be admitted |
-| Two Docker networks exist | The relevant invariant is separation of agent execution from privileged federation services, with the Hub acting as the controlled aperture |
-| nginx exists | The relevant invariant is that client identity at the governance edge is authenticated before protected operations are accepted |
-| A derivative image exists | Production of a derivative and permission for a requester to consume that derivative are distinct governed relations |
+| Hospital A and Hospital B exist | A and B are independently governed founding organisations whose approval constitutes the collaboration |
+| Hospital C exists | C may contribute through a sponsored relation without becoming a founding member |
+| Charlie exists | Charlie is a sponsored contributor whose sponsor and organisational provenance remain distinct |
+| Audrey and Bob exist | They hold different resource-consumption capabilities issued by different organisational authorities |
+| Hal exists | Hal is a holder-bound computational participant with explicitly bounded operations |
+| An LLM is called | The LLM is an execution mechanism used by Hal and has no federation standing of its own |
+| A Flower client exists | A process can participate in federated execution without that process type determining its governance status |
+| A model file exists | The model has an analytical lifecycle that remains distinct from the active governance context |
+| A Docker network exists | The network is one mechanism used to preserve a trust-boundary invariant |
+| A certificate exists | The certificate authenticates identity at a trust boundary but does not by itself grant an operation |
+| An ECT exists | The credential represents issuer-derived capability bound to a holder and governance context |
+| A derivative exists | Production of the derivative does not imply that a requester is authorised to consume it |
 
-The object inventory changes from A+B to Mode 1A and again to Mode 1B.
-
-The architectural invariants do not.
-
-This is the point of the three executable modes.
-
----
-
-## 4. Federated Computing as an architecture of relations
-
-OpenHealth-CDI treats federation as collaboration across independently governed computational domains.
-
-The defining issue is not whether the system contains datasets, models, agents, services, credentials, or distributed processes. The same objects can exist in a centralized system.
-
-The defining issue is that autonomous domains retain authority over their own resources while participating in shared operations.
-
-The relevant questions are therefore relational:
-
-- who may participate
-- under whose authority
-- for which purpose
-- over which resource
-- within which scope
-- through which operation
-- under which governance context
-- with which capability
-- bound to which holder
-- with which sponsorship or provenance relation
-- with which evidence
-
-A useful abstract view is:
+The architecture should therefore be read from the relationships between objects rather than from the list of objects themselves. Components can be replaced while the architecture remains the same, but changing one of the authority-bearing relationships can alter the architecture even if every component remains physically unchanged.
+## 3. What Federated Computing means in OpenHealth-CDI
+OpenHealth-CDI uses the term Federated Computing for collaboration across independently governed computational domains. The defining property is not that computation is distributed. Distributed computation can occur entirely inside one administrative domain. Federation begins when an operation crosses boundaries between authorities that retain control over their own resources and participation conditions.
+The relevant architectural questions are therefore who may participate, which authority establishes that participation, what resource is involved, which operation is requested, for what purpose the operation is permitted, what scope applies, which approved collaboration provides the governance context, and what evidence records the result. These questions apply equally to organisations, humans, services, and computational agents.
+The following conceptual view shows why the relationships, rather than the object classes, carry the architectural meaning.
 
 ```mermaid
 flowchart LR
@@ -123,591 +36,282 @@ flowchart LR
     C["Hospital C<br/>independent authority"]
     H["Hal<br/>computational participant"]
     R["Requester"]
-    G["Governed collaboration"]
+    G["Approved collaboration"]
     O["Governed operation"]
     X["Resource"]
-    D["Derivative"]
+    D["Derivative resource"]
 
     A -->|"constitutive participation"| G
     B -->|"constitutive participation"| G
-
     C -->|"sponsored contribution"| O
-    H -->|"holder-bound capability"| O
+    H -->|"holder-bound bounded capability"| O
     R -->|"requester capability"| O
-
-    G -->|"governance conditions"| O
+    G -->|"governance context"| O
     X -->|"resource scope"| O
     O -->|"may produce"| D
-
-    R -->|"separate derivative-consumption relation"| D
+    R -->|"separate consumption authority"| D
 ```
 
-The objects on the diagram are not the architecture.
-
-The labelled arrows are closer to the architecture.
-
-The invariants governing those arrows are the architecture.
-
----
-
-## 5. Architectural invariants
-
-The following invariants form the architectural contract of the current implementation.
-
-### INV-01 — Authority is distinct from execution
-
-Executing an operation does not create authority to perform it.
-
-A Flower client, a Python process, Hal, an LLM runtime, or any other computational mechanism may be technically capable of performing an operation. Technical capability is not federation capability.
-
-Authority must derive from the admitted governance relation.
-
-### INV-02 — Independent domains retain authority
-
-Participation in a federation does not imply transfer of general authority to a central platform.
-
-Hospital A, Hospital B, and Hospital C remain independently governed domains.
-
-The shared platform coordinates governed operations. It does not erase the distinction between organisational authorities.
-
-### INV-03 — Federation constitution is policy-owned
-
-A caller may initiate federation establishment but does not define the constitutive participants or quorum through arbitrary request parameters.
-
-The governing policy owns those conditions.
-
-For the delivered A+B baseline, Hospitals A and B form the constitutive collaboration and the required approval structure is derived from policy.
-
-This prevents federation constitution from becoming a caller assertion.
-
-### INV-04 — Admission precedes the governed operation
-
-A protected operation must not be treated as authorised merely because the caller can reach the service capable of executing it.
-
-Admission evaluates the relevant governance relation before the operation is accepted.
-
-This is why the admitted route must be load-bearing rather than decorative.
-
-### INV-05 — Authentication, capability, and admission are distinct
-
-Authentication establishes an identity at a trust boundary.
-
-A capability describes an allowed class of operations and scope.
-
-Admission evaluates whether a concrete attempted operation is permitted under the current governance context.
-
-These are related but not interchangeable.
-
-A valid TLS client certificate does not itself grant a federation operation.
-
-Possession of a capability object does not by itself establish holder possession.
-
-Technical reachability does not establish admission.
-
-### INV-06 — Capability is issuer-owned
-
-A caller must not be able to enlarge its authority by supplying arbitrary entitlement fields.
-
-Issuer-owned entitlement configuration determines the capability material that can be issued.
-
-The caller requests a capability. It does not authorise itself.
-
-### INV-07 — Capability exercise is holder-bound
-
-A capability is not treated as a bearer token.
-
-DPoP binds its exercise to the holder identity and to the relevant request context.
-
-The implementation tests replay resistance, freshness, holder binding, and envelope binding separately.
-
-### INV-08 — Sponsorship is not membership
-
-Sponsorship creates a specific governed relation.
-
-It does not silently turn a sponsored participant into a constitutive federation member.
-
-Hospital C can therefore contribute in Mode 1A without being promoted to the same constitutive standing as Hospitals A and B.
-
-### INV-09 — Sponsorship is not delegation of arbitrary sponsor authority
-
-A sponsored participant receives only the authority explicitly represented by the sponsorship and capability relations.
-
-The sponsor does not transfer its full authority.
-
-The sponsored participant does not become the sponsor.
-
-Provenance remains distinct from sponsorship.
-
-### INV-10 — Contribution and consumption are independent dimensions
-
-Permission to contribute to a federated activity does not imply permission to consume the resulting model or another governed resource.
-
-Mode 1A depends on this distinction.
-
-Hospital C can contribute under sponsorship while remaining outside the model-consumption relation.
-
-### INV-11 — Object type does not determine authority
-
-Being a human, organisation, service, process, or AI agent is descriptive metadata.
-
-It is not an authorisation rule.
-
-A human participant may have a narrow relation. A computational participant may have a different narrow relation. Neither receives authority merely from its object type.
-
-This becomes particularly important in Mode 1B.
-
-### INV-12 — Hal is the governed participant, not the LLM
-
-Hal has federation standing as the governed computational participant.
-
-The LLM reasoning runtime is an execution mechanism used by Hal.
-
-The LLM does not possess an ECT merely because Hal calls it.
-
-It does not become a federation member.
-
-It does not acquire the right to contact privileged federation services.
-
-It does not enlarge Hal's authority.
-
-Changing the LLM implementation therefore need not change the governance architecture.
-
-### INV-13 — Execution cannot enlarge admitted authority
-
-A reasoning runtime may select an intended action. A tool may be technically able to transform a resource. A process may know how to construct a request.
-
-None of those execution facts can make an operation admissible.
-
-The set of operations that can be executed through the governed path must remain bounded by admitted authority.
-
-### INV-14 — The agent execution path is separate from privileged federation services
-
-Hal is attached to the `agent-edge` execution domain.
-
-Privileged federation services reside on the `fc` domain.
-
-The Hub is attached to both and forms the controlled operational aperture.
-
-Hal is not attached directly to the `fc` Docker network.
-
-This prevents the normal agent execution path from becoming an alternative privileged federation path.
-
-The invariant is the separation.
-
-Docker networks are one implementation of that invariant.
-
-### INV-15 — Network reachability is not authority
-
-Physical or TCP reachability and federation authority are different properties.
-
-Docker-internal federation services are outside Hal's `agent-edge` network.
-
-Some host-published mTLS edges may nevertheless be reachable at the network level depending on host routing.
-
-That does not make them usable.
-
-Protected operations require an accepted client certificate and expected client identity.
-
-The architecture therefore does not claim that Hal can never send a packet toward every published host port. It claims that Hal has neither the privileged internal service path nor the authenticated federation identity required to turn such reachability into authority.
-
-### INV-16 — Transformation and release are separate governed operations
-
-Producing a derivative does not imply that a requester may consume it.
-
-Mode 1B therefore separates:
-
-1. the source-consumption attempt
-2. the agent's transformation or rebind operation
-3. requester admission for consumption of the governed derivative
-
-This distinction prevents transformation from becoming an implicit release mechanism.
-
-### INV-17 — Source and derivative are different governed resources
-
-A derivative does not inherit the source's governance relation automatically.
-
-Its provenance must remain connected to the source while its permitted consumption can be evaluated independently.
-
-### INV-18 — Model lifecycle and governance-envelope lifecycle are distinct
-
-A model artefact can outlive the envelope under which it was trained.
-
-A later governance envelope may govern an operation over an existing model.
-
-That does not imply that the model was trained under the later envelope.
-
-The architecture must not fabricate such provenance.
-
-A selected governance envelope and a selected model/run reference are therefore separate state dimensions.
-
-### INV-19 — Governance state and execution state are distinct
-
-Policy, envelope state, sponsorship, capability, and admission evidence are governance state.
-
-Training progress, model artefacts, prediction outputs, and runtime status are execution state.
-
-They may be correlated, but one must not be substituted for the other.
-
-### INV-20 — Evidence is part of the governed operation
-
-ALLOW and DENY results are not merely UI messages.
-
-The implementation records decision evidence so that the result of admission can be inspected independently from the execution path.
-
-A successful operation without corresponding governance evidence would weaken the reference implementation's claim.
-
-### INV-21 — Federated learning is an operation, not the architecture
-
-Flower implements the federated-training runtime used by the reference scenario.
-
-The federation architecture does not depend conceptually on gradients, aggregation, rounds, or learning.
-
-Another governed distributed operation could use the same architecture of relations.
-
----
-
-## 6. Current system context
-
-The current implementation can be viewed as four interacting planes:
-
-1. access and presentation
-2. governance and admission
-3. federated execution
-4. agent execution
-
-These planes are related, but they should not be collapsed.
+The boxes identify objects. The labelled arrows describe how those objects acquire meaning inside the federation. The architecture is primarily concerned with preserving those arrows and the conditions attached to them.
+## 4. The three executable modes
+The repository contains three architectural scenarios. They do not represent three different governance systems. They exercise increasingly differentiated forms of participation while preserving the same underlying model of authority.
+The A+B baseline establishes the constitutive federation. Hospitals A and B remain independent organisations but approve a common collaboration and participate in federated training. This establishes the reference case in which the founding participants both contribute to and govern the collaboration.
+Mode 1A adds Hospital C through a different relation. C does not become a third founding member. Charlie participates as a sponsored contributor, with Hospital A acting as sponsor while Hospital C provenance remains explicit. This mode demonstrates that a federation can evolve operationally without flattening every new participant into one uniform membership category.
+Mode 1B adds Hal as a computational participant. Hal is not admitted merely because it is an agent and the LLM used by Hal does not become a federation principal. Hal receives bounded authority to perform specific operations, and each operation remains subject to the same governance principle as operations initiated by human participants.
+The progression can be summarised as follows.
+
+```mermaid
+flowchart LR
+    AB["A+B baseline<br/>constitutive federation"]
+    M1A["Mode 1A<br/>sponsored contributor"]
+    M1B["Mode 1B<br/>governed computational participant"]
+
+    AB -->|"add operational participation<br/>without membership equivalence"| M1A
+    M1A -->|"add computational participation<br/>without runtime-derived authority"| M1B
+```
+
+The important evolution is therefore relational. The architecture accommodates new forms of participation without redefining federation as a growing inventory of objects.
+## 5. Architectural planes
+For implementation purposes, OpenHealth-CDI can be understood as four interacting planes. The access plane contains the user-facing dashboard and API entry points. The governance plane contains policy, federation-envelope establishment, capability issuance, holder binding, admission, and signed decision evidence. The federated-execution plane contains the Flower server, participant clients, local datasets, model training, and model artefacts. The agent-execution plane contains Hal and the external reasoning runtime used by Hal.
+These planes interact but do not inherit one another's authority. The dashboard can initiate an operation but cannot authorise it. Flower can execute training but cannot decide federation membership. Hal can perform a transformation but cannot decide that the transformation is permitted. The LLM can select an intended action but cannot grant the capability required for that action.
+The principal components are connected as follows.
 
 ```mermaid
 flowchart TB
-    User["Human users / administrators"]
-    Browser["Web browser"]
-    Frontend["React / Vite dashboard<br/>nginx frontend"]
-    Hub["fc-hub<br/>coordination and governed orchestration"]
+    User["Users and administrators"]
+    UI["React / Vite dashboard"]
+    Hub["fc-hub<br/>application orchestration"]
 
-    VerifierProxy["Verifier nginx edge<br/>mTLS"]
-    Gatekeeper["Verifier / Gatekeeper<br/>policy + admission"]
-    IssuerProxy["Issuer nginx edge<br/>mTLS"]
-    IssA["Hospital A issuer"]
-    IssB["Hospital B issuer"]
-    Signer["Human holder-signer"]
-    Redis["Redis"]
-    GovState["Governance state<br/>policy / envelopes / evidence"]
-    RunState["Run + model state"]
+    VP["Verifier nginx<br/>mTLS trust edge"]
+    GK["Verifier / Gatekeeper<br/>policy and admission"]
+    IP["Issuer nginx<br/>mTLS trust edge"]
+    IA["Hospital A issuer"]
+    IB["Hospital B issuer"]
+    HS["Holder-signer"]
+    Redis["Redis<br/>coordination state"]
+    Gov["Governance state<br/>policy, envelopes, evidence"]
 
     Flower["Flower server"]
-    AClient["Hospital A<br/>Flower client"]
-    BClient["Hospital B<br/>Flower client"]
-    CClient["Hospital C<br/>sponsored Flower client"]
+    FA["Hospital A client"]
+    FB["Hospital B client"]
+    FC["Hospital C sponsored client"]
+    Model["Run registry and model artefact"]
 
     Hal["Hal<br/>governed computational participant"]
     LLM["External LLM<br/>reasoning runtime"]
 
-    User --> Browser
-    Browser --> Frontend
-    Frontend --> Hub
+    User --> UI
+    UI --> Hub
 
-    Hub --> VerifierProxy
-    VerifierProxy --> Gatekeeper
-    Gatekeeper --> GovState
-    Gatekeeper <--> Redis
+    Hub --> VP
+    VP --> GK
+    GK --> Gov
+    GK <--> Redis
 
-    IssA --> IssuerProxy
-    IssB --> IssuerProxy
-    IssuerProxy --> VerifierProxy
+    IA --> IP
+    IB --> IP
+    IP --> VP
 
-    Hub --> Signer
+    Hub --> HS
 
     Hub --> Flower
-    Flower <--> AClient
-    Flower <--> BClient
-    Flower <--> CClient
-    Flower --> RunState
+    Flower <--> FA
+    Flower <--> FB
+    Flower <--> FC
+    Flower --> Model
+    Hub --> Model
 
     Hal <--> Hub
     Hal <--> LLM
-
-    Hub --> RunState
 ```
 
-This diagram is intentionally functional rather than pictorial.
-
-The key architectural question is not where a box appears. It is which arrows are permitted and which arrows must not exist.
-
----
-
-## 7. Component inventory and architectural responsibility
-
-The component inventory is useful once its limitations are understood.
-
-### 7.1 Dashboard
-
-Implementation area:
-
-`src/vfp-core/frontend/`
-
-The dashboard presents federation state, scenarios, training state, events, evidence, and model-use interactions.
-
-It is not a governance authority.
-
-Removing private holder-key material from the frontend is intentional. The browser-facing component must not become a holder-key repository merely because that is convenient for a demonstration.
-
-The dashboard can initiate requests.
-
-It cannot make those requests authoritative by presentation.
-
-### 7.2 Hub
-
-Implementation area:
-
-`src/vfp-core/hub/`
-
-Container:
-
-`fc-hub`
-
-The Hub coordinates the application-level workflow.
-
-It is the principal controlled aperture between user-facing operations, governance services, federated runtime services, and the Mode 1B agent boundary.
-
-The Hub is dual-homed in the local implementation.
-
-It is attached to:
-
-- `fc`
-- `agent-edge`
-
-Hal is attached only to `agent-edge`.
-
-Most privileged federation services are attached only to `fc`.
-
-This topology is architectural because it prevents the agent process from simply choosing an alternative privileged service path.
-
-The Hub is powerful operationally.
-
-It is not the source of policy authority.
-
-It submits operations to the governance path and acts on admission outcomes.
-
-### 7.3 Verifier proxy
-
-Implementation:
-
-`src/vfp-governance/verifier/nginx/nginx.conf`
-
-The verifier nginx proxy is the mTLS trust edge in the local implementation.
-
-It terminates TLS and obtains the authenticated client-certificate state directly from the TLS session.
-
-Protected routes explicitly require successful certificate verification and constrain accepted subject DNs.
-
-For example, the admission endpoint accepts the Hub identity rather than arbitrary callers.
-
-The nginx configuration globally allows optional client certificates because some public or diagnostic routes exist. Protected locations independently require successful client verification.
-
-That distinction must not be lost during deployment changes.
-
-The proxy does not decide the federation policy itself.
-
-It establishes the trusted client identity presented to the gatekeeper and constrains which identities may invoke protected apertures.
-
-### 7.4 Verifier / Gatekeeper
-
-Implementation:
-
-`src/vfp-governance/gatekeeper/app.py`
-
-Container:
-
-`verifier-app`
-
-The Gatekeeper evaluates the governed relation for attempted operations.
-
-Its responsibilities include governance-envelope processing, admission evaluation, policy interpretation, evidence generation, and related state transitions.
-
-The Gatekeeper is intentionally separated from the runtime that performs federated training or agent reasoning.
-
-Admission must remain meaningful even if the execution engine changes.
-
-### 7.5 Issuer proxy
-
-Implementation area:
-
-`src/vfp-core/issuers/nginx/`
-
-The issuer proxy is the mTLS edge for issuer-facing operations.
-
-Like the verifier edge, it is an implementation of a trust-boundary invariant rather than the invariant itself.
-
-### 7.6 Hospital A and Hospital B issuers
-
-Implementation area:
-
-`src/vfp-core/issuers/`
-
-Containers:
-
-- `issuer-hospitala`
-- `issuer-hospitalb`
-
-The issuers derive capability material from issuer-owned entitlement configuration.
-
-The caller does not supply arbitrary effective entitlements.
-
-The issuers verify TLS when communicating with the verifier path and are configured fail-closed if the trusted CA material is unavailable or verification is disabled.
-
-The architectural property is issuer ownership of capability assertions.
-
-The Python process implementing an issuer is replaceable.
-
-### 7.7 Human holder-signer
-
-Implementation area:
-
-`src/vfp-governance/signer/`
-
-Container:
-
-`holder-signer`
-
-The reference implementation uses a separate signing service to hold human participant private keys and generate DPoP proofs.
-
-The signer owns the `iat` value placed in the proof rather than accepting caller-supplied signing time.
-
-This component simulates a stronger custodial boundary.
-
-It is not presented as production HSM, WebAuthn, hardware-backed key custody, or a complete key-management system.
-
-The architectural invariant is that holder proof is produced under holder-key control and is not reducible to a caller-supplied token string.
-
-### 7.8 Redis
-
-Container:
-
-`redis`
-
-Redis supports shared runtime and governance coordination.
-
-It is attached to the `fc` network.
-
-Redis is not a federation authority.
-
-Its existence, replacement, or internal persistence strategy does not alter the architecture provided that the governance and isolation invariants remain intact.
-
-Hal must not gain Redis access merely because Redis is operationally convenient.
-
-### 7.9 Flower server
-
-The Flower server coordinates the federated-learning runtime.
-
-It handles the aggregation-side execution of the PathMNIST scenario.
-
-Its port numbers, aggregation implementation, and training parameters are runtime choices.
-
-The architectural requirement is not that Flower exists.
-
-The relevant requirements are that governed participants enter the operation under the appropriate relation, that local data remain local to their participant sites, and that contribution authority is not confused with constitutive membership or model-consumption authority.
-
-### 7.10 Hospital Flower clients
-
-Hospitals A, B, and C all execute Flower-client processes.
-
-This is an especially important example of why object type cannot define federation standing.
-
-At the process level, all three may look like "Flower clients".
-
-At the governance level, they are not equivalent.
-
-Hospitals A and B are constitutive participants in the baseline collaboration.
-
-Hospital C is a sponsored contributor in Mode 1A.
-
-The runtime object class is therefore insufficient to determine the governance relation.
-
-### 7.11 Hal
-
-Implementation:
-
-`src/vfp-core/agents/hal/hal.py`
-
-Container:
-
-`hal`
-
-Hal is the governed computational participant introduced in Mode 1B.
-
-Hal maintains its own Ed25519 holder identity.
-
-It can produce DPoP proof bound to its identity and the governance request context.
-
-It provides bounded execution functions used by the scenario, including reasoning selection and image transformation.
-
-Hal is attached to `agent-edge`, not to `fc`.
-
-The object "Hal" is not intrinsically privileged because it is an agent.
-
-Its authority derives from the capability and admission relation under which a concrete operation is attempted.
-
-### 7.12 LLM reasoning runtime
-
-The current Hal implementation can invoke an external OpenAI reasoning runtime.
-
-This runtime is explicitly outside the federation-governance authority model.
-
-Hal supplies a finite set of available actions to the reasoning runtime.
-
-The runtime selects among those actions.
-
-The Hal implementation rejects unknown available actions and falls back to refusal if the returned action is invalid or outside the supplied set.
-
-This is useful execution hardening.
-
-It is not the source of governance.
-
-The prompt itself explicitly tells the reasoning runtime that it does not grant authority and does not modify governance rules.
-
-Even if that prompt were ignored, the runtime still must not be able to enlarge the operations admitted by the federation path.
-
-This is the architectural point.
-
-### 7.13 Governance state
-
-Governance state includes policy, envelope state, approvals, capability-related state, sponsorship relations, and admission evidence.
-
-Its semantic ownership belongs to the governance plane.
-
-It must not be silently reconstructed from runtime state.
-
-### 7.14 Run registry and model pointer
-
-Training-run state and model references represent the analytical lifecycle.
-
-They are separate from the active governance envelope.
-
-This separation is deliberate.
-
-A model may have been produced during an earlier run and later used under a newly established governance context.
-
-Selecting the new governance envelope must not rewrite the model's historical provenance.
-
----
-
-## 8. Trust-boundary architecture
-
-The local Docker topology implements several distinct trust boundaries.
+This is a functional architecture rather than a deployment diagram. It shows which components participate in each responsibility and prepares the reader for the trust boundaries described later.
+## 6. The Hub as the controlled operational aperture
+`fc-hub` coordinates the application workflow. It connects the user-facing application to governance services, the federated runtime, model state, and the Mode 1B agent path. In the local Docker deployment it is attached to both the federation-internal `fc` network and the separate `agent-edge` network. Hal is attached only to `agent-edge`, while privileged federation services reside on `fc`.
+This arrangement makes the Hub the intended operational aperture between Hal and the federation. That term does not mean that the Hub owns federation authority. Policy, issuer authority, holder binding, and admission remain separate. The Hub is instead the point through which the application presents an attempted operation to those governance mechanisms before invoking the corresponding execution path.
+This distinction is important because admission would be weak if the component requesting an operation could simply bypass the admitted path and invoke the protected service directly. In such a design the Gatekeeper might still produce an ALLOW or DENY record, but the decision would not determine whether execution was possible. The decision would be observational rather than constitutive.
+The intended structure is therefore:
 
 ```mermaid
 flowchart LR
-    subgraph EXT["External / user-facing domain"]
-        UI["Dashboard / browser"]
-    end
+    Hal["Hal"]
+    Hub["fc-hub<br/>controlled aperture"]
+    Gate["Admission"]
+    Exec["Governed execution"]
 
-    subgraph AGENT["agent-edge"]
+    Hal --> Hub
+    Hub --> Gate
+    Gate -->|"ALLOW"| Hub
+    Hub --> Exec
+```
+
+The Hub coordinates the transition from governance to execution, but authority continues to originate from the governance relations evaluated by the Gatekeeper.
+## 7. Governance state and execution state
+OpenHealth-CDI deliberately keeps governance state separate from execution state. Governance state describes the approved collaboration and the authority under which operations may occur. It includes policy, constitutive participants, quorum, sponsorship, capability definitions, envelope state, holder bindings, and admission evidence. Execution state describes what the computation is doing or has produced. It includes Flower rounds, connected clients, training progress, model artefacts, predictions, and derivatives.
+The distinction prevents runtime facts from being mistaken for authority. A connected Flower client is not evidence of constitutive membership. A model file is not evidence that a requester may query the model. A derivative file is not evidence that a requester may receive it. A successful prediction is not evidence that the prediction was produced under an admitted operation.
+The relationship can be summarised as follows.
+
+| Governance fact | Execution fact that must not replace it |
+| --- | --- |
+| constitutive participation | process connected to Flower |
+| sponsorship | network connectivity |
+| capability | implementation contains callable function |
+| holder binding | possession of token string |
+| admission | successful computation |
+| governance envelope | training run |
+| derivative-consumption authority | derivative bytes exist |
+| signed decision evidence | UI reports success |
+
+This separation is used throughout the implementation and becomes particularly important in Mode 1B.
+## 8. Federation constitution
+The current collaboration is defined by an executable policy derived from the project constitution and MOU. Hospitals A and B are the founding organisations. The current constitutive policy requires both participants and a quorum of two approvals out of two.
+A caller may initiate creation of a collaboration, but the caller does not define the constitutive participant set or lower the quorum through arbitrary request parameters. The policy provides those values. This ensures that the federation is established under the authority of the collaboration rather than being defined by whichever application process happens to initiate the request.
+The establishment sequence is therefore:
+
+```mermaid
+sequenceDiagram
+    participant C as Caller
+    participant H as Hub
+    participant G as Gatekeeper
+    participant A as Hospital A
+    participant B as Hospital B
+
+    C->>H: Initiate collaboration
+    H->>G: Start binding
+    G->>G: Resolve policy-owned participants and quorum
+    A->>H: Approve
+    H->>G: Record A approval
+    B->>H: Approve
+    H->>G: Record B approval
+    G->>G: Verify required 2/2 approvals
+    G-->>H: Establish governance envelope
+```
+
+The caller initiates a process whose constitutional conditions already exist. It does not create those conditions by assertion.
+## 9. Governance envelope
+A governance envelope identifies the currently approved collaboration context under which operations are admitted. Capabilities are bound to an `envelope_id`, and the Gatekeeper verifies that the envelope represented by the credential matches the envelope represented by the attempted operation. This prevents authority issued for one collaboration from being reused silently in another.
+The envelope is not a training run and it is not a model identifier. Those concepts have different lifecycles. A model can be trained during one analytical run and later be used under another governance envelope that authorises a subsequent operation. Selecting the later envelope means that the current use of the model is governed by that collaboration context. It does not mean that the model was trained under the later envelope and it must not rewrite the historical provenance of the model artefact.
+The two lifecycles are therefore related only when an operation requires both.
+
+```mermaid
+flowchart TB
+    P["Policy"]
+    B["Envelope binding"]
+    E["Active governance envelope"]
+    A["Admission of current operation"]
+
+    R["Training run"]
+    M["Model artefact"]
+    U["Current model use"]
+
+    P --> B
+    B --> E
+    E --> A
+    A --> U
+
+    R --> M
+    M --> U
+```
+
+This separation is reflected in the Hub, dashboard state, run registry, tests, and documentation. A cloud port must preserve it.
+## 10. Capability issuance
+OpenHealth-CDI uses organisation-specific issuers to assign capabilities. The issuer does not accept an arbitrary authorisation profile chosen by the requester. Instead, the requester identifies the subject and governance envelope, and the issuer resolves that subject against its own member registry and entitlement configuration.
+The Hospital A and Hospital B issuers therefore represent independent issuing authorities. Their local configuration determines which profile or profiles a registered holder may receive. The mapping from issuer role names to executable policy capability sets is also issuer-controlled.
+This design prevents the frontend, Hub, or requester from becoming a hidden authorisation authority. A caller may request issuance, but it cannot enlarge the resulting capability by adding profile, sponsor, or actor metadata to the request.
+The process is:
+
+```mermaid
+sequenceDiagram
+    participant C as Caller
+    participant I as Organisation issuer
+    participant R as Issuer registry
+    participant E as Issuer entitlements
+    participant G as Governance mint path
+
+    C->>I: Request ECT for subject and envelope
+    I->>R: Resolve registered holder
+    R-->>I: Holder public identity
+    I->>E: Resolve issuer-owned assignment
+    E-->>I: Capability profiles and governance metadata
+    I->>G: Request signed envelope-bound capability
+    G-->>I: ECT
+    I-->>C: ECT
+```
+
+A capability therefore represents authority asserted by an issuer under the federation policy. It is not an arbitrary structure supplied by a caller.
+## 11. Holder binding
+Issuing a capability to a named subject is not sufficient on its own. The system must also verify that the party exercising the capability controls the holder identity to which the credential was issued.
+OpenHealth-CDI therefore uses DPoP holder proof. The issued credential contains confirmation material identifying the holder key, and the request includes a proof produced by that holder. The proof is bound to request properties including the target operation, HTTP method, freshness values, unique request identifier, and governance-envelope context.
+Human participants use the separate `holder-signer` component in the reference implementation. Hal maintains its own computational holder identity. These are different mechanisms for producing proof, but the architectural rule is identical. Capability exercise must be bound to the legitimate holder rather than treated as bearer-token possession.
+The architecture consequently distinguishes three questions that are often collapsed. mTLS asks which service identity reached a protected network edge. The ECT asks which capability an issuer granted to a governed principal. DPoP asks whether the current request is being exercised by the legitimate holder of that capability.
+## 12. Admission
+Admission evaluates a concrete attempted operation against the current governance context. The Gatekeeper considers the subject, issuer, capability, resource, action, purpose, requested scope, envelope, holder proof, sponsorship where required, validity conditions, and other policy constraints.
+An ALLOW means that this particular operation is permitted under those conditions. It does not mean that every operation by the same participant is permitted. A DENY means that the attempted relation is outside the admitted authority. It does not mean that the participant is globally excluded from the federation.
+The process is therefore relational.
+
+```mermaid
+sequenceDiagram
+    participant P as Governed participant
+    participant H as Hub
+    participant G as Gatekeeper
+    participant X as Execution service
+
+    P->>H: Request operation
+    H->>G: ECT + DPoP + envelope + resource + action + purpose + scope
+    G->>G: Evaluate complete governed relation
+
+    alt ALLOW
+        G-->>H: ALLOW + signed evidence
+        H->>X: Execute admitted operation
+        X-->>H: Runtime result
+        H-->>P: Result
+    else DENY
+        G-->>H: DENY + signed evidence
+        H-->>P: Refusal
+    end
+```
+
+Admission is therefore neither authentication nor execution. It sits between them and determines whether the federation accepts the requested relation.
+## 13. The verifier mTLS trust boundary
+The verifier is reached through an nginx mTLS edge. nginx terminates TLS, validates the client certificate against the configured federation CA, obtains the verified subject DN from the TLS session, and forwards protected operations only when the endpoint-specific identity requirement is satisfied.
+For example, `/admission/check` accepts the Hub identity rather than arbitrary network callers. Administrative routes accept the relevant founding-organisation administrator identities. The Gatekeeper therefore receives requests through a boundary where transport identity has already been established by cryptographic verification.
+This architecture does not mean that a TLS certificate is sufficient to authorise the requested federation operation. mTLS establishes who is calling the protected service edge. The ECT, DPoP proof, policy, and admission request determine what the governed principal is authorised to do.
+The trust path is:
+
+```mermaid
+sequenceDiagram
+    participant C as mTLS client
+    participant N as verifier nginx
+    participant G as Gatekeeper
+
+    C->>N: TLS connection with client certificate
+    N->>N: Verify certificate and derive client DN
+
+    alt Client identity accepted for endpoint
+        N->>G: Forward trusted request context
+        G->>G: Evaluate governance relation
+        G-->>N: ALLOW or DENY
+        N-->>C: Result
+    else Certificate missing, invalid, or wrong identity
+        N-->>C: Reject request
+    end
+```
+
+This boundary becomes particularly important when the system is ported to AWS. Moving TLS termination to another component changes where authenticated identity is established. Such a change is not automatically equivalent to the current trust model even if HTTP traffic continues to work.
+## 14. Network topology and trust boundaries
+The local deployment uses two Docker networks named `fc` and `agent-edge`. Federation-internal services such as the Gatekeeper, issuers, holder-signer, Redis, and Flower runtime reside on `fc`. Hal resides on `agent-edge`. The Hub is connected to both networks so that it can mediate between the agent execution domain and the governed federation services.
+The architectural invariant is not the Docker network names. The invariant is that Hal does not obtain the normal privileged federation-internal service path while the Hub remains the intended application aperture through which Hal participates in governed operations.
+The topology is:
+
+```mermaid
+flowchart LR
+    subgraph AG["Agent execution domain"]
         Hal["Hal"]
     end
 
-    Hub["fc-hub<br/>dual-homed controlled aperture"]
+    Hub["fc-hub<br/>connected to both domains"]
 
-    subgraph FC["fc federation-internal domain"]
+    subgraph FC["Federation-internal domain"]
         VP["Verifier proxy"]
         GK["Gatekeeper"]
         IP["Issuer proxy"]
@@ -718,9 +322,8 @@ flowchart LR
         F["Flower server"]
     end
 
-    LLM["External LLM runtime"]
+    LLM["External reasoning runtime"]
 
-    UI --> Hub
     Hal <--> Hub
     Hal <--> LLM
 
@@ -728,309 +331,101 @@ flowchart LR
     VP --> GK
     Hub --> HS
     Hub --> F
-
     IA --> IP
     IB --> IP
     IP --> VP
-
     GK <--> R
-
-    Hal -. "no fc network membership" .-> FC
 ```
 
-The dashed line from Hal to the `fc` domain is not a permitted path.
-
-It documents the boundary.
-
-The important property is that the Hub is the intended bridge between the agent execution domain and federation-internal services.
-
----
-
-## 9. The Hub as controlled aperture
-
-Calling the Hub a controlled aperture does not mean that the Hub owns federation authority.
-
-It means that the application topology directs cross-boundary operational requests through a location where governance can be made load-bearing.
-
-Without this property, admission can degrade into a side check.
-
-Consider the wrong architecture:
+Removing Docker and replacing it with another infrastructure is permitted. Removing the separation between the agent execution domain and privileged federation services is not equivalent.
+## 15. Network reachability is not governance authority
+The architecture deliberately distinguishes physical reachability from authority. Hal is not attached to the internal `fc` Docker network and therefore lacks the normal container-level routes to federation-internal services. Some federation edges are nevertheless published through the host, and host routing may make a TCP connection physically possible from contexts outside the intended Docker network.
+Such reachability does not establish federation authority. The published verifier and issuer edges require authenticated client certificates and accepted identities. A process capable of reaching a TCP port but unable to present the required identity has not acquired the right to invoke the protected operation.
+The correct architectural statement is therefore that network topology constrains available paths while cryptographic authentication constrains accepted identities. These controls complement one another. OpenHealth-CDI does not claim that every possible packet from Hal to every host-published address is physically impossible.
+This distinction is essential for interpreting `Test5A_agent_isolation.sh` and for translating the topology to AWS security groups.
+## 16. Federated execution
+The analytical workload used by the reference implementation is PathMNIST federated learning. Hospitals run Flower clients against local data partitions while the Flower server coordinates model updates. The raw training data remain in the participant environments rather than being centralised as a prerequisite for training.
+The runtime is useful because it provides a real distributed operation against which the governance model can be exercised. It should not be mistaken for the federation architecture itself. Flower, its internal ports, the number of training rounds, optimizer choices, GPU configuration, and sample allocation are operational choices.
+The important architectural relation is that independently governed participants contribute to a shared operation under explicitly admitted authority.
 
 ```mermaid
-flowchart LR
-    Hal["Hal"]
-    Hub["Hub"]
-    G["Gatekeeper"]
-    S["Privileged service"]
+flowchart TB
+    FS["Flower server"]
 
-    Hal --> Hub
-    Hub --> G
-    Hal --> S
-```
-
-If Hal can simply bypass the governed path and invoke the privileged service directly, a successful admission decision may be recorded while having no constitutive effect on whether execution can occur.
-
-The decision becomes decorative.
-
-The intended architecture is instead:
-
-```mermaid
-flowchart LR
-    Hal["Hal"]
-    Hub["Controlled aperture<br/>fc-hub"]
-    G["Admission"]
-    S["Governed operation"]
-
-    Hal --> Hub
-    Hub --> G
-    G -->|"ALLOW"| Hub
-    Hub --> S
-```
-
-This is why Mode 1B isolation is not merely "hardening".
-
-It is what makes admission operationally meaningful for the agent path.
-
----
-
-## 10. Network isolation and cryptographic isolation
-
-OpenHealth-CDI deliberately distinguishes two different protections.
-
-### 10.1 Docker-internal service isolation
-
-Hal is connected to `agent-edge`.
-
-Services such as Redis, the holder-signer, verifier application, issuers, and Flower runtime are attached to `fc`.
-
-Hal is not a member of `fc`.
-
-It therefore does not have the normal Docker-internal service path to those components.
-
-### 10.2 Published mTLS edges
-
-The verifier and issuer nginx edges are published from the Docker environment for intended federation interaction.
-
-A published host edge may be physically reachable from an unexpected local process depending on host and Docker routing.
-
-The architecture does not equate possible TCP reachability with authority.
-
-The protected verifier routes require successful client-certificate authentication and expected certificate subject identities.
-
-The issuer edge similarly depends on authenticated client identity.
-
-A process that can open a TCP connection but cannot present an accepted federation client certificate has not acquired federation authority.
-
-This gives the correct architectural statement:
-
-> **Network separation constrains available execution paths. mTLS constrains accepted identities at published trust edges. Neither should be confused with the other.**
-
-The implementation intentionally uses both.
-
-### 10.3 What is not claimed
-
-This design is not a complete hostile-agent sandbox.
-
-Hal requires outbound access to the external reasoning runtime.
-
-The implementation therefore does not attempt to make the complete agent execution domain an offline containment environment.
-
-The claim is narrower.
-
-The agent's normal application path does not include privileged federation-internal services, and published governance edges remain cryptographically protected.
-
----
-
-## 11. mTLS boundary
-
-The local verifier trust path is:
-
-```mermaid
-sequenceDiagram
-    participant C as Federation caller
-    participant N as verifier nginx
-    participant G as Gatekeeper
-
-    C->>N: TLS connection + client certificate
-    N->>N: Validate certificate against federation CA
-
-    alt certificate accepted and DN allowed for endpoint
-        N->>G: Forward request + verified identity context
-        G->>G: Evaluate governance operation
-        G-->>N: Result
-        N-->>C: Result
-    else certificate absent, invalid, or wrong identity
-        N-->>C: Reject before protected operation
+    subgraph HA["Hospital A authority domain"]
+        DA["Local PathMNIST partition"]
+        CA["Flower client"]
+        DA --> CA
     end
-```
 
-The nginx edge computes client-verification state and subject DN from the TLS session.
-
-Protected routes test those values before forwarding.
-
-This is important for deployment portability.
-
-An infrastructure change that terminates TLS elsewhere and forwards an unauthenticated caller-supplied identity header is **not equivalent** to the current architecture.
-
-The implementation technology may change.
-
-The trusted origin of client identity may not silently change.
-
-The detailed AWS consequence is documented separately in [AWS-PORTING.md](AWS-PORTING.md).
-
----
-
-## 12. Governance path
-
-At a high level, a governed operation separates identity, capability, holder proof, policy context, and execution.
-
-```mermaid
-sequenceDiagram
-    participant P as Participant
-    participant I as Issuer
-    participant H as Hub
-    participant V as Verifier / Gatekeeper
-    participant X as Execution service
-
-    P->>I: Request capability
-    I->>I: Apply issuer-owned entitlements
-    I-->>P: ECT capability
-
-    P->>H: Request governed operation
-    H->>V: Admission request + ECT + holder proof + envelope context
-    V->>V: Evaluate policy, scope, holder binding, context
-
-    alt ALLOW
-        V-->>H: Signed ALLOW evidence
-        H->>X: Execute admitted operation
-        X-->>H: Result
-        H-->>P: Result
-    else DENY
-        V-->>H: Signed DENY evidence
-        H-->>P: Denial
+    subgraph HB["Hospital B authority domain"]
+        DB["Local PathMNIST partition"]
+        CB["Flower client"]
+        DB --> CB
     end
+
+    subgraph HC["Hospital C authority domain"]
+        DC["Local PathMNIST partition"]
+        CC["Sponsored Flower client"]
+        DC --> CC
+    end
+
+    CA <--> FS
+    CB <--> FS
+    CC <--> FS
 ```
 
-This diagram intentionally avoids implying that possession of one object authorises the operation.
-
-The admission result emerges from the relation among the objects.
-
----
-
-## 13. Federation-envelope lifecycle
-
-The governance envelope represents the current governed collaboration context.
-
-The envelope does not become the model run.
-
-The model run does not become the envelope.
+The three Flower clients may look operationally similar, but they do not necessarily have the same governance standing.
+## 17. Mode 1A and sponsored participation
+Mode 1A demonstrates how the federation can accept a new contributor without redefining the constitutive collaboration. Hospital C does not join the founding A+B governance relation. Instead, Charlie participates through a guest-contributor capability issued by Hospital A and sponsored by Hospital A, while Hospital C remains the contributor's institutional provenance.
+Issuer, sponsor, provenance, and membership therefore remain separate concepts. Hospital A issuing the capability does not erase Hospital C provenance. Hospital A sponsoring Charlie does not make Hospital C a sponsor. Hospital C providing provenance does not make it a founding member. Charlie being allowed to submit a federated update does not give Charlie or Hospital C model-consumption authority.
+The architecture can therefore express differentiated participation instead of forcing every new participant into one homogeneous membership list.
 
 ```mermaid
 flowchart LR
-    Policy["Policy"]
-    Bind["Bind initiation"]
-    Approval["Required approvals"]
-    Envelope["Governance envelope"]
-    Admission["Operation admission"]
+    A["Hospital A<br/>founder"]
+    B["Hospital B<br/>founder"]
+    C["Hospital C<br/>provenance"]
+    Ch["Charlie<br/>guest contributor"]
+    Env["A+B governance envelope"]
 
-    TrainRun["Training run"]
-    Model["Model artefact"]
-    LaterEnvelope["Later governance envelope"]
-    Use["Later governed model use"]
-
-    Policy --> Bind
-    Bind --> Approval
-    Approval --> Envelope
-    Envelope --> Admission
-
-    TrainRun --> Model
-    Model --> Use
-    LaterEnvelope --> Use
+    A -->|"constitutive participation"| Env
+    B -->|"constitutive participation"| Env
+    A -->|"sponsors"| Ch
+    C -->|"institutional provenance"| Ch
+    Ch -->|"bounded training contribution"| Env
 ```
 
-The lower path is deliberately separate.
-
-A later envelope can govern use of an existing model.
-
-That relationship must not be rewritten as "this model was trained under the later envelope".
-
-This distinction matters in the dashboard, evidence, test design, documentation, and cloud port.
-
----
-
-## 14. Mode evolution
-
-The three executable modes add participants and relations without replacing the underlying governance architecture.
+This relation is one of the principal examples of why the architecture cannot be inferred from process inventory alone.
+## 18. Contribution is distinct from consumption
+Mode 1A also demonstrates that participation in one operation does not imply participation in every operation over the resulting resources. Hospital C can contribute to federated training without thereby receiving custody of the resulting model, the right to download the model, or general query authority.
+The same principle applies more broadly. Capability is operation-specific. `submit_update`, `query_model`, `bounded_inference`, `rebind`, and `consume_derivative` are different governed actions and may be granted to different participants under different scopes.
+This separation is a core architectural invariant because otherwise adding one operational right would silently amplify authority over unrelated resources.
+## 19. Mode 1B and governed computational participation
+Mode 1B introduces Hal as a computational participant. Hal has its own holder identity and receives the `capset:pathmnist_bounded_agent` profile under sponsorship by Hospitals A and B. The current capability permits bounded inference and policy-authorised rebind over the tissue classes defined by policy. It does not grant founding membership, quorum rights, general model-query authority, or privileged governance operations.
+Hal is therefore treated as another governed participant rather than as a special authority category. The fact that Hal is computational changes its execution implementation but does not replace the underlying admission model.
+The important relation is:
 
 ```mermaid
 flowchart LR
-    AB["A+B<br/>constitutive federation"]
-    M1A["Mode 1A<br/>sponsored contribution"]
-    M1B["Mode 1B<br/>governed computational participation"]
+    Sponsors["Hospitals A + B<br/>sponsoring authorities"]
+    Issuer["Hospital A issuer"]
+    Hal["Hal<br/>holder-bound computational participant"]
+    Gate["Gatekeeper"]
+    Op["Bounded operation"]
 
-    AB -->|"add C through sponsorship<br/>without membership equivalence"| M1A
-    M1A -->|"add Hal through bounded capability<br/>without runtime-derived authority"| M1B
+    Sponsors -->|"sponsorship relation"| Hal
+    Issuer -->|"bounded capability"| Hal
+    Hal -->|"ECT + DPoP + request context"| Gate
+    Gate -->|"ALLOW"| Op
 ```
 
-### 14.1 A+B
-
-Hospitals A and B form the constitutive collaboration.
-
-They establish the governed context, participate in federated training, and consume the model under governed capabilities.
-
-This is not special because there are exactly two hospitals.
-
-It is the baseline relation against which later differentiated participation can be observed.
-
-### 14.2 Mode 1A
-
-Mode 1A adds Hospital C and Charlie.
-
-The significant change is not "another Flower client exists".
-
-The significant change is that contribution is admitted through **sponsorship**.
-
-Hospital C provenance is preserved.
-
-Charlie does not become Hospital A.
-
-Hospital C does not automatically become a constitutive member.
-
-Contribution authority does not imply model-consumption authority.
-
-Mode 1A therefore demonstrates evolution of participation without rebuilding the federation as a uniform membership set.
-
-### 14.3 Mode 1B
-
-Mode 1B adds Hal as a governed computational participant.
-
-Again, the important change is relational rather than taxonomic.
-
-The system does not create a special rule saying "AI agents are allowed" or "AI agents are forbidden".
-
-Instead, Hal receives a bounded capability relation and must satisfy the same architectural principle as other participants.
-
-Operations require admitted authority.
-
-Hal's reasoning runtime does not create authority.
-
-Hal's ability to transform data does not create requester release authority.
-
----
-
-## 15. Mode 1B agent architecture
-
-Mode 1B intentionally separates three concepts that are frequently collapsed:
-
-1. the governed participant
-2. the reasoning runtime
-3. the governed operation
-
-Hal is the governed participant.
-
-The external LLM is the reasoning runtime.
-
-Admission governs the operation.
+Hal's authority comes from the capability and admission relation shown here. It does not come from being described as an AI agent.
+## 20. Hal is the governed participant, not the LLM
+Hal can use an external LLM as a reasoning runtime. This runtime helps select an intended action from a finite set made available by Hal. It is deliberately outside the federation-governance model.
+The LLM does not receive federation membership. It does not receive an ECT. It does not hold Hal's federation authority. It does not become a sponsor, issuer, or Gatekeeper. Changing from one LLM provider or model to another therefore need not change the federation architecture.
+The distinction is especially important because execution intelligence and governance authority are different dimensions. A more capable model does not acquire more federation authority simply because it can generate a more sophisticated plan.
+The current design can be represented as follows.
 
 ```mermaid
 flowchart LR
@@ -1039,61 +434,42 @@ flowchart LR
     Gate["Gatekeeper"]
     Hal["Hal<br/>governed participant"]
     LLM["LLM<br/>reasoning runtime"]
-    Tool["Bounded transformation"]
-    Res["Governed result"]
+    Tool["Bounded execution tool"]
 
     Req --> Hub
     Hub --> Gate
-
-    Gate -->|"admitted bounded operation"| Hub
+    Gate -->|"admitted operation"| Hub
     Hub --> Hal
-
     Hal -->|"finite available actions"| LLM
     LLM -->|"selected intended action"| Hal
-
     Hal --> Tool
-    Tool --> Hub
-
-    Hub --> Gate
-    Gate -->|"independent release decision"| Hub
-    Hub --> Res
-    Res --> Req
 ```
 
-The LLM can influence which intended action Hal proposes.
+The LLM influences execution. It does not enlarge the set of actions admitted by governance.
+## 21. Context-dependent agent behaviour
+The contextual Mode 1B scenario demonstrates that the correct operation cannot be determined from Hal's identity alone. The same Hal instance handles requests from Audrey and Bob over different tissue classes. Audrey has direct source-query authority over selected other-tissue classes, while Bob has direct source-query authority over cancer-associated classes. Both possess derivative-consumption authority.
+As a result, Audrey requesting mucus can receive the source directly, whereas Audrey requesting colorectal adenocarcinoma epithelium is denied the source and follows a governed derivative path. Bob exhibits the complementary behaviour for those same classes.
+The important architectural result is that Hal remains the same object in every case. What changes is the relation among requester, resource, capability, purpose, and governance context. The operation follows the relation rather than an intrinsic behavioural label attached to the agent.
 
-It cannot change:
+```mermaid
+flowchart TB
+    R["Requester + resource"]
+    S["Source-consumption admission"]
 
-- federation membership
-- sponsorship
-- issuer entitlements
-- policy
-- envelope constitution
-- holder identity
-- requester capability
-- resource scope
-- the result of admission
-- derivative-release authority
+    R --> S
+    S -->|"ALLOW"| Direct["Return source"]
+    S -->|"DENY"| Reason["Bounded agent reasoning"]
+    Reason --> Rebind["Hal rebind admission"]
+    Rebind -->|"ALLOW"| Deriv["Produce derivative"]
+    Deriv --> Release["Requester derivative-consumption admission"]
+    Release -->|"ALLOW"| Out["Return governed derivative"]
+```
 
-The reasoning runtime is therefore downstream of governance, not a source of governance.
-
----
-
-## 16. Contextual agent execution
-
-Mode 1B also demonstrates why the identity of the agent is not sufficient to determine the operation.
-
-The same Hal process can receive requests involving different requester-resource relations.
-
-The resulting operation can differ while Hal's object identity remains unchanged.
-
-The implemented contextual examples include Audrey and Bob over the same relevant tissue classes.
-
-For one requester-resource relation, source consumption may already be admitted.
-
-For another, source consumption may be denied while a governed derivative path remains available.
-
-The architecture can be represented as:
+This is the principal architectural extension implemented after the JMIR manuscript was completed.
+## 22. Transformation is distinct from release
+The derivative path intentionally separates source access, transformation, and release. If source access is denied, that denial does not automatically authorise Hal to transform the resource. Hal's `rebind` operation must itself be admitted. If that transformation is allowed and a derivative is produced, the derivative still cannot be returned automatically to the requester. The requester must separately be admitted for `consume_derivative`.
+This creates three independent governance decisions where a less rigorous architecture might contain only one. The separation prevents transformation authority from becoming a privilege-amplification mechanism.
+The sequence is:
 
 ```mermaid
 sequenceDiagram
@@ -1101,421 +477,99 @@ sequenceDiagram
     participant H as Hub
     participant G as Gatekeeper
     participant A as Hal
-    participant L as LLM runtime
 
-    R->>H: Request resource
+    R->>H: Request source
     H->>G: Admit source consumption
+    G-->>H: DENY source
 
-    alt source consumption ALLOW
-        G-->>H: ALLOW
-        H-->>R: Source representation
-    else source consumption DENY
-        G-->>H: DENY
-        H->>A: Ask for bounded intended action
-        A->>L: Context + finite available actions
-        L-->>A: Intended action
-        A-->>H: Selected bounded action
+    H->>G: Admit Hal rebind
+    G-->>H: ALLOW rebind
+    H->>A: Execute transformation
+    A-->>H: Governed derivative
 
-        H->>G: Admit Hal rebind / transformation
-        G-->>H: ALLOW
-        H->>A: Execute admitted transformation
-        A-->>H: Governed derivative
-
-        H->>G: Admit requester derivative consumption
-        G-->>H: ALLOW
-        H-->>R: Governed derivative
-    end
+    H->>G: Admit requester derivative consumption
+    G-->>H: ALLOW derivative consumption
+    H-->>R: Return derivative
 ```
 
-The key observation is architectural.
+The original source remains denied throughout this sequence. The final ALLOW applies to a different governed resource and operation.
+## 23. Source and derivative are different governed resources
+A derivative is related to its source through provenance, but it is not governed as though it were simply the same resource with a different file format. The current policy identifies the source resource as `pathmnist-colon-pathology` and the derivative resource as `pathmnist-derived-representation`.
+This separation allows a requester to be denied source consumption while being authorised to consume a policy-approved derivative. It also prevents the existence of a derivative from being interpreted as automatic release authority.
+The architecture therefore preserves both continuity and distinction. The derivative remains attributable to the source operation, but its consumption is independently governed.
+## 24. Model lifecycle and governance-envelope lifecycle
+The model lifecycle begins with an analytical run and produces an artefact that may persist after the run completes. The governance-envelope lifecycle begins with approval of a collaboration context and determines which operations may currently be performed. These lifecycles can overlap, but neither contains the other.
+For example, a model produced during an earlier A+B run can later be used under a newly established governance envelope. The later envelope determines whether Audrey, Bob, or Hal may perform a current operation over that model. It does not imply that the model was trained under the later envelope.
+This distinction must remain visible in runtime state, evidence, dashboard presentation, and cloud deployment because conflating the two would fabricate provenance.
+## 25. Evidence as part of the architecture
+OpenHealth-CDI records signed ALLOW and DENY decision evidence. These records are not merely debugging logs. They make the result of governance evaluation independently inspectable and allow the conformance suite to verify that a successful or rejected operation corresponds to a recorded admission decision.
+Evidence is particularly important because the architecture contains negative invariants. It is not sufficient to show that authorised operations succeed. The reference implementation must also demonstrate that out-of-scope operations are rejected and that the rejection is attributable to the expected governance rule.
+Examples include rejection of caller-selected capability profiles, caller-selected sponsorship, holder mismatch, replay, stale DPoP proofs, source-scope violations, and privileged operations attempted by Hal.
+The architecture therefore treats the decision record as part of the governed operation rather than as optional observability data.
+## 26. Executable conformance
+The repository includes tests that exercise the major architectural boundaries. `Test2E_fcac_conformance.sh` checks the shared admission-governance substrate. `Test4C_sponsorship_regression.sh` verifies that sponsorship, issuer identity, provenance, and membership remain distinct. `Test5A_agent_isolation.sh` verifies the Mode 1B execution boundary. `Test5C_agent_credential_admission.sh` checks Hal's holder-bound capability relation. `Test5D_mode1b_table7_conformance.sh` makes the five Mode 1B governance requirements executable. `Test5E_mode1b_contextual_agent.sh` exercises the same agent across different requester-resource relations.
+These tests provide evidence for selected invariants of the local implementation. They should not be interpreted as proving every property of every future deployment. In particular, infrastructure-specific tests must be adapted when Docker network mechanisms are replaced by AWS networking mechanisms.
+Detailed prerequisites, commands, expected results, and evidence interpretation are documented in [TESTING.md](TESTING.md).
+## 27. Implementation choices versus architectural constraints
+A deployment mechanism is not automatically part of the architecture. The correct question is whether changing that mechanism changes an observable governance or trust-boundary invariant.
+The current local implementation can be classified as follows.
 
-Hal remains Hal in every branch.
-
-The resource may remain the same.
-
-What changes is the **relation** among requester, resource, capability, purpose, and governance context.
-
-The operation follows that relation.
-
-It does not follow an intrinsic property of "the AI agent".
-
----
-
-## 17. Source, transformation, and derivative release
-
-The derivative path deserves explicit repetition because collapsing its steps creates a serious governance error.
-
-A denial of source consumption does not automatically authorise a transformation.
-
-An allowed transformation does not automatically authorise release of its output.
-
-The complete relation is:
-
-```mermaid
-flowchart LR
-    S["Source resource"]
-    SC["Source-consumption admission"]
-    T["Hal transformation admission"]
-    D["Derivative"]
-    DC["Requester derivative-consumption admission"]
-    R["Requester"]
-
-    S --> SC
-
-    SC -->|"ALLOW"| R
-    SC -->|"DENY but governed transformation available"| T
-
-    T -->|"ALLOW"| D
-    D --> DC
-    DC -->|"ALLOW"| R
-```
-
-This distinction is essential to Mode 1B.
-
-If derivative consumption were implied merely by successful transformation, rebind would become an authority-amplification mechanism.
-
-The implementation instead makes release independently governed.
-
----
-
-## 18. Human and non-human participants
-
-OpenHealth-CDI does not make "human" and "AI agent" two different federation technologies.
-
-The object classes differ.
-
-The architecture of relation remains the same.
-
-A human participant may use a custodial holder-signer.
-
-Hal holds its own computational identity.
-
-Those are implementation differences around holder proof.
-
-The governance question remains:
-
-> What operation may this holder perform under this governance context over this resource for this purpose?
-
-This is also why `actor_type` must not become an authorisation shortcut.
-
-An `actor_type` value can describe an object.
-
-It cannot substitute for the relation.
-
----
-
-## 19. Federated runtime and local data
-
-The PathMNIST scenario gives OpenHealth-CDI a concrete distributed computation.
-
-Hospital A, Hospital B, and in Mode 1A Hospital C operate local Flower clients.
-
-Training data remain at the participant sites.
-
-Flower coordinates model updates rather than centralising the underlying training data.
-
-```mermaid
-flowchart TB
-    FS["Flower server"]
-
-    subgraph A["Hospital A authority domain"]
-        AD["Local PathMNIST data"]
-        AC["Flower client"]
-        AD --> AC
-    end
-
-    subgraph B["Hospital B authority domain"]
-        BD["Local PathMNIST data"]
-        BC["Flower client"]
-        BD --> BC
-    end
-
-    subgraph C["Hospital C authority domain"]
-        CD["Local PathMNIST data"]
-        CC["Sponsored Flower client"]
-        CD --> CC
-    end
-
-    AC <--> FS
-    BC <--> FS
-    CC <--> FS
-```
-
-This runtime illustrates the architecture.
-
-It does not define it.
-
-If Flower were replaced while the same governance invariants remained true, OpenHealth-CDI would still implement the same federation architecture.
-
----
-
-## 20. Governance state versus runtime state
-
-The implementation must preserve a clear distinction between governance facts and runtime facts.
-
-| Governance state | Runtime state |
+| Current mechanism | Architectural interpretation |
 | --- | --- |
-| policy | training rounds |
-| constitutive participants | connected Flower clients |
-| quorum | client process count |
-| envelope | model run |
-| sponsorship | process topology |
-| capability | callable implementation |
-| holder binding | key-loading mechanism |
-| admission evidence | prediction result |
-| derivative-consumption authority | existence of derivative bytes |
+| Docker | implementation choice |
+| network name `fc` | implementation choice |
+| separate federation-internal connectivity | architectural constraint |
+| network name `agent-edge` | implementation choice |
+| Hal separated from privileged federation services | architectural constraint |
+| Hub connected to both execution domains | current realization of controlled aperture |
+| Hub port `8080` | implementation choice |
+| local loopback publication | local realization of restricted ingress |
+| nginx | implementation choice |
+| authenticated identity at governance trust edge | architectural constraint |
+| verifier port `8443` | implementation choice |
+| mTLS trust semantics | architectural constraint |
+| Redis | implementation choice |
+| Hal excluded from privileged Redis access | architectural constraint |
+| Flower | implementation choice |
+| independently governed contribution | architectural constraint |
+| OpenAI reasoning runtime | implementation choice |
+| LLM unable to enlarge Hal authority | architectural constraint |
+| local filesystem model storage | implementation choice |
+| model provenance distinct from envelope lifecycle | architectural constraint |
 
-The right-hand column cannot be used to infer the left-hand column.
+This distinction is the basis of [AWS-PORTING.md](AWS-PORTING.md). The cloud deployment should not attempt to reproduce Docker mechanically. It must reproduce the constraints that Docker currently helps enforce.
+## 28. Architectural failure patterns
+Several technically plausible modifications would change or invalidate the architecture even if the application continued to run. Attaching Hal directly to the federation-internal service domain would weaken the controlled-aperture relation. Allowing the frontend or Hub to choose the effective capability profile would violate issuer ownership. Treating Hospital C as an ordinary founding member would eliminate the Mode 1A distinction. Treating the LLM-selected action as an authorisation result would move governance authority into the reasoning runtime. Returning a derivative immediately after transformation would collapse rebind and release. Treating the currently selected envelope as the provenance of an older model would merge governance and analytical lifecycles. Terminating mTLS at another infrastructure layer without preserving trusted client-identity semantics would move the trust boundary and require explicit revalidation.
+These are architectural failures because they alter authority-bearing relationships. By contrast, changing a port number, replacing Redis, changing Flower versions, modifying training rounds, replacing the frontend, or replacing the LLM can be legitimate operational changes if the same invariants remain true.
+## 29. Local source-code map
+The principal implementation locations are shown below so that the architectural description can be traced directly to code.
 
-A connected process is not necessarily a member.
-
-A produced model is not evidence of a particular governance envelope.
-
-A derivative file is not evidence that a requester may consume it.
-
-A callable function is not a capability.
-
----
-
-## 21. Current local network realization
-
-The local OpenTofu deployment currently uses:
-
-- Docker network `fc`
-- Docker network `agent-edge`
-- Hub attached to both
-- Hal attached to `agent-edge`
-- federation-internal services attached to `fc`
-- verifier nginx mTLS edge published from port 8443
-- issuer nginx mTLS edge published from port 8443 to the configured issuer host port
-- Hub local debug publication bound to `127.0.0.1:8080`
-
-These are mechanisms.
-
-Some embody constraints and some are merely local choices.
-
-| Local mechanism | Architectural interpretation |
+| Architectural concern | Repository path |
 | --- | --- |
-| Docker network named `fc` | Name and Docker technology are choices |
-| Separate federation-internal connectivity | Constraint |
-| Docker network named `agent-edge` | Name and Docker technology are choices |
-| Hal separated from privileged federation-internal services | Constraint |
-| Hub attached to both networks | Current mechanism implementing the controlled-aperture relation |
-| Hub port 8080 | Choice |
-| Hub bound to `127.0.0.1` for local publication | Local mechanism implementing restricted ingress |
-| Verifier port 8443 | Choice |
-| Client identity authenticated at governance edge | Constraint |
-| nginx | Choice |
-| mTLS semantics and trusted identity provenance | Constraint |
-| Redis | Choice |
-| Hal must not obtain privileged governance state access through Redis | Constraint |
-| Flower | Choice |
-| Governed contribution and local authority over participant data | Constraint |
-| OpenAI reasoning runtime | Choice |
-| Reasoning runtime cannot enlarge Hal's authority | Constraint |
-
-This distinction is the basis of the AWS porting contract.
-
-The cloud deployment does not need to reproduce Docker.
-
-It must reproduce the invariants.
-
----
-
-## 22. Failure patterns that change the architecture
-
-Several superficially reasonable implementation changes would violate the architecture.
-
-### 22.1 Attaching Hal to `fc`
-
-This would give the agent process normal internal reachability to services that were intentionally placed outside its execution domain.
-
-The Hub would cease to be the sole intended operational aperture.
-
-Admission could become bypassable.
-
-### 22.2 Treating network reachability as authorisation
-
-A successful TCP connection does not establish governance standing.
-
-Doing so would collapse infrastructure connectivity and federation authority.
-
-### 22.3 Terminating mTLS upstream without preserving authenticated identity semantics
-
-If a load balancer terminates TLS and forwards a caller-controlled or insufficiently protected identity representation, the gatekeeper no longer receives identity under the same trust model.
-
-The system might continue to return HTTP 200 responses while the trust boundary has silently moved.
-
-This is an architectural change.
-
-### 22.4 Allowing callers to supply effective capability scope
-
-This would turn capability issuance into self-asserted authority.
-
-### 22.5 Treating sponsorship as membership
-
-This would eliminate the central Mode 1A distinction.
-
-Hospital C would no longer represent differentiated participation.
-
-### 22.6 Treating contribution as consumption
-
-This would erase operation-specific authority.
-
-### 22.7 Treating Hal's LLM output as authorisation
-
-An LLM response selecting `blur_image`, `no_transform`, or another action is an execution decision.
-
-It is not an admission result.
-
-Allowing it to substitute for admission would give the reasoning runtime authority it does not possess.
-
-### 22.8 Treating rebind as automatic release
-
-This would allow a transformation step to amplify requester authority.
-
-Mode 1B explicitly prevents this by admitting derivative consumption separately.
-
-### 22.9 Treating current envelope selection as model provenance
-
-This would rewrite history.
-
-The envelope governing a current operation is not necessarily the envelope under which the model was trained.
-
-### 22.10 Treating a GREEN UI path as sufficient evidence
-
-The architecture is supported by executable conformance tests and decision evidence, not merely by successful dashboard behaviour.
-
----
-
-## 23. Architectural evidence
-
-The implementation contains regression tests that exercise the principal invariants.
-
-The complete test catalogue, prerequisites, exact commands, and expected outputs belong in [TESTING.md](TESTING.md).
-
-At architecture level, the principal mappings are:
-
-| Test | Architectural concern |
-| --- | --- |
-| `Test2E_fcac_conformance.sh` | shared admission-governance substrate |
-| `Test2F_issuer_registration_boundary.sh` | issuer boundary |
-| `Test3E_dashboard_policy_scope.sh` | policy-owned scope presented consistently |
-| `Test3F_mode1a_guest_admission.sh` | guest admission |
-| `Test3G_mode1a_guest_contribution_admission.sh` | contribution authority |
-| `Test4A_dpop_replay_protection.sh` | holder-proof replay resistance |
-| `Test4B_dpop_iat_freshness.sh` | proof freshness |
-| `Test4C_sponsorship_regression.sh` | sponsorship, provenance, and membership separation |
-| `Test5A_agent_isolation.sh` | Mode 1B execution boundary |
-| `Test5C_agent_credential_admission.sh` | Hal holder-bound capability admission |
-| `Test5D_mode1b_table7_conformance.sh` | bounded Mode 1B governance requirements |
-| `Test5E_mode1b_contextual_agent.sh` | requester-resource contextual execution |
-
-The architecture is therefore not supported only by diagrams or prose.
-
-The tests make selected invariants executable.
-
----
-
-## 24. Naming note
-
-Some internal paths, image names, environment variables, and tests retain historical `FCAC`, `fcac`, or `vfp` identifiers.
-
-Examples include image names such as `fcac/hub`, environment variables beginning with `FCAC_`, and `Test2E_fcac_conformance.sh`.
-
-These are implementation-history identifiers.
-
-They should not be mistaken for the architectural definition of OpenHealth-CDI.
-
-The delivered system is documented here as a reference implementation of governed Federated Computing.
-
-Its architecture is defined by the relations and invariants described in this document, not by a legacy prefix appearing in a container name.
-
----
-
-## 25. Portability rule
-
-Every port or refactor should begin by classifying an implementation element as either:
-
-- a replaceable mechanism
-- a mechanism currently realising an architectural constraint
-
-A replaceable mechanism may change freely if behaviour remains compatible.
-
-A constraint-realising mechanism may be replaced only if the replacement preserves the same observable invariant.
-
-For example, Docker network separation can become AWS security groups and task ENIs.
-
-The Docker object does not need to survive.
-
-The Hal isolation invariant does.
-
-nginx can in principle be replaced.
-
-The authenticated origin of client identity at the governance boundary cannot silently change.
-
-Flower can be replaced.
-
-The distinction between governed contribution and federation constitution must survive.
-
-The OpenAI runtime can be replaced.
-
-The distinction between reasoning and authority must survive.
-
-The detailed AWS mappings are specified in [AWS-PORTING.md](AWS-PORTING.md).
-
----
-
-## 26. Source-code map
-
-The following paths are the principal implementation anchors for this architecture.
-
-| Concern | Repository path |
-| --- | --- |
-| Local infrastructure topology | `src/infra/tofu/main.tf` |
+| local infrastructure topology | `src/infra/tofu/main.tf` |
 | Hub orchestration | `src/vfp-core/hub/hub.py` |
-| Hal agent runtime | `src/vfp-core/agents/hal/hal.py` |
-| Frontend | `src/vfp-core/frontend/` |
-| Issuer implementation | `src/vfp-core/issuers/` |
-| Issuer mTLS edge | `src/vfp-core/issuers/nginx/` |
+| frontend | `src/vfp-core/frontend/` |
+| issuer implementation | `src/vfp-core/issuers/issuer.py` |
+| issuer entitlement configuration | `src/vfp-core/issuers/config/` |
+| Hal | `src/vfp-core/agents/hal/hal.py` |
+| executable policy | `src/vfp-governance/verifier/state/policy.json` |
+| constitution | `src/vfp-governance/verifier/state/constitution.json` |
+| institutional MOU | `src/vfp-governance/verifier/state/MOU.txt` |
 | Gatekeeper | `src/vfp-governance/gatekeeper/app.py` |
-| Verifier mTLS edge | `src/vfp-governance/verifier/nginx/nginx.conf` |
-| Human holder signer | `src/vfp-governance/signer/signer.py` |
-| Executable conformance tests | `src/tests/` |
+| verifier mTLS edge | `src/vfp-governance/verifier/nginx/nginx.conf` |
+| holder-signer | `src/vfp-governance/signer/signer.py` |
+| conformance tests | `src/tests/` |
 
-Operational deployment instructions are documented in [DEPLOYMENT.md](DEPLOYMENT.md).
-
-Governance semantics are expanded in [GOVERNANCE.md](GOVERNANCE.md).
-
-The three executable scenarios are described in [SCENARIOS.md](SCENARIOS.md).
-
-Mode 1B is developed in detail in [MODE1B.md](MODE1B.md).
-
----
-
-## 27. Architectural summary
-
-OpenHealth-CDI can be deployed as a collection of containers.
-That is not what makes it a federation architecture.
-It contains hospitals, users, services, credentials, models, datasets, and an AI agent.
-
-Those objects do not define the architecture either.
-The architecture is the set of relations that remain binding while those objects participate in shared operations.
-Hospitals A and B retain independent authority while constituting the baseline collaboration.
-Hospital C can contribute through sponsorship without becoming an equivalent member.
-A holder can exercise only issuer-defined capability under the relevant governance envelope.
-Admission is distinct from authentication and from runtime execution.
-Hal can act as a governed computational participant without making the LLM a federation principal.
-
-The reasoning runtime can influence execution without acquiring authority.
-Transformation can occur without implying release.
-A derivative can be governed independently from its source.
-A model can persist across governance contexts without having its provenance rewritten.
-The Hub can coordinate operations without becoming the source of authority.
-Network topology can constrain paths without being mistaken for governance.
-mTLS can establish authenticated identity without being mistaken for capability.
-Tests can demonstrate selected invariants without turning implementation-specific Docker mechanisms into universal architecture.
-
-The concise architectural rule is therefore worth repeating:
-
-> **Do not preserve the inventory. Preserve the relations that make the inventory a governed federation.**
+The repository contains historical prefixes such as `fcac` and `vfp`. These names should not be used to infer architectural scope. The delivered system is documented as OpenHealth-CDI and its architecture is defined by the relations described here.
+## 30. Portability principle
+The safest way to port or refactor OpenHealth-CDI is to identify the invariant currently implemented by each mechanism before replacing that mechanism. Docker network separation may become ECS task networking and security groups. Local nginx may remain nginx behind an NLB or later be replaced by another identity-preserving trust edge. Redis may become a managed service. Flower may be upgraded or substituted. Hal's LLM may change.
+What must remain unchanged is the meaning of participation and authority. Hal must not gain privileged federation access because its container technology changes. An infrastructure load balancer must not silently become the source of an unauthenticated identity header. Hospital C must not become a founding member because deployment topology changes. A derivative must not become automatically releasable because storage moves to S3. A model must not acquire fictitious governance provenance because run metadata is migrated.
+The porting rule is therefore:
+> **Replace mechanisms freely where appropriate, but preserve every authority-bearing relation and trust-boundary invariant explicitly.**
+The detailed AWS realization of this principle is documented in [AWS-PORTING.md](AWS-PORTING.md).
+## 31. Architectural summary
+OpenHealth-CDI is a federation architecture because independently governed domains participate in shared operations while retaining authority over their own resources and participation conditions. The architecture is not defined by the presence of hospitals, containers, datasets, models, agents, or certificates. Those objects are the material on which the architecture operates.
+Hospitals A and B constitute the collaboration through policy-owned governance. Hospital C can contribute through sponsorship without becoming constitutionally equivalent to the founders. Audrey and Bob can hold different source-consumption rights while sharing derivative-consumption rights. Hal can participate computationally without making the LLM a federation principal. Capability issuance remains issuer-owned. Capability exercise remains holder-bound. Admission remains distinct from authentication and execution. Transformation remains distinct from release. Model provenance remains distinct from the governance context of later use. Network topology constrains execution paths without being mistaken for authority. Signed evidence records the result of the governed relation.
+The architecture should therefore be understood as a set of invariants over relations among participants, authorities, resources, operations, and evidence. The implementation inventory may evolve significantly while those relations remain intact.
+The shortest statement of the architecture is:
+> **Do not preserve the inventory of objects. Preserve the relations that make those objects a governed federation.**
