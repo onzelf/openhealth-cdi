@@ -142,8 +142,11 @@ This distinction should remain explicit in any cloud port. A future production s
 
 ---
 ## Mode 1B scenario selection
-Mode 1B is selected from the same collaboration-scenario control used for the A+B baseline and Mode 1A. The constitutive collaboration remains Hospital A + Hospital B. Selecting Mode 1B therefore does not create a new federation or add Hal as a founding member. It changes the operational participation relation by introducing Hal as a bounded computational participant under the existing A+B governance context.
-![Mode 1B scenario selection](image/DB_pane_1B.png)
+Mode 1B is selected from the same collaboration-scenario control used for the A+B baseline and Mode 1A. The constitutive collaboration remains Hospital A + Hospital B. Selecting Mode 1B therefore does not create a new federation or add Hal as a founding member. It changes the operational participation relation by introducing Hal as a bounded computational participant under the existing A+B governance context. See here the dasboard pane:
+
+![Mode 1B scenario selection](image/DB_pane_1B.png wdth=70%")
+
+
 *Mode 1B scenario selection in the current dashboard. The A+B baseline remains the constitutive collaboration. Mode 1A shows the separate sponsored-contribution relation through Hospital C and Charlie. In Mode 1B, Hal is introduced as the governed computational participant. The dashboard currently exposes two use cases, **Governance Agent** and **LLM Agent**. In the view shown here, **LLM Agent** is selected and Audrey and Bob appear as requesters. These labels are retained exactly as implemented and will be reviewed separately as a terminology issue.*
 The three scenario cards are important because they show that Mode 1B does not replace the governance architecture established by the preceding modes. The A+B collaboration remains the constitutional basis. Mode 1A demonstrates that a new organisational contribution can be introduced through sponsorship without converting Hospital C into a founding member. Mode 1B applies the same relational principle to a computational participant. Hal enters through a bounded capability and sponsorship relation rather than by acquiring authority from its classification as an AI agent.
 Within Mode 1B, the **Governance Agent** and **LLM Agent** selections expose different aspects of the same governed participant. **Governance Agent** focuses on Hal's holder identity, bounded capability, admission decisions, and execution boundary. **LLM Agent** adds Audrey or Bob as requester and introduces the external reasoning runtime used by Hal for contextual action selection. In both cases Hal remains the participant whose operations are subject to federation admission.
