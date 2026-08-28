@@ -1,7 +1,7 @@
 # OpenHealth-CDI
 
 <p align="center">
-<img src="doc/slide_0.png" width="75%">
+<img src="doc/image/slide_0.png" width="75%">
 </p>
 
 **OpenHealth-CDI is a research reference implementation of governed cross-organizational Federated Computing.**
@@ -27,7 +27,7 @@ The modes are not different governance architectures. They exercise progressivel
 The accompanying JMIR paper introduced the OpenHealth governance model and its progression from a fixed A+B federation to differentiated organisational and computational participation.
 
 <p align="center">
-<img src="doc/JMIR_architecture.png" width="90%">
+<img src="doc/image/JMIR_architecture.png" width="90%">
 </p>
 
 <p align="center"><em>Architecture presented in the JMIR manuscript.</em></p>
@@ -47,7 +47,7 @@ The implementation also goes beyond the original single requester scenario. The 
 ## Current OpenHealth-CDI architecture
 
 <p align="center">
-<img src="doc/OpenHealth_architecture.png" width="95%">
+<img src="doc/image/OpenHealth_architecture.png" width="95%">
 </p>
 
 <p align="center"><em>Current OpenHealth-CDI C4 container and trust-boundary view.</em></p>
