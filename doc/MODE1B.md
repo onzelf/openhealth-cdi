@@ -144,7 +144,7 @@ This distinction should remain explicit in any cloud port. A future production s
 ## Mode 1B scenario selection
 Mode 1B is selected from the same collaboration-scenario control used for the A+B baseline and Mode 1A. The constitutive collaboration remains Hospital A + Hospital B. Selecting Mode 1B therefore does not create a new federation or add Hal as a founding member. It changes the operational participation relation by introducing Hal as a bounded computational participant under the existing A+B governance context. See here the dasboard pane:
 
-![Mode 1B scenario selection](image/DB_pane_1B.png wdth=70%")
+![Mode 1B scenario selection](image/DB_pane_1B.png width=70%")
 
 
 *Mode 1B scenario selection in the current dashboard. The A+B baseline remains the constitutive collaboration. Mode 1A shows the separate sponsored-contribution relation through Hospital C and Charlie. In Mode 1B, Hal is introduced as the governed computational participant. The dashboard currently exposes two use cases, **Governance Agent** and **LLM Agent**. In the view shown here, **LLM Agent** is selected and Audrey and Bob appear as requesters. These labels are retained exactly as implemented and will be reviewed separately as a terminology issue.*
