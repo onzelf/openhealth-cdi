@@ -608,12 +608,6 @@ resource "docker_container" "frontend_even" {
 
   ]
 
-  volumes {
-    host_path      = abspath("${local.repo_root}/vfp-governance/verifier/vault/holder_keys")
-    container_path = "/vault/holder_keys"
-    read_only      = true
-  }
-
   depends_on = [docker_container.hub,
     docker_container.verifier_proxy,
     docker_container.issuer_hospitala,
@@ -654,12 +648,10 @@ resource "docker_container" "flower_server" {
 
   env = [
     "REDIS_URL=redis://redis:6379",
-    "VERIFIER_URL=https://verifier-proxy:8443",
     "HUB_URL=http://fc-hub:8080",
     "RUN_ID=${var.run_id}",
     "BACKEND_URL=http://flower-server:8081",
     "CONTROL_PORT=8081",
-    "VERIFY_TLS=0",
     "FLOWER_ROUNDS=${var.flower_rounds}",
     "MIN_CLIENTS=2",
     "DEVICE=cpu",
@@ -671,24 +663,10 @@ resource "docker_container" "flower_server" {
     "LOCAL_EPOCHS=${var.local_epochs}",
     "LEARNING_RATE=${var.learning_rate}",
     "MEDMNIST_ROOT=/tmp/medmnist",
-    "HUB_CERT_CRT=/run/certs/hub.crt",
-    "HUB_CERT_KEY=/run/certs/hub.key",
 
     # NEW requirement: simulated enclave storage root
     "VAULT_ROOT=/vault",
   ]
-
-  volumes {
-    host_path      = abspath("${local.repo_root}/vfp-governance/verifier/certs/hub.crt")
-    container_path = "/run/certs/hub.crt"
-    read_only      = true
-  }
-
-  volumes {
-    host_path      = abspath("${local.repo_root}/vfp-governance/verifier/certs/hub.key")
-    container_path = "/run/certs/hub.key"
-    read_only      = true
-  }
 
   # Simulated enclave/vault storage: host verifier/vault -> container /vault
   volumes {

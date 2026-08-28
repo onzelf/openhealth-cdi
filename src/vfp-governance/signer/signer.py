@@ -45,14 +45,13 @@ class DPoPSignReq(BaseModel):
     jti: str
     envelope_id: str
     nonce: Optional[str] = None
-    iat: Optional[int] = None
 
 @app.post("/dpop/sign")
 def dpop_sign(req: DPoPSignReq):
     sk = _load_holder_sk(req.sub)
     pub_b64 = _pub_b64_from_sk(sk)
 
-    iat = req.iat or int(time.time())
+    iat = int(time.time())
     header = {
         "typ": "dpop+jwt",
         "alg": "EdDSA",

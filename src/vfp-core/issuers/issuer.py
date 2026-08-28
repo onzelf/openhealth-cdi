@@ -15,7 +15,7 @@ app = FastAPI()
 ORG = os.getenv("ORG", "").strip()  # e.g., org://HospitalA
 VERIFIER_URL = os.getenv("VERIFIER_URL", "https://verifier-proxy:8443").rstrip("/")
 
-VERIFY_TLS = os.getenv("VERIFY_TLS", "0").strip()
+VERIFY_TLS = os.getenv("VERIFY_TLS", "1").strip().lower()
 CA_CRT = os.getenv("CA_CRT", "/run/certs/ca.crt")
 ADMIN_CRT = os.getenv("ADMIN_CRT", "/run/certs/admin.crt")
 ADMIN_KEY = os.getenv("ADMIN_KEY", "/run/certs/admin.key")
@@ -56,8 +56,10 @@ MEMBER_ENTITLEMENTS_PATH = os.getenv(
 MEMBER_ENTITLEMENTS = json.load(open(MEMBER_ENTITLEMENTS_PATH))
 
 def _verify_arg():
-    if VERIFY_TLS in ("0", "false", "False", ""):
-        return False
+    if VERIFY_TLS not in ("1", "true", "yes", "on"):
+        raise RuntimeError("issuer_verifier_tls_verification_disabled")
+    if not CA_CRT or not pathlib.Path(CA_CRT).is_file():
+        raise RuntimeError(f"issuer_verifier_ca_unavailable:{CA_CRT}")
     return CA_CRT
 
 class MintReq(BaseModel):

@@ -218,12 +218,21 @@ except (OSError, ssl.SSLError):
 
 status_line = response.split(b"\r\n", 1)[0].decode("ascii", "replace")
 parts = status_line.split()
-print(parts[1] if len(parts) >= 2 else "invalid_response")
+status = parts[1] if len(parts) >= 2 else "invalid_response"
+body = response.split(b"\r\n\r\n", 1)[1] if b"\r\n\r\n" in response else b""
+
+if (
+    status == "400"
+    and b"No required SSL certificate was sent" in body
+):
+    print("400_missing_client_certificate")
+else:
+    print(status)
 PY2
     )"
 
     case "${result}" in
-        transport_or_tls_denied|400|401|403)
+        transport_or_tls_denied|400_missing_client_certificate|401|403)
             pass "Hal is denied by ${server_name}:${port}${path} (${result})"
             ;;
         *)
