@@ -15,7 +15,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
 import io
-from PIL import Image, ImageFilter
+from PIL import Image
 
 IDENTITY_DIR = Path(
     os.getenv("HAL_IDENTITY_DIR", "/var/lib/hal/identity")
@@ -329,9 +329,8 @@ def blur_image_derivative(payload: dict) -> dict:
     except Exception as exc:
         raise ValueError("invalid_image") from exc
 
-    # PathMNIST is only 28x28. A relatively strong Gaussian blur is
-    # intentional so the derivative is visibly distinct in the PoC.
-    derivative = image.filter(ImageFilter.GaussianBlur(radius=0.8))
+    coarse = image.resize((7, 7), Image.Resampling.BOX)
+    derivative = coarse.resize((28, 28), Image.Resampling.NEAREST)
 
     buffer = io.BytesIO()
     derivative.save(buffer, format="PNG")

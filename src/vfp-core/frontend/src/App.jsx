@@ -28,7 +28,7 @@ const USER_TISSUES = [
   "colorectal_adenocarcinoma_epithelium",
 ];
 const MODE1B_TISSUES = [
-  "cancer_associated_stroma",
+  "mucus",
   "colorectal_adenocarcinoma_epithelium",
 ];
 
