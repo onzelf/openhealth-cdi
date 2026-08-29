@@ -24,10 +24,10 @@
 ============================================================
 CASE   GOVERNED OPERATION                                       OBSERVED   DECISION ID
 ---------------------------------------------------------------------------------------------------------------
-1      requester asks for unrestricted cancer source            DENY       decision-14942d1fd0a148bd940dad43ec1ee5a5
-2      agent performs bounded inference                         ALLOW      decision-72f09f4efbad4977b2a9de3238865c9b
-3      agent invokes policy-authorized unbind                   ALLOW      decision-4d0f6ebc4a4a45e6a7e96d894958da7c
+1      requester asks for unrestricted cancer source            DENY       decision-11c3d54ce8aa459d8ef7ec4eed150b09
+2      agent performs bounded inference                         ALLOW      decision-099746548da34ac3a3e13d8e04bf006e
+3      agent invokes policy-authorized unbind                   ALLOW      decision-9f00425a79204ddf838e0d86aaf02a23
 4      requester consumes exact governed derivative             TEST5E     -
-5      agent attempts privileged governance operation           DENY       decision-6010217fb8e2410a98d908575e42d6f8
+5      agent attempts privileged governance operation           DENY       decision-79986b5a01c94535882a6ce6579432b7
 
 [32m✓[0m TABLE 7 DECISION PLANE GREEN: rows 1, 2, 3 and 5 reproduced with signed evidence; row 4 composition evidence is provided by Test5E

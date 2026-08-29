@@ -223,6 +223,7 @@ hub_runtime_mint() {
 
 verify_decision_record() {
   local decision_id="$1" subject="$2" action="$3" expected="$4" derivative="$5"
+  local governed_value_id="${6:-}"
   local record="${DECISIONS_DIR}/${decision_id}.json"
   [[ -s "${record}" ]] || fail "Decision record missing: ${decision_id}"
   python3 "${EVIDENCE_VERIFIER}" \
@@ -237,6 +238,12 @@ verify_decision_record() {
   if [[ -n "${derivative}" ]]; then
     jq -e --arg d "${derivative}" '.request.derivative_representation==$d' \
       "${record}" >/dev/null || fail "Derivative policy flag missing from evidence"
+  fi
+  if [[ -n "${governed_value_id}" ]]; then
+    jq -e --arg g "${governed_value_id}" \
+      '.request.governed_value_id==$g' \
+      "${record}" >/dev/null \
+      || fail "Governed value ID mismatch in signed decision: ${decision_id}"
   fi
 }
 
@@ -386,7 +393,7 @@ run_context_case() {
   local expected_action="$5"
   local expected_representation="$6"
 
-  local response
+  local response response_file governed_value_id
   response="$(
     curl -sS \
       -H 'content-type: application/json' \
@@ -404,6 +411,9 @@ run_context_case() {
         }')" \
       "${HUB_URL}/mode1b/agent/request"
   )"
+
+  response_file="${TMP}/mode1b-case-${case_no}.json"
+  printf '%s\n' "${response}" >"${response_file}"
 
   local source_allow source_decision hal_decision
   source_allow="$(jq -r '.source_admission.allow' <<<"${response}")"
@@ -473,6 +483,44 @@ run_context_case() {
         fail "Gate 5E case ${case_no}: derivative representation contract mismatch"
       }
 
+    governed_value_id="$(
+      python3 - "${response_file}" <<'PY2'
+import hashlib
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    response = json.load(f)
+
+w = dict(response["prediction"])
+claimed = w.pop("value_id")
+reported = response["governed_value_id"]
+
+canonical = json.dumps(
+    w,
+    sort_keys=True,
+    separators=(",", ":"),
+    ensure_ascii=False,
+).encode("utf-8")
+
+computed = "sha256:" + hashlib.sha256(canonical).hexdigest()
+
+if not (computed == claimed == reported):
+    print(
+        "exact-W mismatch: "
+        f"computed={computed} "
+        f"prediction.value_id={claimed} "
+        f"governed_value_id={reported}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+print(computed)
+PY2
+    )" || fail "Gate 5E case ${case_no}: governed value identity mismatch"
+
+    pass "Gate 5E case ${case_no}: governed value identity independently recomputed"
+
     local unbind_decision release_decision
     unbind_decision="$(jq -r '.unbind_admission.decision_id // empty' <<<"${response}")"
     release_decision="$(jq -r '.release_admission.decision_id // empty' <<<"${response}")"
@@ -495,7 +543,8 @@ run_context_case() {
       "${requester}" \
       "consume_derivative" \
       "ALLOW" \
-      "${DERIVATIVE_REPRESENTATION}"
+      "${DERIVATIVE_REPRESENTATION}" \
+      "${governed_value_id}"
   fi
 
   pass "Gate 5E case ${case_no}: ${requester} / ${tissue} -> ${expected_source} -> ${expected_action} -> ${expected_representation}"
