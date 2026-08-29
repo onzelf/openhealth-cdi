@@ -231,7 +231,7 @@ The addition of Hospital C does not alter the founding A+B quorum. Hospital C do
 This is the architectural purpose of Mode 1A. A collaboration can evolve operationally without reconstructing its constitutional membership for each new activity.
 ## 15. Scenario 3 — Mode 1B computational participation
 Mode 1B introduces Hal as a governed computational participant. The scenario is designed to determine whether a non-human process can participate under bounded federation authority without allowing either its computational capabilities or its LLM reasoning runtime to become an alternative source of governance.
-Hal maintains its own holder identity and receives an envelope-bound bounded-agent capability. The current policy permits bounded inference and policy-authorised rebind over a limited PathMNIST scope. Hal does not receive founding membership, general model-query authority, or privileged governance operations.
+Hal maintains its own holder identity and receives an envelope-bound bounded-agent capability. The current policy permits bounded inference and policy-authorised unbind over a limited PathMNIST scope. Hal does not receive founding membership, general model-query authority, or privileged governance operations.
 Mode 1B therefore does not create an "AI exception" to the existing governance system. It applies the same principle already used elsewhere. A participant may attempt only the operations represented by its admitted relation.
 ## 16. Two Mode 1B demonstrations
 The dashboard exposes two Mode 1B use cases named **Governance Agent** and **LLM Agent**. These are not two different agents and they are not two different governance architectures. Both use Hal as the governed computational participant.
@@ -266,7 +266,7 @@ The second demonstration adds reasoning and contextual resource handling. It doe
 > - The Governance Agent and LLM Agent views exercise different aspects of the same Hal participation relation.
 ## 17. Mode 1B Governance Agent use case
 The Governance Agent use case corresponds most directly to the bounded-agent conformance requirements. It asks whether Hal can exercise permitted authority while remaining unable to enlarge that authority through execution.
-The current conformance sequence contains five governance cases. An unrestricted requester source operation is denied. Hal's bounded inference is allowed. Hal's policy-authorised rebind is allowed. Consumption of the resulting governed derivative by the authorised requester is allowed. A privileged governance operation attempted by Hal is denied.
+The current conformance sequence contains five governance cases. An unrestricted requester source operation is denied. Hal's bounded inference is allowed. Hal's policy-authorised unbind is allowed. Consumption of the resulting governed derivative by the authorised requester is allowed. A privileged governance operation attempted by Hal is denied.
 The expected decision sequence is therefore:
 `DENY → ALLOW → ALLOW → ALLOW → DENY`
 This sequence is intentionally mixed. A demonstration in which every Hal operation returned ALLOW would not show bounded authority. A demonstration in which Hal was globally blocked would not show useful governed computational participation.
@@ -280,12 +280,12 @@ The scenario therefore tests a narrower and more useful property than generic ag
 `bounded_inference` is one of Hal's policy-defined operations. The capability applies only to the scope declared by the bounded-agent profile and does not turn Hal into a general model reader.
 The operation demonstrates that computational participation can be useful without being unrestricted. Hal can act on the model within the explicitly authorised relation while remaining unable to infer new authority from its ability to call tools or reason about the task.
 The distinction between technical capability and federation capability is especially visible here. Hal's Python process may contain code capable of several actions, but only an admitted operation belongs to the governed federation path.
-## 20. Mode 1B rebind
-`rebind` permits Hal to produce a policy-authorised derivative representation for the defined tissue scope. The current implementation uses a blurred image representation with qualitative accuracy as the concrete derivative.
-The operation exists because a requester denied the original source may still be allowed to receive a governed representation derived from that source. Rebind authorises Hal's transformation. It does not authorise release of the derivative to the requester.
+## 20. Mode 1B unbind
+`unbind` permits Hal to produce a policy-authorised derivative representation for the defined tissue scope. The current implementation uses a blurred image representation with qualitative accuracy as the concrete derivative.
+The operation exists because a requester denied the original source may still be allowed to receive a governed representation derived from that source. Unbind authorises Hal's transformation. It does not authorise release of the derivative to the requester.
 This distinction creates a separate authority boundary between production and consumption.
 ## 21. Mode 1B derivative consumption
-After an admitted rebind produces a derivative, the requester must separately exercise `consume_derivative`. Audrey and Bob both receive derivative-reader authority in the delivered configuration.
+After an admitted unbind produces a derivative, the requester must separately exercise `consume_derivative`. Audrey and Bob both receive derivative-reader authority in the delivered configuration.
 The final release therefore results from the requester's derivative-consumption relation rather than from Hal's transformation authority. Hal cannot make the derivative releasable merely by producing it.
 The complete relationship is:
 
@@ -293,15 +293,15 @@ The complete relationship is:
 flowchart LR
     Source["Source resource"]
     SourceAdmission["Requester source admission"]
-    Rebind["Hal rebind admission"]
+    Unbind["Hal unbind admission"]
     Derivative["Governed derivative"]
     Release["Requester derivative admission"]
     Requester["Requester"]
 
     Source --> SourceAdmission
     SourceAdmission -->|"ALLOW"| Requester
-    SourceAdmission -->|"DENY"| Rebind
-    Rebind -->|"ALLOW"| Derivative
+    SourceAdmission -->|"DENY"| Unbind
+    Unbind -->|"ALLOW"| Derivative
     Derivative --> Release
     Release -->|"ALLOW"| Requester
 ```
@@ -336,7 +336,7 @@ sequenceDiagram
         A->>L: Contextual reasoning request
         L-->>A: blur_image
         A-->>H: Intended action
-        H->>G: Admit Hal rebind
+        H->>G: Admit Hal unbind
         G-->>H: ALLOW
         H->>A: Execute transformation
         A-->>H: Derivative
@@ -352,7 +352,7 @@ The contextual scenario intentionally uses the same Hal instance with two reques
 Audrey can directly consume `mucus` under her source-query capability. She cannot directly consume `colorectal_adenocarcinoma_epithelium`. Bob has the complementary relationship for these two examples.
 The resulting matrix is:
 
-| Requester | Requested tissue | Direct source admission | Hal action | Rebind | Derivative release | Presented representation |
+| Requester | Requested tissue | Direct source admission | Hal action | Unbind | Derivative release | Presented representation |
 | --- | --- | --- | --- | --- | --- | --- |
 | Audrey | `mucus` | ALLOW | `no_transform` | not required | not required | source |
 | Audrey | `colorectal_adenocarcinoma_epithelium` | DENY | `blur_image` | ALLOW | ALLOW | derivative |
@@ -365,15 +365,15 @@ This is why statements such as "the agent blurs cancer images" would describe th
 > - Agent behaviour in this scenario is **relational and contextual**, not an intrinsic property attached to Hal.
 > - The requester-resource relation changes while the agent remains the same.
 ## 24. Direct source path
-When the requester's source capability already covers the requested resource, the Gatekeeper admits the source operation. The reasoning runtime can select `no_transform`, and no rebind or derivative-consumption step is needed.
+When the requester's source capability already covers the requested resource, the Gatekeeper admits the source operation. The reasoning runtime can select `no_transform`, and no unbind or derivative-consumption step is needed.
 This path is important because Mode 1B is not designed to force every request through a transformation. The transformation exists only where the governed relation requires a different representation.
 The direct path can therefore be expressed as:
 `requester → source admission ALLOW → no_transform → source`
 ## 25. Governed derivative path
 When the direct source request lies outside the requester's capability, the Gatekeeper returns DENY for that source operation. The denial becomes part of the evidence trail and remains the correct result for the original request.
-The system can then consider a different governed path. Hal's reasoning runtime may select an approved transformation. Hal must be admitted for `rebind`. If rebind succeeds, the derivative is produced. The requester must then be independently admitted for `consume_derivative`.
+The system can then consider a different governed path. Hal's reasoning runtime may select an approved transformation. Hal must be admitted for `unbind`. If unbind succeeds, the derivative is produced. The requester must then be independently admitted for `consume_derivative`.
 The path is therefore:
-`requester → source DENY → Hal reasoning → rebind ALLOW → derivative produced → requester derivative ALLOW → derivative released`
+`requester → source DENY → Hal reasoning → unbind ALLOW → derivative produced → requester derivative ALLOW → derivative released`
 The final result does not override the earlier DENY because the final operation concerns a different governed resource.
 ## 26. What the LLM contributes
 The LLM contributes contextual action selection. It receives structured information about the request goal, requester context, resource context, and the finite set of actions Hal makes available. It returns an intended action and rationale.
@@ -402,7 +402,7 @@ The three scenarios can now be compared by the relationship they introduce rathe
 | participation mechanism | founding capability | sponsorship + guest contribution | sponsorship + bounded-agent capability |
 | contribution authority | A + B | A + B + sponsored C contribution | not the defining Mode 1B operation |
 | model query | governed human requester | still separate from C contribution | contextual requester path |
-| transformation | not required by baseline scenario | not required by Mode 1A | policy-authorised Hal rebind |
+| transformation | not required by baseline scenario | not required by Mode 1A | policy-authorised Hal unbind |
 | derivative consumption | available by capability where applicable | separate from contribution | explicitly exercised |
 | LLM involved | no | no | optional reasoning runtime |
 | LLM federation authority | none | none | none |
@@ -430,7 +430,7 @@ The complete execution procedure and interpretation of every test belongs in [TE
 ## 31. Dashboard interpretation
 The dashboard presents the three scenarios as a governed lifecycle. A+B expects the two founding organisational clients. Mode 1A expects the third sponsored contribution site. Mode 1B returns to the A+B organisational collaboration while adding Hal as the computational participant rather than presenting Hal as another hospital.
 Within Mode 1B, the **Governance Agent** view focuses on Hal's bounded participation, while the **LLM Agent** view exposes requester selection and the contextual agent-mediated path. Audrey and Bob appear as requesters in the latter view, while Hal remains fixed as the agent.
-The dashboard also displays the selected governance envelope, model run, current admission result, and where applicable the Hal action, rebind result, and returned representation. These fields intentionally expose the distinction among governance context, analytical state, reasoning result, and final resource representation.
+The dashboard also displays the selected governance envelope, model run, current admission result, and where applicable the Hal action, unbind result, and returned representation. These fields intentionally expose the distinction among governance context, analytical state, reasoning result, and final resource representation.
 The dashboard is therefore an operational view over the architecture rather than the source of scenario semantics.
 ## 32. Reproducing the conceptual progression
 A reader reproducing the scenarios should understand the progression before executing individual commands.
@@ -440,7 +440,7 @@ Exact deployment and execution commands are intentionally deferred to [DEPLOYMEN
 ## 33. Scenario failure interpretations
 A failure should be interpreted according to the relation being exercised rather than merely according to the component that emitted the error.
 If Charlie cannot mint an ECT, the relevant questions concern holder registration, issuer-owned entitlement, sponsorship, and envelope validity. If Charlie can contribute but can also query the model, Mode 1A has failed because contribution authority has leaked into consumption authority.
-If Hal can perform bounded inference but can directly invoke privileged federation services through an unintended path, Mode 1B has failed because admission is no longer load-bearing. If Hal performs an allowed rebind but the derivative is released without separate requester admission, transformation authority has leaked into release authority.
+If Hal can perform bounded inference but can directly invoke privileged federation services through an unintended path, Mode 1B has failed because admission is no longer load-bearing. If Hal performs an allowed unbind but the derivative is released without separate requester admission, transformation authority has leaked into release authority.
 If the LLM proposes the wrong contextual action but the governance boundary still prevents an unauthorised operation, that is a reasoning-runtime failure rather than an authority failure. If an unauthorised operation is actually executed because the LLM proposed it, the federation boundary has failed.
 This classification helps distinguish governance defects, infrastructure defects, runtime defects, and model-behaviour defects.
 ## 34. Relationship to the JMIR study

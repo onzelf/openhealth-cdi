@@ -215,7 +215,7 @@
         ]
       },
       "derived_representation_reader": {
-        "description": "Research role limited to policy-authorized derivative representations produced through governed rebind.",
+        "description": "Research role limited to policy-authorized derivative representations produced through governed Unbind.",
         "source_consumption_rights_implied": false,
         "permitted_derivative_representation": "blurred_image_with_qualitative_accuracy",
         "mou_rules": [
@@ -265,7 +265,7 @@
         "accountability_terminus": "human_or_legal_sponsor",
         "authorized_operations": [
           "bounded_inference",
-          "policy_authorized_rebind"
+          "policy_authorized_unbind"
         ],
         "general_model_query_rights_implied": false,
         "source_consumption_rights_implied": false,

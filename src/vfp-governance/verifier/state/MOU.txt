@@ -176,10 +176,10 @@ AB-AGENT-03
 Admission grants a non-human computational participant only the bounded authority represented by its admitted capability. Runtime functions, available tools, execution strategy, or technical reachability shall not enlarge that authority.
 
 AB-AGENT-04
-A bounded agent participant may be authorized to perform narrowly scoped model inference and a separately authorized rebind operation without receiving unrestricted model-query or source-consumption authority.
+A bounded agent participant may be authorized to perform narrowly scoped model inference and a separately authorized Unbind operation without receiving unrestricted model-query or source-consumption authority.
 
 AB-AGENT-05
-A rebind operation transforms a restricted source result into a derivative representation according to federation policy. The permitted transformation shall be established by federation governance and shall not be determined by the computational participant as an independent judgement that the source result is safe to release.
+An Unbind operation transforms a restricted source result into a derivative representation according to federation policy. The permitted transformation shall be established by federation governance and shall not be determined by the computational participant as an independent judgement that the source result is safe to release.
 
 AB-AGENT-06
 Source consumption and derivative consumption are separate governed relations. Authorization to consume a derivative representation shall not grant authority to consume the corresponding unrestricted source result, and shall be evaluated under a separate capability held by the recipient.

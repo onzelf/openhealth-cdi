@@ -399,10 +399,10 @@ flowchart LR
 This relation is one of the principal examples of why the architecture cannot be inferred from process inventory alone.
 ## 18. Contribution is distinct from consumption
 Mode 1A also demonstrates that participation in one operation does not imply participation in every operation over the resulting resources. Hospital C can contribute to federated training without thereby receiving custody of the resulting model, the right to download the model, or general query authority.
-The same principle applies more broadly. Capability is operation-specific. `submit_update`, `query_model`, `bounded_inference`, `rebind`, and `consume_derivative` are different governed actions and may be granted to different participants under different scopes.
+The same principle applies more broadly. Capability is operation-specific. `submit_update`, `query_model`, `bounded_inference`, `unbind`, and `consume_derivative` are different governed actions and may be granted to different participants under different scopes.
 This separation is a core architectural invariant because otherwise adding one operational right would silently amplify authority over unrelated resources.
 ## 19. Mode 1B and governed computational participation
-Mode 1B introduces Hal as a computational participant. Hal has its own holder identity and receives the `capset:pathmnist_bounded_agent` profile under sponsorship by Hospitals A and B. The current capability permits bounded inference and policy-authorised rebind over the tissue classes defined by policy. It does not grant founding membership, quorum rights, general model-query authority, or privileged governance operations.
+Mode 1B introduces Hal as a computational participant. Hal has its own holder identity and receives the `capset:pathmnist_bounded_agent` profile under sponsorship by Hospitals A and B. The current capability permits bounded inference and policy-authorised Unbind over the tissue classes defined by policy. It does not grant founding membership, quorum rights, general model-query authority, or privileged governance operations.
 Hal is therefore treated as another governed participant rather than as a special authority category. The fact that Hal is computational changes its execution implementation but does not replace the underlying admission model.
 The important relation is:
 
@@ -459,15 +459,15 @@ flowchart TB
     R --> S
     S -->|"ALLOW"| Direct["Return source"]
     S -->|"DENY"| Reason["Bounded agent reasoning"]
-    Reason --> Rebind["Hal rebind admission"]
-    Rebind -->|"ALLOW"| Deriv["Produce derivative"]
+    Reason --> Unbind["Hal Unbind admission"]
+    Unbind -->|"ALLOW"| Deriv["Produce derivative"]
     Deriv --> Release["Requester derivative-consumption admission"]
     Release -->|"ALLOW"| Out["Return governed derivative"]
 ```
 
 This is the principal architectural extension implemented after the JMIR manuscript was completed.
 ## 22. Transformation is distinct from release
-The derivative path intentionally separates source access, transformation, and release. If source access is denied, that denial does not automatically authorise Hal to transform the resource. Hal's `rebind` operation must itself be admitted. If that transformation is allowed and a derivative is produced, the derivative still cannot be returned automatically to the requester. The requester must separately be admitted for `consume_derivative`.
+The derivative path intentionally separates source access, transformation, and release. If source access is denied, that denial does not automatically authorise Hal to transform the resource. Hal's `unbind` operation must itself be admitted. If that transformation is allowed and a derivative is produced, the derivative still cannot be returned automatically to the requester. The requester must separately be admitted for `consume_derivative`.
 This creates three independent governance decisions where a less rigorous architecture might contain only one. The separation prevents transformation authority from becoming a privilege-amplification mechanism.
 The sequence is:
 
@@ -482,8 +482,8 @@ sequenceDiagram
     H->>G: Admit source consumption
     G-->>H: DENY source
 
-    H->>G: Admit Hal rebind
-    G-->>H: ALLOW rebind
+    H->>G: Admit Hal Unbind
+    G-->>H: ALLOW Unbind
     H->>A: Execute transformation
     A-->>H: Governed derivative
 
@@ -539,7 +539,7 @@ The current local implementation can be classified as follows.
 
 This distinction is the basis of [AWS-PORTING.md](AWS-PORTING.md). The cloud deployment should not attempt to reproduce Docker mechanically. It must reproduce the constraints that Docker currently helps enforce.
 ## 28. Architectural failure patterns
-Several technically plausible modifications would change or invalidate the architecture even if the application continued to run. Attaching Hal directly to the federation-internal service domain would weaken the controlled-aperture relation. Allowing the frontend or Hub to choose the effective capability profile would violate issuer ownership. Treating Hospital C as an ordinary founding member would eliminate the Mode 1A distinction. Treating the LLM-selected action as an authorisation result would move governance authority into the reasoning runtime. Returning a derivative immediately after transformation would collapse rebind and release. Treating the currently selected envelope as the provenance of an older model would merge governance and analytical lifecycles. Terminating mTLS at another infrastructure layer without preserving trusted client-identity semantics would move the trust boundary and require explicit revalidation.
+Several technically plausible modifications would change or invalidate the architecture even if the application continued to run. Attaching Hal directly to the federation-internal service domain would weaken the controlled-aperture relation. Allowing the frontend or Hub to choose the effective capability profile would violate issuer ownership. Treating Hospital C as an ordinary founding member would eliminate the Mode 1A distinction. Treating the LLM-selected action as an authorisation result would move governance authority into the reasoning runtime. Returning a derivative immediately after transformation would collapse Unbind and release. Treating the currently selected envelope as the provenance of an older model would merge governance and analytical lifecycles. Terminating mTLS at another infrastructure layer without preserving trusted client-identity semantics would move the trust boundary and require explicit revalidation.
 These are architectural failures because they alter authority-bearing relationships. By contrast, changing a port number, replacing Redis, changing Flower versions, modifying training rounds, replacing the frontend, or replacing the LLM can be legitimate operational changes if the same invariants remain true.
 ## 29. Local source-code map
 The principal implementation locations are shown below so that the architectural description can be traced directly to code.

@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import csv
+import hashlib
 import json
 import os
 import secrets
@@ -25,7 +26,7 @@ import redis.asyncio as redis
 import requests
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # ---------------------------------------------------------------------
 # Environment
@@ -253,6 +254,8 @@ class UserInferenceRequest(BaseModel):
     topk: int = Field(default=3, ge=1, le=9)
 
 class AgentMediatedInferenceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     requester: str
     envelope_id: str
     run_id: str = RUN_ID
@@ -370,6 +373,7 @@ def request_prediction_admission(
     resource: str = "pathmnist-colon-pathology",
     event_type: str = "prediction_admission",
     derivative_representation: Optional[str] = None,
+    governed_value_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     admission_request = {
         "envelope_id": envelope_id,
@@ -383,6 +387,8 @@ def request_prediction_admission(
 
     if derivative_representation:
         admission_request["derivative_representation"] = derivative_representation
+    if governed_value_id:
+        admission_request["governed_value_id"] = governed_value_id
 
     try:
         verifier = requests.post(
@@ -417,6 +423,7 @@ def request_prediction_admission(
         resource=resource,
         action=action,
         purpose=purpose,
+        governed_value_id=governed_value_id,
         **admission,
     )
     return admission
@@ -2033,6 +2040,7 @@ def admit_principal_operation(
     purpose: str,
     resource: str = "pathmnist-colon-pathology",
     derivative_representation: Optional[str] = None,
+    governed_value_id: Optional[str] = None,
     event_type: str,
 ) -> Dict[str, Any]:
     context = ACTOR_CONTEXTS.get(principal)
@@ -2068,6 +2076,7 @@ def admit_principal_operation(
         purpose=purpose,
         resource=resource,
         derivative_representation=derivative_representation,
+        governed_value_id=governed_value_id,
         event_type=event_type,
     )
 
@@ -2252,7 +2261,6 @@ def mode1b_agent_request(
 
     available_actions = [
         "blur_image",
-        "minimal_statistics",
         "refuse",
     ]
 
@@ -2334,25 +2342,62 @@ def mode1b_agent_request(
             "blurred_image_with_qualitative_accuracy"
         )
 
-        rebind_admission = admit_principal_operation(
+        unbind_admission = admit_principal_operation(
             principal="Hal",
             envelope_id=selected_id,
             run_id=req.run_id,
             tissue=req.requested_tissue,
-            action="rebind",
+            action="unbind",
             purpose="policy_authorized_derivation",
             derivative_representation=derivative_name,
-            event_type="mode1b_rebind_admission",
+            event_type="mode1b_unbind_admission",
         )
 
-        if not rebind_admission.get("allow", False):
+        if not unbind_admission.get("allow", False):
             return {
                 "requester": req.requester,
                 "source_admission": source_admission,
                 "agent_decision": decision,
-                "rebind_admission": rebind_admission,
+                "unbind_admission": unbind_admission,
                 "executed": False,
+                "released": False,
             }
+
+        # Unbind executes the authorised lossy transformation V -> W.
+        # W is constructed positively and receives a stable content identity.
+        derivative = hal_blur(
+            prediction["sample_image"]["image_b64"]
+        )
+
+        governed_value = {
+            "resource": "pathmnist-derived-representation",
+            "requested_tissue": prediction.get("requested_tissue"),
+            "actual_label": prediction.get("actual_label"),
+            "prediction_label": prediction.get("prediction_label"),
+            "prediction_tissue": prediction.get("prediction_tissue"),
+            "topk": prediction.get("topk", []),
+            "derivative_representation": derivative_name,
+            "derivative_sha256": derivative["sha256"],
+            "derivative_image": {
+                "mime_type": derivative["mime_type"],
+                "image_b64": derivative["image_b64"],
+                "width": derivative["width"],
+                "height": derivative["height"],
+            },
+        }
+
+        # Content-address the complete released W. value_id itself is excluded
+        # from the digest, as with ordinary content-addressed objects.
+        governed_value_bytes = json.dumps(
+            governed_value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+        governed_value["value_id"] = (
+            "sha256:"
+            + hashlib.sha256(governed_value_bytes).hexdigest()
+        )
 
         release_admission = admit_principal_operation(
             principal=req.requester,
@@ -2363,6 +2408,7 @@ def mode1b_agent_request(
             action="consume_derivative",
             purpose="approved_derivative_consumption",
             derivative_representation=derivative_name,
+            governed_value_id=governed_value["value_id"],
             event_type="mode1b_derivative_release_admission",
         )
 
@@ -2372,41 +2418,37 @@ def mode1b_agent_request(
                 "source_admission": source_admission,
                 "agent_decision": decision,
                 "hal_inference": hal_inference_public,
-                "rebind_admission": rebind_admission,
+                "unbind_admission": unbind_admission,
                 "release_admission": release_admission,
+                "governed_value_id": governed_value["value_id"],
                 "executed": False,
+                "released": False,
             }
 
-        derivative = hal_blur(
-            prediction["sample_image"]["image_b64"]
+        append_event(
+            "mode1b_derivative_released",
+            run_id=req.run_id,
+            envelope_id=selected_id,
+            requester=req.requester,
+            requested_tissues=[req.requested_tissue],
+            governed_value_id=governed_value["value_id"],
+            derivative_sha256=governed_value["derivative_sha256"],
+            unbind_decision_id=unbind_admission.get("decision_id"),
+            release_decision_id=release_admission.get("decision_id"),
         )
-
-        # The source image was available only to Hal's admitted inference.
-        # It must not cross the requester disclosure boundary when the
-        # governed result is a derivative representation.
-        prediction.pop("sample_image", None)
-
-        prediction["derivative_image"] = {
-            "mime_type": derivative["mime_type"],
-            "image_b64": derivative["image_b64"],
-            "width": derivative["width"],
-            "height": derivative["height"],
-        }
-        prediction["derivative_representation"] = (
-            derivative_name
-        )
-        prediction["derivative_sha256"] = derivative["sha256"]
 
         return {
             "requester": req.requester,
             "source_admission": source_admission,
             "agent_decision": decision,
             "hal_inference": hal_inference_public,
-            "rebind_admission": rebind_admission,
+            "unbind_admission": unbind_admission,
             "release_admission": release_admission,
+            "governed_value_id": governed_value["value_id"],
             "executed": True,
+            "released": True,
             "representation": "derivative",
-            "prediction": prediction,
+            "prediction": governed_value,
         }
 
     if action == "minimal_statistics":

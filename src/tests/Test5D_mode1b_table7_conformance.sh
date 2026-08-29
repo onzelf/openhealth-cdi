@@ -4,8 +4,9 @@ set -euo pipefail
 # Test5D — executable reproduction of paper Table 7.
 # Usage: ./Test5D_mode1b_table7_conformance.sh <active-envelope-id>
 #
-# Expected decision sequence:
-#   DENY / ALLOW / ALLOW / ALLOW / DENY
+# Decision-plane rows reproduced here:
+#   row 1 DENY / row 2 ALLOW / row 3 ALLOW / row 5 DENY
+# Row 4 requires an actual governed W and is evidenced by Test5E.
 
 ENVELOPE_ID="${1:-}"
 [[ -n "${ENVELOPE_ID}" ]] || {
@@ -258,7 +259,7 @@ jq -e --arg e "${ENVELOPE_ID}" --arg jkt "${HAL_JKT}" '
   .sub=="Hal" and .actor_type=="agent" and .envelope_id==$e and .cnf.jkt==$jkt
   and (.cap_profiles | index("capset:pathmnist_bounded_agent") != null)
   and ([.cap[].action] | index("bounded_inference") != null)
-  and ([.cap[].action] | index("rebind") != null)
+  and ([.cap[].action] | index("unbind") != null)
   and (
     [.cap[]
       | select(.action=="bounded_inference")
@@ -268,7 +269,7 @@ jq -e --arg e "${ENVELOPE_ID}" --arg jkt "${HAL_JKT}" '
   )
   and (
     [.cap[]
-      | select(.action=="rebind")
+      | select(.action=="unbind")
       | .scope.pathology_labels[]?] | sort
     ==
     ["colorectal_adenocarcinoma_epithelium","mucus"]
@@ -308,16 +309,18 @@ admission_case 2 \
   "" ALLOW ""
 
 admission_case 3 \
-  "agent invokes policy-authorized rebind" \
+  "agent invokes policy-authorized unbind" \
   hal Hal "${HAL_ECT}" \
-  pathmnist-colon-pathology rebind policy_authorized_derivation "${TISSUE}" \
+  pathmnist-colon-pathology unbind policy_authorized_derivation "${TISSUE}" \
   "${DERIVATIVE_REPRESENTATION}" ALLOW ""
 
-admission_case 4 \
-  "requester consumes governed derivative" \
-  audrey Audrey "${AUDREY_ECT}" \
-  pathmnist-derived-representation consume_derivative approved_derivative_consumption "${TISSUE}" \
-  "${DERIVATIVE_REPRESENTATION}" ALLOW ""
+# Table 7 row 4 is composition-dependent under exact-W semantics.
+# consume_derivative must name the concrete W produced by the
+# authorized Unbind, therefore this row is evidenced by Test5E.
+CASE_LABELS+=("requester consumes exact governed derivative")
+CASE_RESULTS+=("TEST5E")
+CASE_DECISION_IDS+=("-")
+pass "Table 7 case 4: exact-W consumption is evidenced by Test5E"
 
 admission_case 5 \
   "agent attempts privileged governance operation" \
@@ -356,4 +359,4 @@ for i in "${!CASE_RESULTS[@]}"; do
 done
 
 printf '\n'
-pass "TABLE 7 GREEN: ${#CASE_RESULTS[@]} / 5 conformance cases reproduced with signed evidence"
+pass "TABLE 7 DECISION PLANE GREEN: rows 1, 2, 3 and 5 reproduced with signed evidence; row 4 composition evidence is provided by Test5E"

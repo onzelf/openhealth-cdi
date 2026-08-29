@@ -379,7 +379,7 @@ Hal's own JKT
 Hospital A and Hospital B sponsors
 `capset:pathmnist_bounded_agent`
 `bounded_inference`
-`rebind`
+`unbind`
 The credential must not contain `query_model` or `submit_update`.
 The test then performs three admission probes:
 `bounded_inference` → ALLOW
@@ -400,7 +400,7 @@ DENY / ALLOW / ALLOW / ALLOW / DENY
 The five cases are:
 1. requester attempts unrestricted cancer-source access → DENY
 2. Hal bounded inference → ALLOW
-3. Hal policy-authorised rebind → ALLOW
+3. Hal policy-authorised unbind → ALLOW
 4. requester consumes the governed derivative → ALLOW
 5. Hal attempts a privileged governance operation → DENY
 The test verifies signed decision evidence for the cases rather than relying only on the admission response. It also verifies Hal and Audrey holder identities and the expected envelope-bound capability relations.
@@ -415,14 +415,14 @@ ISSUER_IP="$HOST_IP" VERIFIER_IP="$HOST_IP" \
 This test requires the external reasoning runtime configured for the running Hal service to be operational. In the delivered local configuration that means the OpenAI credential mounted for Hal must be valid and outbound access to the configured Responses API must succeed.
 The expected contextual matrix is:
 
-| Requester | Tissue | Source | Hal action | Rebind | Release | Result |
+| Requester | Tissue | Source | Hal action | Unbind | Release | Result |
 | --- | --- | --- | --- | --- | --- | --- |
 | Audrey | `mucus` | ALLOW | `no_transform` | not required | not required | source |
 | Audrey | `colorectal_adenocarcinoma_epithelium` | DENY | `blur_image` | ALLOW | ALLOW | derivative |
 | Bob | `colorectal_adenocarcinoma_epithelium` | ALLOW | `no_transform` | not required | not required | source |
 | Bob | `mucus` | DENY | `blur_image` | ALLOW | ALLOW | derivative |
 
-The test verifies the requester and Hal credential state, performs the governed source request, invokes the Hal reasoning path, verifies rebind and derivative-consumption admission when required, and checks the corresponding signed evidence.
+The test verifies the requester and Hal credential state, performs the governed source request, invokes the Hal reasoning path, verifies unbind and derivative-consumption admission when required, and checks the corresponding signed evidence.
 A reasoning-runtime outage should therefore be classified separately from a Gatekeeper conformance failure.
 > 🔑 **Takeaway**
 > - The four cases do not test four different agents.
@@ -587,7 +587,7 @@ This classification should precede any attempt to regenerate envelopes or broadl
 Admission tests create decision records beneath:
 `src/vfp-governance/verifier/state/events/decisions/`
 The Mode 1A and Mode 1B tests verify these records automatically where their claims depend on signed evidence.
-A decision record should be interpreted as evidence of the concrete attempted relation. Multiple decision records may therefore belong to one user-visible workflow. In the Mode 1B derivative path, for example, the source DENY, Hal rebind ALLOW, and requester derivative-consumption ALLOW are separate governance facts.
+A decision record should be interpreted as evidence of the concrete attempted relation. Multiple decision records may therefore belong to one user-visible workflow. In the Mode 1B derivative path, for example, the source DENY, Hal unbind ALLOW, and requester derivative-consumption ALLOW are separate governance facts.
 Their coexistence is intentional.
 ## 42. Why DENY tests must execute
 A DENY test is not an expected "error" that can be omitted to make a clean demonstration. Negative cases establish the boundary of the capability.

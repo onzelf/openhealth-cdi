@@ -7,11 +7,11 @@ set -euo pipefail
 # Expected contextual matrix:
 #   Audrey + mucus  -> source ALLOW -> no_transform -> source
 #   Audrey + colorectal adenocarcinoma epithelium
-#                    -> source DENY -> blur_image -> rebind ALLOW
+#                    -> source DENY -> blur_image -> unbind ALLOW
 #                    -> release ALLOW -> derivative
 #   Bob + colorectal adenocarcinoma epithelium
 #                    -> source ALLOW -> no_transform -> source
-#   Bob + mucus     -> source DENY -> blur_image -> rebind ALLOW
+#   Bob + mucus     -> source DENY -> blur_image -> unbind ALLOW
 #                    -> release ALLOW -> derivative
 
 # Agent behavior is contextual. It is not an intrinsic property of the agent.
@@ -326,7 +326,7 @@ jq -e --arg e "${ENVELOPE_ID}" --arg jkt "${HAL_JKT}" '
   )
   and (
     [.cap[]
-      | select(.action=="rebind")
+      | select(.action=="unbind")
       | .scope.pathology_labels[]?] | sort
     ==
     ["colorectal_adenocarcinoma_epithelium","mucus"]
@@ -442,7 +442,7 @@ run_context_case() {
         and .executed == true
         and .representation == $representation
         and ((.prediction.sample_image.image_b64 // "") | length > 0)
-        and (.rebind_admission == null)
+        and (.unbind_admission == null)
         and (.release_admission == null)
         and (.hal_inference.prediction == null)
       ' <<<"${response}" >/dev/null || {
@@ -460,7 +460,7 @@ run_context_case() {
       --arg derivative "${DERIVATIVE_REPRESENTATION}" '
         .agent_decision.action == $action
         and .agent_decision.fallback == false
-        and .rebind_admission.allow == true
+        and .unbind_admission.allow == true
         and .release_admission.allow == true
         and .executed == true
         and .representation == $representation
@@ -473,20 +473,20 @@ run_context_case() {
         fail "Gate 5E case ${case_no}: derivative representation contract mismatch"
       }
 
-    local rebind_decision release_decision
-    rebind_decision="$(jq -r '.rebind_admission.decision_id // empty' <<<"${response}")"
+    local unbind_decision release_decision
+    unbind_decision="$(jq -r '.unbind_admission.decision_id // empty' <<<"${response}")"
     release_decision="$(jq -r '.release_admission.decision_id // empty' <<<"${response}")"
 
-    [[ -n "${rebind_decision}" ]] ||
-      fail "Gate 5E case ${case_no}: rebind decision missing"
+    [[ -n "${unbind_decision}" ]] ||
+      fail "Gate 5E case ${case_no}: unbind decision missing"
 
     [[ -n "${release_decision}" ]] ||
       fail "Gate 5E case ${case_no}: release decision missing"
 
     verify_decision_record \
-      "${rebind_decision}" \
+      "${unbind_decision}" \
       "Hal" \
-      "rebind" \
+      "unbind" \
       "ALLOW" \
       "${DERIVATIVE_REPRESENTATION}"
 
@@ -541,7 +541,7 @@ jq -e '
   and .agent_decision.action == "blur_image"
   and .agent_decision.fallback == false
   and .hal_inference.admission.allow == true
-  and .rebind_admission.allow == true
+  and .unbind_admission.allow == true
   and .release_admission.allow == false
   and .release_admission.reason == "capability_violation"
   and .executed == false
@@ -558,8 +558,8 @@ CHARLIE_SOURCE_DECISION="$(
 CHARLIE_HAL_DECISION="$(
   jq -r '.hal_inference.admission.decision_id // empty' <<<"${CHARLIE_RESPONSE}"
 )"
-CHARLIE_REBIND_DECISION="$(
-  jq -r '.rebind_admission.decision_id // empty' <<<"${CHARLIE_RESPONSE}"
+CHARLIE_UNBIND_DECISION="$(
+  jq -r '.unbind_admission.decision_id // empty' <<<"${CHARLIE_RESPONSE}"
 )"
 CHARLIE_RELEASE_DECISION="$(
   jq -r '.release_admission.decision_id // empty' <<<"${CHARLIE_RESPONSE}"
@@ -568,7 +568,7 @@ CHARLIE_RELEASE_DECISION="$(
 for decision_id in \
   "${CHARLIE_SOURCE_DECISION}" \
   "${CHARLIE_HAL_DECISION}" \
-  "${CHARLIE_REBIND_DECISION}" \
+  "${CHARLIE_UNBIND_DECISION}" \
   "${CHARLIE_RELEASE_DECISION}"
 do
   [[ -n "${decision_id}" ]] ||
@@ -590,9 +590,9 @@ verify_decision_record \
   ""
 
 verify_decision_record \
-  "${CHARLIE_REBIND_DECISION}" \
+  "${CHARLIE_UNBIND_DECISION}" \
   "Hal" \
-  "rebind" \
+  "unbind" \
   "ALLOW" \
   "${DERIVATIVE_REPRESENTATION}"
 
@@ -603,10 +603,55 @@ verify_decision_record \
   "DENY" \
   "${DERIVATIVE_REPRESENTATION}"
 
-pass "Negative control: Hal rebind ALLOW did not confer derivative authority on Charlie"
+pass "Negative control: Hal unbind ALLOW did not confer derivative authority on Charlie"
 pass "Negative control: requester release DENY prevented representation disclosure"
 
-section "5. Gate 5E result"
+section "5. Provenance-field injection rejection"
+
+FORGED_RESPONSE="${TMP}/mode1b-forged-provenance.json"
+
+FORGED_HTTP="$(
+  curl -sS \
+    -o "${FORGED_RESPONSE}" \
+    -w '%{http_code}' \
+    -H 'content-type: application/json' \
+    -d "$(jq -nc \
+      --arg e "${ENVELOPE_ID}" \
+      --arg r "${RUN_ID}" \
+      --arg t "${CANCER_TISSUE}" \
+      '{
+        requester:"Audrey",
+        envelope_id:$e,
+        run_id:$r,
+        requested_tissue:$t,
+        topk:3,
+        governed_value_id:"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        value_id:"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        derivative_sha256:"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }')" \
+    "${HUB_URL}/mode1b/agent/request"
+)"
+
+[[ "${FORGED_HTTP}" == "422" ]] || {
+  printf 'HTTP %s\n' "${FORGED_HTTP}" >&2
+  jq . "${FORGED_RESPONSE}" >&2 2>/dev/null || cat "${FORGED_RESPONSE}" >&2
+  fail "Gate 5E adversarial control: provenance-field injection was not rejected"
+}
+
+jq -e '
+  ([.detail[]?
+    | select(.type == "extra_forbidden")
+    | .loc[-1]] | sort)
+  ==
+  ["derivative_sha256","governed_value_id","value_id"]
+' "${FORGED_RESPONSE}" >/dev/null || {
+  jq . "${FORGED_RESPONSE}" >&2 2>/dev/null || cat "${FORGED_RESPONSE}" >&2
+  fail "Gate 5E adversarial control: expected provenance fields were not explicitly forbidden"
+}
+
+pass "Adversarial control: requester-supplied provenance identifiers rejected with HTTP 422"
+
+section "6. Gate 5E result"
 
 printf '%-6s %-10s %-44s %-8s %-16s %s\n' \
   "CASE" "REQUESTER" "TISSUE" "SOURCE" "LLM ACTION" "REPRESENTATION"
@@ -623,6 +668,6 @@ printf '%-6s %-10s %-44s %-8s %-16s %s\n' \
 
 printf '\n'
 pass "GATE 5E GREEN: four contextual requester/tissue relations reproduced"
-pass "Derivative delivery requires both Hal rebind and requester release admission"
+pass "Derivative delivery requires both Hal unbind and requester release admission"
 pass "Same Hal, same two tissues, different governed relation, different selected action"
 

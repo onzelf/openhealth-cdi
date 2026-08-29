@@ -38,7 +38,7 @@ At manuscript completion, **Mode 1B had not yet been implemented**. Its expected
 
 The repository should consequently be read as the **implementation continuation of the JMIR study, not as a correction of it**.
 
-The subsequent implementation operationalises those requirements. Mode 1B now provides a holder-bound computational participant, bounded inference, policy-authorised rebind, independently governed derivative consumption, execution-path isolation, and negative tests verifying that execution cannot enlarge the authority established by admission.
+The subsequent implementation operationalises those requirements. Mode 1B now provides a holder-bound computational participant, bounded inference, policy-authorised Unbind, independently governed derivative consumption, execution-path isolation, and negative tests verifying that execution cannot enlarge the authority established by admission.
 
 The implementation also goes beyond the original single requester scenario. The same agent is exercised across different requester-resource relations. Whether the source can be returned directly or must first be transformed therefore depends on the governed relation among **requester, resource, capability, purpose, and context**, not on the identity or internal behaviour of the agent alone.
 
@@ -68,7 +68,7 @@ The implementation also keeps **model lifecycle and governance-envelope lifecycl
 
 The repository tests governance as an executable systems property rather than inferring it from configuration or documentation.
 
-The principal regression families cover federation-envelope establishment, issuer-owned capabilities, holder binding and DPoP, sponsorship, contribution-versus-consumption separation, signed ALLOW/DENY evidence, agent isolation, bounded agent authority, policy-authorised rebind, derivative release, and contextual agent-mediated execution.
+The principal regression families cover federation-envelope establishment, issuer-owned capabilities, holder binding and DPoP, sponsorship, contribution-versus-consumption separation, signed ALLOW/DENY evidence, agent isolation, bounded agent authority, policy-authorised Unbind, derivative release, and contextual agent-mediated execution.
 
 In particular:
 

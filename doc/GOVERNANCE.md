@@ -179,7 +179,7 @@ The current principal profiles are shown below.
 | `capset:pathmnist_hospital_a_participant` | Hospital A founding participation, training contribution, and evaluation |
 | `capset:pathmnist_hospital_b_participant` | Hospital B founding participation, training contribution, and evaluation |
 | `capset:pathmnist_guest_contributor` | sponsored federated-training contribution |
-| `capset:pathmnist_bounded_agent` | bounded inference and policy-authorised rebind |
+| `capset:pathmnist_bounded_agent` | bounded inference and policy-authorised unbind |
 | `capset:pathmnist_derivative_reader` | consumption of approved derivative representations |
 | `capset:pathmnist_other_tissue_reader` | model query over the authorised other-tissue scope |
 | `capset:pathmnist_cancer_associated_reader` | model query over the authorised cancer-associated scope |
@@ -196,7 +196,7 @@ The principal operation classes in the current system are shown below.
 | `submit_evaluation` | PathMNIST colon-pathology resource | model evaluation |
 | `query_model` | PathMNIST colon-pathology resource | approved model query |
 | `bounded_inference` | PathMNIST colon-pathology resource | bounded model inference |
-| `rebind` | PathMNIST colon-pathology resource | policy-authorised derivation |
+| `unbind` | PathMNIST colon-pathology resource | policy-authorised derivation |
 | `consume_derivative` | PathMNIST derived representation | approved derivative consumption |
 
 The distinction among these operations is critical. Permission to submit an update does not imply permission to query the resulting model. Permission to perform bounded inference does not imply permission to join the federation. Permission to transform a resource does not imply that a requester may consume the resulting derivative.
@@ -285,7 +285,7 @@ Hospital C is the most visible example. Sponsored contribution permits participa
 This distinction remains valid even if the federated-learning framework or model-storage mechanism changes.
 ## 24. Mode 1B governance
 Mode 1B introduces Hal through the `capset:pathmnist_bounded_agent` participation profile. Hal is represented as a computational holder with its own key material and requires sponsorship by both founding organisations.
-The current bounded-agent capability permits `bounded_inference` and `rebind` over the policy-defined tissue scope. It does not permit `join_envelope`, general `query_model`, or privileged federation-governance operations.
+The current bounded-agent capability permits `bounded_inference` and `unbind` over the policy-defined tissue scope. It does not permit `join_envelope`, general `query_model`, or privileged federation-governance operations.
 Hal therefore participates as a bounded operational actor under the existing A+B collaboration. Its agent identity does not create a separate source of authority.
 The relationship can be represented as follows.
 
@@ -328,9 +328,9 @@ The current behaviour is:
 | Bob | mucus | DENY | governed derivative path |
 
 This demonstrates that the system does not contain a rule such as "Hal blurs cancer" or "Hal returns mucus". The operation is selected in context and remains bounded by the governance relation.
-## 27. Rebind and transformation
-When direct source consumption is denied but the policy permits a derivative path, Hal may attempt the `rebind` operation. In the current implementation the approved derivative representation is `blurred_image_with_qualitative_accuracy`.
-Rebind authorises the transformation relation. It does not authorise release to the requester.
+## 27. Unbind and transformation
+When direct source consumption is denied but the policy permits a derivative path, Hal may attempt the `unbind` operation. In the current implementation the approved derivative representation is `blurred_image_with_qualitative_accuracy`.
+Unbind authorises the transformation relation. It does not authorise release to the requester.
 This separation matters because otherwise the ability to transform a resource would implicitly enlarge the requester's authority. A participant denied the source could obtain it indirectly by instructing an agent to produce a new representation and treating the transformation itself as release permission.
 OpenHealth-CDI prevents that collapse by keeping transformation and consumption as different governed operations.
 ## 28. Derivative consumption
@@ -359,7 +359,7 @@ sequenceDiagram
         A->>L: Context + finite available actions
         L-->>A: Intended action
         A-->>H: Proposed bounded action
-        H->>G: Admit Hal rebind
+        H->>G: Admit Hal unbind
         G-->>H: ALLOW + evidence
         H->>A: Execute admitted transformation
         A-->>H: Governed derivative
@@ -384,7 +384,7 @@ This distinction is why the execution path and trust boundaries described in [AR
 ## 31. Decision evidence
 The Gatekeeper produces signed evidence for admission outcomes. Decision evidence is part of the reference implementation rather than a convenience added for debugging.
 The constitution requires evidence to preserve enough information to determine which authority and context supported the decision. Relevant fields include the participant, issuer, capability or participation profile, sponsorship where required, authorised scope, approved collaboration, requested action, declared purpose, requested tissue classes, decision outcome, decision reason, related model run when applicable, holder-binding result, and timestamp.
-The test suite verifies these decision artefacts cryptographically. Mode 1A tests verify that Charlie's signed evidence preserves sponsorship as a distinct relation. Mode 1B tests verify evidence for source denial, bounded inference, rebind, derivative consumption, and prohibited agent operations.
+The test suite verifies these decision artefacts cryptographically. Mode 1A tests verify that Charlie's signed evidence preserves sponsorship as a distinct relation. Mode 1B tests verify evidence for source denial, bounded inference, unbind, derivative consumption, and prohibited agent operations.
 The important principle is that the dashboard displaying ALLOW or DENY is not the authoritative evidence. The signed decision artefact is.
 ## 32. Negative decisions as evidence
 A governance architecture cannot be demonstrated only by successful paths. Default DENY requires executable negative cases that show the limits of authority.
@@ -393,7 +393,7 @@ These failures are not incidental error handling. They demonstrate the boundarie
 For example, showing that Hal can perform `bounded_inference` proves little about bounded authority unless the same system also demonstrates that Hal cannot use its agent status to obtain privileged governance capability.
 ## 33. Mode 1B Table 7 conformance
 `Test5D_mode1b_table7_conformance.sh` turns the five Mode 1B governance requirements from the accompanying study into executable cases. The expected sequence is `DENY / ALLOW / ALLOW / ALLOW / DENY`.
-The first case denies unrestricted requester access to a cancer source outside the requester's direct capability. The second permits Hal's bounded inference. The third permits Hal's policy-authorised rebind. The fourth permits the requester to consume the governed derivative. The fifth denies a privileged governance operation attempted by Hal.
+The first case denies unrestricted requester access to a cancer source outside the requester's direct capability. The second permits Hal's bounded inference. The third permits Hal's policy-authorised unbind. The fourth permits the requester to consume the governed derivative. The fifth denies a privileged governance operation attempted by Hal.
 The significance of this sequence is that authority remains operation-specific. Hal's successful bounded operation does not enlarge its federation authority. The requester's derivative access does not retroactively grant source access. An agent that is useful within one admitted relation remains prohibited outside that relation.
 ## 34. Model lifecycle and governance lifecycle
 The model lifecycle and governance-envelope lifecycle remain separate throughout the system.
@@ -496,3 +496,8 @@ Some repository identifiers retain historical names such as `fcac` and `vfp`. Th
 OpenHealth-CDI represents governance as a set of explicit authority-bearing relations rather than as properties inferred from system objects. Hospitals A and B constitute the collaboration through policy-owned conditions and a two-of-two founding quorum. Hospital C can participate through Charlie's sponsored contribution without becoming constitutionally equivalent to the founders. Audrey and Bob receive issuer-defined but different direct source rights while both can hold separately governed derivative-consumption authority. Hal participates as a holder-bound computational actor whose authority is restricted to the operations defined by its bounded-agent capability. The LLM used by Hal remains an execution mechanism and does not become a federation principal.
 Capability assignment remains under issuer control. Capability exercise remains bound to the holder. Authentication remains distinct from capability. Admission remains distinct from execution. Sponsorship remains distinct from membership, provenance, and general delegation. Contribution remains distinct from model custody and consumption. Transformation remains distinct from derivative release. Current governance context remains distinct from model provenance. Signed evidence records both successful and rejected governance decisions.
 These separations allow the collaboration to evolve without reconstructing its architecture for every new participant or computational mechanism. The governing principle is therefore not that particular objects have fixed meanings. Their meaning is determined by the relationships under which they participate.
+
+
+## Governance composition
+
+For the Category Theory foundation of Mode 1B governance composition, its executable realization, exact-W traceability, and the distinction between transformation and release authority, see [GOVERNANCE_COMPOSITION.md](GOVERNANCE_COMPOSITION.md).

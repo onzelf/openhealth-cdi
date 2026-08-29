@@ -602,6 +602,96 @@ main {
   text-transform: uppercase;
 }
 
+.mode1b-governance-flow {
+  align-items: stretch;
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  overflow-x: auto;
+  padding: 2px 0;
+}
+
+.mode1b-flow-node {
+  background: #f7fafb;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  display: flex;
+  flex: 1 0 145px;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 145px;
+  padding: 12px 13px;
+}
+
+.mode1b-flow-node.derivative {
+  background: var(--teal-soft);
+  border-color: #b9ddd8;
+}
+
+.mode1b-flow-node > span {
+  color: var(--teal);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+}
+
+.mode1b-flow-node > strong {
+  color: var(--navy-deep);
+  font-size: 11px;
+}
+
+.mode1b-flow-node > small {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.mode1b-flow-status {
+  align-self: flex-start;
+  border-radius: 999px;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 850;
+  letter-spacing: 0.05em;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 4px 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mode1b-flow-status.allow,
+.mode1b-flow-status.released {
+  background: var(--teal-soft);
+  color: #0c6e66;
+}
+
+.mode1b-flow-status.deny,
+.mode1b-flow-status.withheld {
+  background: #fbe9ed;
+  color: var(--danger);
+}
+
+.mode1b-flow-status.identified {
+  background: var(--blue-soft);
+  color: var(--navy);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+.mode1b-flow-status.awaiting,
+.mode1b-flow-status.not-used {
+  background: #edf2f4;
+  color: var(--muted);
+}
+
+.mode1b-flow-arrow {
+  align-items: center;
+  color: var(--teal);
+  display: flex;
+  font-size: 18px;
+  font-weight: 800;
+}
+
 .user-mode-layout {
   display: grid;
   gap: 16px;
@@ -646,13 +736,28 @@ main {
   grid-column: 1 / -1;
 }
 
+.governed-value-caption {
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 10px;
+  grid-column: 1 / -1;
+  line-height: 1.45;
+  margin: 0;
+  padding-bottom: 9px;
+}
+
+.governed-value-caption strong {
+  color: var(--navy-deep);
+  font-size: 10px;
+}
+
 .prediction-result {
   align-items: start;
   background: #f7fafb;
   border-radius: 12px;
   display: grid;
   gap: 14px;
-  grid-template-columns: 92px minmax(0, 1fr) minmax(180px, 0.9fr);
+  grid-template-columns: 92px minmax(0, 1fr);
   padding: 12px;
 }
 
@@ -684,13 +789,17 @@ main {
   color: var(--navy-deep);
   font-size: 10px;
   margin: 0;
+  max-width: 72%;
+  overflow-wrap: anywhere;
   text-align: right;
 }
 
 .prediction-result ol {
+  border-top: 1px solid var(--line);
+  grid-column: 2;
   list-style-position: inside;
-  margin: 0;
-  padding: 0;
+  margin: 4px 0 0;
+  padding: 8px 0 0;
 }
 
 .prediction-result li {

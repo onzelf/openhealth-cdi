@@ -52,7 +52,7 @@ Admission remains distinct from authentication and execution.
 Contribution remains distinct from model consumption.
 Hal remains the governed computational participant rather than the reasoning runtime.
 Hal's execution path does not provide privileged federation authority outside the admitted path.
-Rebind remains distinct from requester derivative consumption.
+Unbind remains distinct from requester derivative consumption.
 Source and derivative remain separately governed resources.
 Model provenance remains distinct from the governance envelope controlling a later operation.
 Signed decision evidence remains available for the relevant ALLOW and DENY outcomes.
@@ -378,7 +378,7 @@ The five-case Mode 1B sequence provides a compact behavioural signature for the 
 ```text
 requester unrestricted source     DENY
 Hal bounded inference             ALLOW
-Hal authorised rebind             ALLOW
+Hal authorised unbind             ALLOW
 requester derivative consumption  ALLOW
 Hal privileged governance action  DENY
 ```

@@ -780,7 +780,7 @@ VERIFIER_IP="$HOST_IP" \
 Classify the failure before changing anything.
 If source admission differs from expectation, inspect requester capability and Gatekeeper policy.
 If Hal cannot reason, inspect the external reasoning runtime.
-If rebind is denied unexpectedly, inspect Hal's bounded capability and requested scope.
+If unbind is denied unexpectedly, inspect Hal's bounded capability and requested scope.
 If derivative release is denied unexpectedly, inspect the requester's derivative-reader capability.
 If the wrong representation is returned despite correct admission state, inspect Hub orchestration and Hal execution.
 One user-visible request can involve several independent governed decisions.
@@ -803,8 +803,8 @@ Bob + mucus
     derivative path
 ```
 Do not "normalise" Audrey and Bob to identical source capability in order to make their outputs consistent. Their asymmetry is the experiment.
-## 42. Rebind succeeds but no derivative is returned
-A successful Hal `rebind` is not sufficient for release.
+## 42. Unbind succeeds but no derivative is returned
+A successful Hal `unbind` is not sufficient for release.
 The requester must also be admitted for:
 ```text
 consume_derivative
@@ -813,11 +813,11 @@ Inspect the result for separate:
 ```text
 source admission
 Hal action
-rebind admission
+unbind admission
 representation
 requester derivative-consumption admission
 ```
-If rebind is ALLOW but release is DENY, investigate requester derivative authority.
+If unbind is ALLOW but release is DENY, investigate requester derivative authority.
 Do not make the Hub return the derivative simply because transformation succeeded.
 > 🔑 **Takeaway**
 > - Transformation and release are separate authority boundaries.
@@ -1067,7 +1067,7 @@ A practical failure-analysis sequence is:
 9. Check mTLS identity path.
 10. Exercise one known ALLOW and one known DENY.
 11. If execution fails after ALLOW, inspect Flower/model/runtime.
-12. For Mode 1B, separate Hal isolation, Hal credential, reasoning runtime, rebind, and release.
+12. For Mode 1B, separate Hal isolation, Hal credential, reasoning runtime, unbind, and release.
 13. Run the relevant formal conformance test after repair.
 ```
 This order minimises destructive changes and isolates the failure domain quickly.
@@ -1075,3 +1075,51 @@ This order minimises destructive changes and isolates the failure domain quickly
 The central operational lesson from the local implementation is that apparently architectural failures often originate in much simpler platform state. The clearest example is nginx retaining an obsolete Docker upstream after an upstream container has been recreated. In that case the application code, governance policy, certificate material, and recreated service can all be correct while the user-facing path still fails.
 The reverse is also important. A technically successful connection or computation does not prove correct federation behaviour. Expected DENY decisions, holder-proof failures, mTLS rejection, and Mode 1B network denial are often evidence that the system is behaving correctly.
 Effective troubleshooting therefore proceeds by preserving state, isolating layers, comparing direct and proxied paths, checking cryptographic boundaries independently from application admission, and using the executable tests to re-establish the relevant invariant after the immediate operational problem has been repaired.
+
+## 54. Mandatory delivery preflight
+
+Before interpreting a demo, validation, Mode 1B, or AWS-porting failure, run the deterministic delivery preflight from the repository root:
+
+```bash
+./src/tests/Test0B_delivery_preflight.sh "$EID" "$HOST_IP"
+```
+
+The preflight is deliberately read-only. It does not select an envelope, mint credentials, restart containers, retrain a model, alter policy, or modify governance state.
+
+It checks the operational layers that must be distinguished before troubleshooting:
+
+```text
+required containers are running
+direct Hub boundary is reachable
+the expected envelope is selected
+Flower is registered with the Hub
+Flower /health reports ready
+Flower is bound to the expected envelope
+frontend-to-Hub routing is current
+verifier TLS health works with the project CA
+Hospital A and Hospital B issuer mTLS paths work
+Hal has the intended network topology
+Hal holder identity and reasoning credential file are present
+Gate 5A isolation remains GREEN
+```
+
+A GREEN preflight means that the local substrate required for governed Mode 1B execution is ready. It does not call the external reasoning provider and therefore does not prove provider availability or contextual reasoning. `Test5E_mode1b_contextual_agent.sh` remains the executable proof of the composed Mode 1B path.
+
+A RED preflight is a diagnostic result. Do not create a new envelope, delete volumes, broaden capability, or rebuild the full deployment merely to make it GREEN. Repair the first failed layer.
+
+The following distinction is operationally important:
+
+```text
+container running
+≠ backend registered
+≠ backend bound
+≠ backend ready
+```
+
+During development a recreated Flower server registered successfully with the Hub while PathMNIST was still being downloaded and initialized. The container was running and port 8081 was listening, yet prediction timed out. The readiness check exists to prevent that state from being mistaken for a governance or Mode 1B regression.
+
+### Portability rule
+
+Operational recovery must not depend on prior ChatGPT, Claude, OpenAI-account, Anthropic-account, or developer-conversation context. Those histories can accelerate diagnosis when the original developer is present, but they are not part of the deployable system.
+
+The repository, executable preflight, tests, logs, and this troubleshooting guide must contain enough information for an engineer without that conversational context to identify the failed layer and apply the documented recovery procedure.

@@ -129,6 +129,74 @@ function compactIdentifier(value) {
     : value;
 }
 
+function admissionDecision(admission) {
+  if (!admission) {
+    return "AWAITING";
+  }
+
+  const value = admission.allow ?? admission.decision;
+
+  if (value === true || value === "ALLOW") {
+    return "ALLOW";
+  }
+
+  if (value === false || value === "DENY") {
+    return "DENY";
+  }
+
+  return "AWAITING";
+}
+
+function decisionIdentifier(...candidates) {
+  function findDecisionId(candidate, depth = 0) {
+    if (!candidate || depth > 4) {
+      return null;
+    }
+
+    if (typeof candidate === "string") {
+      return candidate;
+    }
+
+    if (typeof candidate !== "object") {
+      return null;
+    }
+
+    for (const key of [
+      "decision_id",
+      "decision_record_id",
+      "evidence_id",
+    ]) {
+      if (candidate[key]) {
+        return candidate[key];
+      }
+    }
+
+    for (const key of [
+      "admission",
+      "decision",
+      "evidence",
+      "decision_record",
+      "signed_decision",
+    ]) {
+      const found = findDecisionId(candidate[key], depth + 1);
+      if (found) {
+        return found;
+      }
+    }
+
+    return null;
+  }
+
+  for (const candidate of candidates) {
+    const found = findDecisionId(candidate);
+    if (found) {
+      return found;
+    }
+  }
+
+  return null;
+}
+
 function toMetricNumber(value) {
   if (value === "" || value === undefined || value === null) {
     return null;
@@ -763,8 +831,124 @@ function UserModePanel({
       }`
     : null;
 
+  const sourceDecision = llmAgent
+    ? admissionDecision(result?.source_admission)
+    : "AWAITING";
+
+  const unbindAdmission =
+    result?.unbind_admission ||
+    null;
+
+  const consumeAdmission =
+    result?.consume_admission ||
+    result?.release_admission ||
+    result?.derivative_consumption_admission ||
+    result?.requester_release_admission ||
+    null;
+
+  const unbindDecision =
+    sourceDecision === "DENY"
+      ? admissionDecision(unbindAdmission)
+      : sourceDecision === "ALLOW"
+      ? "NOT USED"
+      : "AWAITING";
+
+  const governedValueId =
+    result?.governed_value_id ||
+    prediction?.value_id ||
+    null;
+
+  const derivativeState =
+    sourceDecision === "ALLOW"
+      ? "NOT USED"
+      : sourceDecision === "DENY" && governedValueId
+      ? compactIdentifier(governedValueId)
+      : "AWAITING";
+
+  const consumeDecision =
+    sourceDecision === "DENY"
+      ? admissionDecision(consumeAdmission)
+      : sourceDecision === "ALLOW"
+      ? "NOT USED"
+      : "AWAITING";
+
+  const releaseState =
+    sourceDecision === "ALLOW"
+      ? "NOT USED"
+      : consumeDecision === "ALLOW" && governedValueId
+      ? "RELEASED"
+      : consumeDecision === "DENY" || result?.released === false
+      ? "WITHHELD"
+      : "AWAITING";
+
   return (
     <div className="governed-inference">
+      {llmAgent ? (
+        <div
+          className="mode1b-governance-flow"
+          aria-label="Mode 1B governance composition"
+        >
+          <div className="mode1b-flow-node">
+            <span>01</span>
+            <strong>SOURCE V</strong>
+            <em className={`mode1b-flow-status ${sourceDecision.toLowerCase().replace(" ", "-")}`}>
+              {sourceDecision}
+            </em>
+            <small>
+              {requesterPrincipal} · {selectedTissue}
+            </small>
+          </div>
+
+          <div className="mode1b-flow-arrow" aria-hidden="true">→</div>
+
+          <div className="mode1b-flow-node">
+            <span>02</span>
+            <strong>UNBIND V→W</strong>
+            <em className={`mode1b-flow-status ${unbindDecision.toLowerCase().replace(" ", "-")}`}>
+              {unbindDecision}
+            </em>
+            <small>Hal · governed projection</small>
+          </div>
+
+          <div className="mode1b-flow-arrow" aria-hidden="true">→</div>
+
+          <div className="mode1b-flow-node derivative">
+            <span>03</span>
+            <strong>DERIVATIVE W</strong>
+            <em
+              className={`mode1b-flow-status ${
+                governedValueId ? "identified" : derivativeState.toLowerCase().replace(" ", "-")
+              }`}
+            >
+              {derivativeState}
+            </em>
+            <small>content-addressed value</small>
+          </div>
+
+          <div className="mode1b-flow-arrow" aria-hidden="true">→</div>
+
+          <div className="mode1b-flow-node">
+            <span>04</span>
+            <strong>CONSUME W</strong>
+            <em className={`mode1b-flow-status ${consumeDecision.toLowerCase().replace(" ", "-")}`}>
+              {consumeDecision}
+            </em>
+            <small>{requesterPrincipal} · fresh decision</small>
+          </div>
+
+          <div className="mode1b-flow-arrow" aria-hidden="true">→</div>
+
+          <div className="mode1b-flow-node">
+            <span>05</span>
+            <strong>RELEASE W</strong>
+            <em className={`mode1b-flow-status ${releaseState.toLowerCase().replace(" ", "-")}`}>
+              {releaseState}
+            </em>
+            <small>same governed value</small>
+          </div>
+        </div>
+      ) : null}
+
       <div className="user-mode-layout">
         <div className="workspace-controls">
           <p>
@@ -896,49 +1080,89 @@ function UserModePanel({
             </strong>
           </div>
 
-          <div>
-            <span className="eyebrow">ADMISSION</span>
-            <strong>
-              {result
-                ? activeAdmission?.allow
-                  ? "ALLOW"
-                  : "DENY"
-                : "Awaiting request"}
-            </strong>
-          </div>
+          {llmAgent ? (
+            <>
+              <div>
+                <span className="eyebrow">SOURCE DECISION</span>
+                <strong className="mono">
+                  {decisionIdentifier(
+                    result?.source_decision_id,
+                    result?.source_admission
+                  ) || "—"}
+                </strong>
+              </div>
 
-          {activeAdmission?.reason ? (
-            <div>
-              <span className="eyebrow">REASON</span>
-              <strong>{activeAdmission.reason}</strong>
-            </div>
-          ) : null}
+              <div>
+                <span className="eyebrow">HAL INFERENCE</span>
+                <strong className="mono">
+                  {sourceDecision === "ALLOW"
+                    ? "NOT USED"
+                    : decisionIdentifier(
+                        result?.hal_inference_decision_id,
+                        result?.hal_decision_id,
+                        result?.hal_admission,
+                        result?.bounded_inference_admission,
+                        result?.hal_inference?.admission
+                      ) || "—"}
+                </strong>
+              </div>
 
-          {llmAgent && result?.agent_decision?.action ? (
-            <div>
-              <span className="eyebrow">HAL ACTION</span>
-              <strong>{result.agent_decision.action}</strong>
-            </div>
-          ) : null}
+              <div>
+                <span className="eyebrow">UNBIND DECISION</span>
+                <strong className="mono">
+                  {sourceDecision === "ALLOW"
+                    ? "NOT USED"
+                    : decisionIdentifier(
+                        result?.unbind_decision_id,
+                        result?.unbind_admission
+                      ) || "—"}
+                </strong>
+              </div>
 
-          {llmAgent && result?.rebind_admission ? (
-            <div>
-              <span className="eyebrow">REBIND</span>
-              <strong>
-                {result.rebind_admission.allow ? "ALLOW" : "DENY"}
-              </strong>
-            </div>
-          ) : null}
+              <div>
+                <span className="eyebrow">CONSUME(W) DECISION</span>
+                <strong className="mono">
+                  {sourceDecision === "ALLOW"
+                    ? "NOT USED"
+                    : decisionIdentifier(
+                        result?.consume_decision_id,
+                        result?.release_decision_id,
+                        result?.release_admission
+                      ) || "—"}
+                </strong>
+              </div>
+            </>
+          ) : (
+            <>
+              <div>
+                <span className="eyebrow">ADMISSION</span>
+                <strong>
+                  {result
+                    ? activeAdmission?.allow
+                      ? "ALLOW"
+                      : "DENY"
+                    : "Awaiting request"}
+                </strong>
+              </div>
 
-          {llmAgent && result?.representation ? (
-            <div>
-              <span className="eyebrow">REPRESENTATION</span>
-              <strong>{result.representation}</strong>
-            </div>
-          ) : null}
+              {activeAdmission?.reason ? (
+                <div>
+                  <span className="eyebrow">REASON</span>
+                  <strong>{activeAdmission.reason}</strong>
+                </div>
+              ) : null}
+            </>
+          )}
 
           {prediction ? (
             <div className="prediction-result">
+              {llmAgent && result?.representation === "derivative" ? (
+                <p className="governed-value-caption">
+                  <strong>Governed value W</strong>
+                  {" — "}
+                  all fields shown below are included in its content-addressed identity.
+                </p>
+              ) : null}
               {presentedImageSrc ? (
                 <img
                   alt={`PathMNIST sample for ${

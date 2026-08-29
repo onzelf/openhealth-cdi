@@ -122,7 +122,7 @@ jq -e --arg e "${ENVELOPE_ID}" --arg jkt "${HAL_JKT}" '
   and .sponsors==["org://HospitalA","org://HospitalB"]
   and .cap_profiles==["capset:pathmnist_bounded_agent"]
   and ([.cap[].action] | index("bounded_inference") != null)
-  and ([.cap[].action] | index("rebind") != null)
+  and ([.cap[].action] | index("unbind") != null)
   and ([.cap[].action] | index("query_model") == null)
   and ([.cap[].action] | index("submit_update") == null)
 ' "${TMP}/claims.json" >/dev/null || { cat "${TMP}/claims.json" >&2; fail "Hal ECT contract mismatch"; }

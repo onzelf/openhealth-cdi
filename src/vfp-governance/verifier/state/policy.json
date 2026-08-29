@@ -150,9 +150,9 @@
         "AB-AGENT-04"
       ]
     },
-    "rebind_agent_derivative": {
+    "unbind_agent_derivative": {
       "resource": "pathmnist-colon-pathology",
-      "action": "rebind",
+      "action": "unbind",
       "purpose": "policy_authorized_derivation",
       "scope": {
         "pathology_labels": [
@@ -250,7 +250,7 @@
     "capset:pathmnist_bounded_agent": {
       "cap": [
         "bounded_inference_agent",
-        "rebind_agent_derivative"
+        "unbind_agent_derivative"
       ]
     },
     "capset:pathmnist_derivative_reader": {

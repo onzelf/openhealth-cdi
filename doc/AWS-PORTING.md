@@ -6,7 +6,7 @@ The governing rule for the port is:
 > **Implementation choices may be replaced. Architectural constraints may only be replaced by an AWS mechanism that preserves the same observable invariant.**
 The architectural and governance semantics that must survive the port are defined in [ARCHITECTURE.md](ARCHITECTURE.md), [GOVERNANCE.md](GOVERNANCE.md), [SCENARIOS.md](SCENARIOS.md), and [MODE1B.md](MODE1B.md). The local deployment and test procedures are described in [DEPLOYMENT.md](DEPLOYMENT.md) and [TESTING.md](TESTING.md).
 ## 2. Scope of the first AWS port
-The first AWS deployment should reproduce the behaviour of the research reference implementation with the smallest practical number of application changes. It should support the A+B baseline, Mode 1A sponsored contribution, Mode 1B bounded computational participation, the dashboard, issuer-owned capability assignment, holder-bound DPoP, governance-envelope establishment, Gatekeeper admission, signed evidence, PathMNIST federated training, model use, Hal's bounded inference and rebind operations, derivative release, and the contextual Audrey/Bob Mode 1B experiment.
+The first AWS deployment should reproduce the behaviour of the research reference implementation with the smallest practical number of application changes. It should support the A+B baseline, Mode 1A sponsored contribution, Mode 1B bounded computational participation, the dashboard, issuer-owned capability assignment, holder-bound DPoP, governance-envelope establishment, Gatekeeper admission, signed evidence, PathMNIST federated training, model use, Hal's bounded inference and unbind operations, derivative release, and the contextual Audrey/Bob Mode 1B experiment.
 The first port is not intended to redesign OpenHealth-CDI for production-scale availability, introduce a new IAM architecture, replace the federation capability model with AWS IAM, redesign the model-storage format, create a generic AI-agent containment platform, or replace every container with a managed AWS service.
 Those activities may be considered after architectural equivalence has been established.
 > 🔑 **Takeaway**
@@ -630,7 +630,7 @@ Hal cannot directly reach privileged federation internals
 Hal receives no human holder keys or governance evidence private key
 Table 7 retains DENY / ALLOW / ALLOW / ALLOW / DENY
 Audrey/Bob contextual Mode 1B matrix remains unchanged
-source, rebind and derivative release remain separate decisions
+source, unbind and derivative release remain separate decisions
 current governance envelope does not rewrite model provenance
 task replacement does not require manual stale-DNS recovery
 Hub and internal services are not unintentionally public
@@ -661,5 +661,5 @@ The handover must explicitly identify every place where an AWS mechanism replace
 ## 54. Porting summary
 The AWS deployment should be understood as another realisation of the OpenHealth-CDI federation architecture rather than as a new architecture derived from AWS service categories.
 Docker networks become task-level network policy. Loopback becomes private service exposure. Named volumes become controlled persistent storage. Docker GPU access becomes ECS GPU scheduling on EC2 capacity. Local service names become managed discovery. The local OpenAI `.env` file becomes a Secrets Manager value injected only into Hal. Local nginx mTLS remains nginx mTLS behind NLB TCP passthrough during the first port.
-What must not change is the authority structure. Hospitals A and B remain the founding collaboration. Hospital C remains a sponsored contributor rather than an equivalent founder. Capability assignment remains issuer-owned. Holder proof remains distinct from transport authentication. Admission remains distinct from execution. Hal remains the governed computational participant rather than the LLM. Hal's execution path remains separated from privileged federation services. Rebind remains distinct from derivative release. Model provenance remains distinct from current governance state.
+What must not change is the authority structure. Hospitals A and B remain the founding collaboration. Hospital C remains a sponsored contributor rather than an equivalent founder. Capability assignment remains issuer-owned. Holder proof remains distinct from transport authentication. Admission remains distinct from execution. Hal remains the governed computational participant rather than the LLM. Hal's execution path remains separated from privileged federation services. Unbind remains distinct from derivative release. Model provenance remains distinct from current governance state.
 The port is successful when AWS mechanisms preserve these relationships and the translated conformance suite makes that preservation observable.

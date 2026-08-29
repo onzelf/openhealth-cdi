@@ -400,6 +400,7 @@ class ProbeReq(BaseModel):
     pii: Optional[bool] = None
     contact: Optional[bool] = None
     derivative_representation: Optional[str] = None
+    governed_value_id: Optional[str] = None
     jti: Optional[str] = None  # echoed in DPoP signed content
 
 class ProbeResp(BaseModel):
@@ -1054,6 +1055,7 @@ def emit_decision_record(
             "pii": body.pii,
             "contact": body.contact,
             "derivative_representation": body.derivative_representation,
+            "governed_value_id": body.governed_value_id,
         },
         "presented_ect_sha256": _ect_fingerprint(authorization),
     }
@@ -1324,6 +1326,17 @@ async def _probe_impl(
     if reserved_tissues.intersection(body.requested_tissues):
         return _bench_return(token_ms, t, t0, False, "reserved_tissue")
 
+    if body.action == "consume_derivative":
+        value_id = str(body.governed_value_id or "")
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", value_id):
+            return _bench_return(
+                token_ms,
+                t,
+                t0,
+                False,
+                "governed_value_id_required",
+            )
+
     # 4) tuple match
     t = _ns()
     req_tuple = {
@@ -1337,6 +1350,7 @@ async def _probe_impl(
         "pii": body.pii,
         "contact": body.contact,
         "derivative_representation": body.derivative_representation,
+        "governed_value_id": body.governed_value_id,
     }
 
     failure_reason = "capability_violation"

@@ -7,27 +7,27 @@
 ============================================================
 2. Envelope-bound credentials
 ============================================================
-[32m✓[0m Credentials preserve separate source-query, agent, and derivative relations
+[32m✓[0m Credentials preserve separate relations and the two-tissue Mode 1B scope
 
 ============================================================
 3. Table 7 executable conformance
 ============================================================
 [32m✓[0m Table 7 case 1: requester asks for unrestricted cancer source -> DENY
 [32m✓[0m Table 7 case 2: agent performs bounded inference -> ALLOW
-[32m✓[0m Table 7 case 3: agent invokes policy-authorized rebind -> ALLOW
-[32m✓[0m Table 7 case 4: requester consumes governed derivative -> ALLOW
+[32m✓[0m Table 7 case 3: agent invokes policy-authorized unbind -> ALLOW
+[32m✓[0m Table 7 case 4: exact-W consumption is evidenced by Test5E
 [32m✓[0m Table 7 case 5: agent attempts privileged governance operation -> DENY
 [32m✓[0m Table 7 case 5 route check: verifier-app remains unreachable from Hal
 
 ============================================================
 4. Table 7 result
 ============================================================
-CASE   GOVERNED OPERATION                                       OBSERVED
---------------------------------------------------------------------------------
-1      Requester unrestricted cancer source                     DENY
-2      Hal bounded inference                                    ALLOW
-3      Hal policy-authorized rebind                             ALLOW
-4      Requester governed derivative consumption                ALLOW
-5      Hal privileged governance path                           DENY
+CASE   GOVERNED OPERATION                                       OBSERVED   DECISION ID
+---------------------------------------------------------------------------------------------------------------
+1      requester asks for unrestricted cancer source            DENY       decision-14942d1fd0a148bd940dad43ec1ee5a5
+2      agent performs bounded inference                         ALLOW      decision-72f09f4efbad4977b2a9de3238865c9b
+3      agent invokes policy-authorized unbind                   ALLOW      decision-4d0f6ebc4a4a45e6a7e96d894958da7c
+4      requester consumes exact governed derivative             TEST5E     -
+5      agent attempts privileged governance operation           DENY       decision-6010217fb8e2410a98d908575e42d6f8
 
-[32m✓[0m TABLE 7 GREEN: 5 / 5 conformance cases reproduced with signed evidence
+[32m✓[0m TABLE 7 DECISION PLANE GREEN: rows 1, 2, 3 and 5 reproduced with signed evidence; row 4 composition evidence is provided by Test5E

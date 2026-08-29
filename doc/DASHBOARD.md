@@ -90,7 +90,7 @@ A returned model result therefore follows a chain that includes holder selection
 The generic dashboard guide intentionally illustrates User mode with the A+B baseline.
 That view exposes the ordinary governed model-use path without mixing it with the special semantics of sponsored contribution or computational-agent mediation.
 Mode 1A is primarily demonstrated through sponsored contribution and the A+B+C training relation. Its governance meaning is documented in [SCENARIOS.md](SCENARIOS.md) and [GOVERNANCE.md](GOVERNANCE.md).
-Mode 1B introduces additional requester, agent, reasoning, rebind, and derivative-release state. Its dashboard interpretation is therefore documented separately in [MODE1B.md](MODE1B.md).
+Mode 1B introduces additional requester, agent, reasoning, unbind, and derivative-release state. Its dashboard interpretation is therefore documented separately in [MODE1B.md](MODE1B.md).
 The dedicated Mode 1B annotated image is:
 ```text
 DB_pane_1B.png
@@ -143,7 +143,7 @@ Use the displayed reason, Events, Evidence, and the relevant conformance test to
 The dashboard is designed to make the current state intelligible to an operator, but the interface itself is not the authoritative research evidence.
 Signed Gatekeeper decision records and the executable conformance tests provide the inspectable evidence for governance claims.
 The dashboard can show that a request was reported as ALLOW or DENY. The evidence path establishes the recorded decision and the relation that produced it.
-This distinction is particularly important for Mode 1A sponsorship and the Mode 1B source/rebind/derivative sequence, where several separate admission decisions can belong to one user-visible workflow.
+This distinction is particularly important for Mode 1A sponsorship and the Mode 1B source/unbind/derivative sequence, where several separate admission decisions can belong to one user-visible workflow.
 ## 16. Dashboard summary
 The dashboard presents the OpenHealth-CDI lifecycle as five principal operating panes. Pane 1 selects the collaboration scenario and dashboard role. Pane 2 shows the current governed state. Pane 3 selects and administers the active collaboration boundary and holder credentials. Panes 4A and 4B operate and inspect federated training. Pane 5 presents ordinary governed model use to a participant.
 The visual sequence is designed to keep context visible before action. The operator sees which collaboration is active, which envelope governs the operation, which model is being used, which holder capability is ready, and which admission result applies.
