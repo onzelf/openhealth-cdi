@@ -1596,6 +1596,8 @@ async def guest_contribution_admission(
         pii = None
         contact = None
         derivative_representation = None
+        governed_value_id = None
+        governed_value = None
 
         def __init__(self):
             self.envelope_id = envelope_id
