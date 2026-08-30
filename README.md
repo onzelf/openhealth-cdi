@@ -24,7 +24,7 @@ The modes are not different governance architectures. They exercise progressivel
 
 ## From the JMIR paper to the reference implementation
 
-The accompanying JMIR paper introduced the OpenHealth governance model and its progression from a fixed A+B federation to differentiated organisational and computational participation.
+The accompanying [JMIR paper](doc/JMIR_MI_Manuscript_final.pdf) introduced the OpenHealth governance model and its progression from a fixed A+B federation to differentiated organisational and computational participation. The figure below represents the state of the system described by the manuscript.
 
 <p align="center">
 <img src="doc/image/JMIR_architecture.png" width="90%">
@@ -32,11 +32,7 @@ The accompanying JMIR paper introduced the OpenHealth governance model and its p
 
 <p align="center"><em>Architecture presented in the JMIR manuscript.</em></p>
 
-This figure is retained unchanged because it represents the state of the system described by the manuscript.
-
-At manuscript completion, **Mode 1B had not yet been implemented**. Its expected behaviour was therefore expressed as governance and conformance requirements, including the cases reported in Table 7, rather than as observations from a completed execution path.
-
-The repository should consequently be read as the **implementation continuation of the JMIR study, not as a correction of it**.
+The repository shall be read as the **implementation continuation of the JMIR study**.
 
 The subsequent implementation operationalises those requirements. Mode 1B now provides a holder-bound computational participant, bounded inference, policy-authorised Unbind, independently governed derivative consumption, execution-path isolation, and negative tests verifying that execution cannot enlarge the authority established by admission.
 

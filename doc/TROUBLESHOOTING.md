@@ -222,6 +222,53 @@ curl -fsS \
   jq -r '.selected_envelope_id'
 ```
 The result should equal `$EID`.
+
+## 11.1 Envelope binding lost after Hub or Flower replacement
+
+Recreating fc-hub or flower-server does not invalidate an existing governance envelope, but it can remove the runtime binding between that envelope and the Flower backend.
+
+The diagnostic signature is:
+- ACTIVE envelope exists
+- backend registered = true
+- flower server ready = true
+- registered clients present
+- selected_envelope_id = null
+- backend_bound = false
+- backend.bound_envelope = null
+
+In this state, do not create a new KYO envelope. The persistent governance state is still valid. Only the volatile runtime binding has been lost.
+
+Confirm the intended envelope is still ACTIVE:
+```bash
+curl -fsS \
+  http://127.0.0.1:8080/administration/envelopes |
+  jq .
+```
+Then restore the existing binding:
+```bash
+curl -fsS \
+  -X POST \
+  "http://127.0.0.1:8080/administration/envelopes/${EID}/select" |
+  jq .
+```
+Verify:
+```bash
+curl -fsS \
+  http://127.0.0.1:8080/administration/envelopes |
+  jq '{
+    selected_envelope_id,
+    backend_bound: (.backend.bound_envelope != null),
+    bound_envelope: .backend.bound_envelope
+  }'
+```
+The expected result is that selected_envelope_id equals $EID and backend.bound_envelope.envelope_id equals the same value.
+
+The frontend may previously have shown no selected envelope. This is not necessarily a frontend failure. The frontend reflects the Hub state, while the Hub derives the selected envelope from the backend binding.
+
+> Important
+  Container replacement does not recreate governance. The envelope remains authoritative until expiry or revocation. Re-selection only restores the runtime association between the existing envelope and the current backend instance.
+
+
 ## 12. A selected envelope is not necessarily a model-producing envelope
 A current envelope may legitimately show:
 ```text

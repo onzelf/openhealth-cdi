@@ -40,6 +40,8 @@ The value changes from `V` to `W`. Governance is not discarded.
 
 This is why image blur or pixelation in Mode 1B is an Unbind operation rather than a Rebind operation.
 
+> Terminology used in the JMIR paper. The accompanying [JMIR manuscript](JMIR_MI_Manuscript_final.pdf) retains the term ***Rebind*** in a broader operational sense to describe the production of a derivative representation under an applicable governance relation. This usage is intentionally less formal than the terminology adopted by the reference implementation. In the VIM terminology used in this repository, a value-changing transformation V -> W is an ***Unbind***, whereas Rebind preserves the value while changing or tightening its governance envelope. The two operations are distinct. Under the policy-alignment condition defined in the VIM formalization, compatible Unbind and Rebind operations commute, so tightening before projection and tightening after projection yield the same final governed object. The repository therefore uses unbind for the implemented V -> W transformation, while the JMIR paper retains rebind as the more familiar operational term.
+
 ## 3. Category Theory is semantic, not syntactic
 
 Nothing in the implementation requires Python specifically, and nothing in the semantics requires a Category Theory library.
@@ -256,6 +258,20 @@ The `value_id` is calculated over the canonical governed value rather than merel
 W_created
 =
 W_named_in_signed_decision
+=
+W_released
+```
+
+For `consume_derivative`, the candidate governed value `W` is presented to the Gatekeeper before release. The Gatekeeper first evaluates the requester's capability relation and, only for a candidate operation that otherwise matches that capability, independently checks that `W` names the same resource, requested tissue, and derivative representation as the request. It then recomputes the content address of canonical `W`, verifies the derivative-image bytes against `derivative_sha256`, and returns ALLOW only when these checks succeed.
+
+A successful signed consumption decision carries the exact governed value that the Gatekeeper verified together with its verified `governed_value_id`. An auditor can therefore recompute the content address from the signed evidence itself. Candidate governed values are not persisted in DENY evidence. Immediately before release, the Hub independently recomputes both the content address and derivative-byte digest once more. The resulting chain is:
+
+```text
+W_created
+=
+W_verified_by_Gatekeeper
+=
+W_evidenced
 =
 W_released
 ```

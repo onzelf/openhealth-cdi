@@ -328,6 +328,19 @@ def append_event(
         f.write(json.dumps(event) + "\n")
 
 
+def governed_value_content_id(governed_value: Dict[str, Any]) -> str:
+    """Return the content address of W, excluding its self-referential value_id."""
+    unsigned_value = dict(governed_value)
+    unsigned_value.pop("value_id", None)
+    canonical = json.dumps(
+        unsigned_value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(canonical).hexdigest()
+
+
 def verifier_request(
     method: str,
     path: str,
@@ -374,6 +387,7 @@ def request_prediction_admission(
     event_type: str = "prediction_admission",
     derivative_representation: Optional[str] = None,
     governed_value_id: Optional[str] = None,
+    governed_value: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     admission_request = {
         "envelope_id": envelope_id,
@@ -389,6 +403,8 @@ def request_prediction_admission(
         admission_request["derivative_representation"] = derivative_representation
     if governed_value_id:
         admission_request["governed_value_id"] = governed_value_id
+    if governed_value is not None:
+        admission_request["governed_value"] = governed_value
 
     try:
         verifier = requests.post(
@@ -423,7 +439,6 @@ def request_prediction_admission(
         resource=resource,
         action=action,
         purpose=purpose,
-        governed_value_id=governed_value_id,
         **admission,
     )
     return admission
@@ -2041,6 +2056,7 @@ def admit_principal_operation(
     resource: str = "pathmnist-colon-pathology",
     derivative_representation: Optional[str] = None,
     governed_value_id: Optional[str] = None,
+    governed_value: Optional[Dict[str, Any]] = None,
     event_type: str,
 ) -> Dict[str, Any]:
     context = ACTOR_CONTEXTS.get(principal)
@@ -2077,6 +2093,7 @@ def admit_principal_operation(
         resource=resource,
         derivative_representation=derivative_representation,
         governed_value_id=governed_value_id,
+        governed_value=governed_value,
         event_type=event_type,
     )
 
@@ -2369,6 +2386,26 @@ def mode1b_agent_request(
             prediction["sample_image"]["image_b64"]
         )
 
+        try:
+            derivative_bytes = base64.b64decode(
+                str(derivative["image_b64"]),
+                validate=True,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                502,
+                "hal_derivative_image_invalid",
+            ) from exc
+
+        derivative_sha256 = hashlib.sha256(
+            derivative_bytes
+        ).hexdigest()
+        if derivative_sha256 != str(derivative.get("sha256") or ""):
+            raise HTTPException(
+                502,
+                "hal_derivative_digest_mismatch",
+            )
+
         governed_value = {
             "resource": "pathmnist-derived-representation",
             "requested_tissue": prediction.get("requested_tissue"),
@@ -2377,7 +2414,7 @@ def mode1b_agent_request(
             "prediction_tissue": prediction.get("prediction_tissue"),
             "topk": prediction.get("topk", []),
             "derivative_representation": derivative_name,
-            "derivative_sha256": derivative["sha256"],
+            "derivative_sha256": derivative_sha256,
             "derivative_image": {
                 "mime_type": derivative["mime_type"],
                 "image_b64": derivative["image_b64"],
@@ -2388,15 +2425,8 @@ def mode1b_agent_request(
 
         # Content-address the complete released W. value_id itself is excluded
         # from the digest, as with ordinary content-addressed objects.
-        governed_value_bytes = json.dumps(
-            governed_value,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-        ).encode("utf-8")
-        governed_value["value_id"] = (
-            "sha256:"
-            + hashlib.sha256(governed_value_bytes).hexdigest()
+        governed_value["value_id"] = governed_value_content_id(
+            governed_value
         )
 
         release_admission = admit_principal_operation(
@@ -2409,6 +2439,7 @@ def mode1b_agent_request(
             purpose="approved_derivative_consumption",
             derivative_representation=derivative_name,
             governed_value_id=governed_value["value_id"],
+            governed_value=governed_value,
             event_type="mode1b_derivative_release_admission",
         )
 
@@ -2424,6 +2455,43 @@ def mode1b_agent_request(
                 "executed": False,
                 "released": False,
             }
+
+        if (
+            release_admission.get("governed_value_binding_result")
+            != "verified"
+            or release_admission.get("governed_value_id")
+            != governed_value["value_id"]
+        ):
+            raise HTTPException(
+                502,
+                "governed_value_binding_not_confirmed",
+            )
+
+        if governed_value_content_id(governed_value) != governed_value["value_id"]:
+            raise HTTPException(
+                500,
+                "governed_value_changed_after_admission",
+            )
+
+        try:
+            release_derivative_bytes = base64.b64decode(
+                str(governed_value["derivative_image"]["image_b64"]),
+                validate=True,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                500,
+                "governed_value_changed_after_admission",
+            ) from exc
+
+        if (
+            hashlib.sha256(release_derivative_bytes).hexdigest()
+            != governed_value["derivative_sha256"]
+        ):
+            raise HTTPException(
+                500,
+                "governed_value_changed_after_admission",
+            )
 
         append_event(
             "mode1b_derivative_released",

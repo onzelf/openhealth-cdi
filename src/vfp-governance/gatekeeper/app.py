@@ -401,12 +401,15 @@ class ProbeReq(BaseModel):
     contact: Optional[bool] = None
     derivative_representation: Optional[str] = None
     governed_value_id: Optional[str] = None
+    governed_value: Optional[Dict[str, Any]] = None
     jti: Optional[str] = None  # echoed in DPoP signed content
 
 class ProbeResp(BaseModel):
     allow: bool
     reason: Optional[str] = None
     decision_id: Optional[str] = None
+    governed_value_id: Optional[str] = None
+    governed_value_binding_result: Optional[str] = None
 
 
 # =============================================================================
@@ -1007,6 +1010,84 @@ def _requester_binding_result(allow: bool, reason: Optional[str]) -> str:
     return "not_evaluated"
 
 
+def _governed_value_binding_result(body: ProbeReq, result: ProbeResp) -> str:
+    if body.action != "consume_derivative":
+        return "not_applicable"
+    if result.governed_value_binding_result:
+        return result.governed_value_binding_result
+    return "not_evaluated"
+
+
+def _governed_value_binding_reason(body: ProbeReq) -> Optional[str]:
+    """Verify that consume_derivative names the exact candidate W presented."""
+    value_id = str(body.governed_value_id or "")
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", value_id):
+        return "governed_value_id_required"
+
+    governed_value = body.governed_value
+    if not isinstance(governed_value, dict):
+        return "governed_value_required"
+
+    if len(body.requested_tissues) != 1:
+        return "governed_value_request_mismatch"
+
+    if (
+        governed_value.get("resource") != body.resource
+        or governed_value.get("requested_tissue") != body.requested_tissues[0]
+        or governed_value.get("derivative_representation")
+        != body.derivative_representation
+    ):
+        return "governed_value_request_mismatch"
+
+    if str(governed_value.get("value_id") or "") != value_id:
+        return "governed_value_id_mismatch"
+
+    unsigned_value = dict(governed_value)
+    unsigned_value.pop("value_id", None)
+    try:
+        canonical = json.dumps(
+            unsigned_value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError):
+        return "governed_value_invalid"
+
+    computed_value_id = (
+        "sha256:" + hashlib.sha256(canonical).hexdigest()
+    )
+    if computed_value_id != value_id:
+        return "governed_value_id_mismatch"
+
+    derivative_sha256 = str(
+        governed_value.get("derivative_sha256") or ""
+    )
+    if not re.fullmatch(r"[0-9a-f]{64}", derivative_sha256):
+        return "governed_value_derivative_sha256_invalid"
+
+    derivative_image = governed_value.get("derivative_image")
+    if not isinstance(derivative_image, dict):
+        return "governed_value_derivative_image_required"
+
+    image_b64 = derivative_image.get("image_b64")
+    if not isinstance(image_b64, str) or not image_b64:
+        return "governed_value_derivative_image_required"
+
+    try:
+        derivative_bytes = base64.b64decode(
+            image_b64,
+            validate=True,
+        )
+    except Exception:
+        return "governed_value_derivative_image_invalid"
+
+    if hashlib.sha256(derivative_bytes).hexdigest() != derivative_sha256:
+        return "governed_value_derivative_sha256_mismatch"
+
+    return None
+
+
 def _ect_fingerprint(authorization: Optional[str]) -> Optional[str]:
     if not authorization or not authorization.startswith("ECT "):
         return None
@@ -1032,6 +1113,11 @@ def emit_decision_record(
             result.allow,
             result.reason,
         ),
+        "governed_value_binding_result": _governed_value_binding_result(
+            body,
+            result,
+        ),
+        "verified_governed_value_id": result.governed_value_id,
         "sub": identity.get("sub"),
         "actor_type": identity.get("actor_type"),
         "org_iss": identity.get("org_iss"),
@@ -1059,6 +1145,15 @@ def emit_decision_record(
         },
         "presented_ect_sha256": _ect_fingerprint(authorization),
     }
+
+    if (
+        result.allow
+        and result.governed_value_binding_result == "verified"
+        and isinstance(body.governed_value, dict)
+    ):
+        # Successful consume evidence carries the exact W preimage verified by
+        # the Gatekeeper. Candidate W is deliberately not persisted on DENY.
+        record["governed_value"] = body.governed_value
 
     emit_start = _ns()
     sign_start = _ns()
@@ -1358,10 +1453,36 @@ async def _probe_impl(
         matched, reason = cap_match_result(cap, req_tuple)
         if matched:
             cap_ms = _ms(_ns() - t)
+
+            # Capability is evaluated first. Exact-W validation therefore does
+            # not turn an unauthorized consume request into persisted content.
+            if body.action == "consume_derivative":
+                binding_reason = _governed_value_binding_reason(body)
+                if binding_reason is not None:
+                    if BENCH: _bench_add({"token_verify_ms": token_ms, "pop_verify_ms": pop_ms, "cap_match_ms": cap_ms,
+                                          "full_check_ms": _ms(_ns()-t0), "allow": False, "reason": binding_reason})
+                    return ProbeResp(
+                        allow=False,
+                        reason=binding_reason,
+                        governed_value_binding_result="failed",
+                    )
+
             if BENCH: _bench_add({"token_verify_ms": token_ms, "pop_verify_ms": pop_ms, "cap_match_ms": cap_ms,
                                   "full_check_ms": _ms(_ns()-t0), "allow": True})
 
-            return ProbeResp(allow=True)
+            return ProbeResp(
+                allow=True,
+                governed_value_id=(
+                    body.governed_value_id
+                    if body.action == "consume_derivative"
+                    else None
+                ),
+                governed_value_binding_result=(
+                    "verified"
+                    if body.action == "consume_derivative"
+                    else None
+                ),
+            )
 
         if reason == "capability_scope_exceeded":
             failure_reason = reason

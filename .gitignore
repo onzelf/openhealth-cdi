@@ -13,6 +13,7 @@ src/tools/holder_keys/
 LOCAL_GIT_STATUS.txt
 LOCAL_BASE_COMMIT.txt
 *.log
+*.patch
 src/tests/holder_keys/
 __pycache__/
 *.py[cod]

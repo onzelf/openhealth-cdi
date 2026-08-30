@@ -66,7 +66,7 @@ The principal host tools used by deployment and testing are:
 - Python 3
 - OpenSSL
 The conformance scripts may require additional standard Unix utilities such as `grep`, `awk`, and `sed`.
-The host GPU can be verified before the complete application is deployed by running `src/tests/Test00_verifyDockerGPU.sh`. The same test should be run again after the Flower client image has been built so that the image-level CUDA/PyTorch configuration is also checked.
+The host GPU can be verified before the complete application is deployed by running `src/tests/Test0A_verifyDockerGPU.sh`. The same test should be run again after the Flower client image has been built so that the image-level CUDA/PyTorch configuration is also checked.
 ## 4. Repository checkout
 The deployment described here corresponds to the `delivery` branch.
 A new operator can obtain it with:
@@ -130,6 +130,36 @@ issuer-proxy.key
 ```
 Additional evidence-signing and holder-related material used by the Gatekeeper and tests must also be present where referenced by the current implementation.
 The verifier nginx edge authenticates protected routes by the verified client certificate identity. `/admission/check`, for example, accepts the Hub identity, while administrative routes require the appropriate Hospital A or Hospital B administrator identity. The certificate set must therefore preserve the expected identities and not merely contain syntactically valid certificates.
+
+### 6.1 Bootstrap trust material for a fresh clone
+
+The repository provides the utilities required to create the local trust material for a fresh reference deployment.
+
+From the repository root, choose the certificate bootstrap appropriate to the deployment:
+
+```bash
+./src/tools/make_certs.sh
+```
+
+For a demonstration using the two administrator smartphones, use instead:
+
+```bash
+./src/tools/make_certs.sh true
+```
+
+The `true` option additionally creates `HospitalA-admin.p12` and `HospitalB-admin.p12` for installation on the two phones. The demonstration PKCS#12 password is `fcac_pass`.
+
+Then create the pinned Ed25519 evidence-signing key pair and verify the complete bootstrap material:
+
+```bash
+./src/tools/generate_fcac_evidence_key.sh
+./src/tools/preflight_bootstrap.sh
+```
+
+`make_certs.sh` creates the local demonstration CA and the verifier, Hub, Hospital A administrator, Hospital B administrator, and issuer-proxy mTLS identities. `generate_fcac_evidence_key.sh` creates the key pair used to sign governance envelopes and Gatekeeper admission-decision evidence. `preflight_bootstrap.sh` verifies that the required files exist and that the evidence private and public keys are consistent.
+
+`make_certs.sh` is a fresh-deployment bootstrap operation. It removes and regenerates the local CA and leaf certificates. Do not use it as a generic repair command on an existing governed deployment because replacing those certificates changes the cryptographic identities on which the local trust relationships depend.
+
 ## 7. Hal reasoning-runtime secret
 Hal can use an external OpenAI reasoning runtime in the Mode 1B contextual demonstration. The local OpenTofu configuration mounts:
 ```text
@@ -220,11 +250,22 @@ for f in \
   HospitalB-admin.crt \
   HospitalB-admin.key \
   issuer-proxy.crt \
-  issuer-proxy.key
+  issuer-proxy.key \
+  fcac-evidence.key \
+  fcac-evidence.pub
 do
   test -s "src/vfp-governance/verifier/certs/$f" || echo "MISSING: $f"
 done
 ```
+
+Run the repository bootstrap preflight before OpenTofu:
+
+```bash
+./src/tools/preflight_bootstrap.sh
+```
+
+A successful check reports `BOOTSTRAP PREFLIGHT: PASS`.
+
 Any missing trust material should be resolved before deployment rather than discovered through cascading container failures.
 ## 12. OpenTofu initialisation
 The OpenTofu module is:
@@ -338,21 +379,52 @@ cd ../../tests
 ```
 Run:
 ```bash
-./Test00_verifyDockerGPU.sh
+./Test0A_verifyDockerGPU.sh
 ```
 After deployment the test should check both the host GPU stack and the built `openhealth/flower-client:local` image. The image is expected to see CUDA through PyTorch `2.2.0+cu121`.
 Failure at this stage should be diagnosed as a GPU/container-runtime problem before debugging federation governance.
-## 20. Establish a governance envelope
+## 20. Establish a governance envelope through the KYO ceremony
 The collaboration must have an active governance envelope before envelope-bound capabilities and governed operations can be exercised.
-The envelope can be established through either the dashboard KYO ceremony or the test script:
+
+The KYO ceremony is implemented by the Gatekeeper governance API. An administrator authenticated through the verifier mTLS edge accesses `/verify-start`. The Gatekeeper derives the organisation from the verified administrator certificate, creates a short-lived session, and returns a six-digit verification code. The code is claimed through `/session/claim`, and the resulting session is used by `/beta/bind/approve`. The Gatekeeper creates and signs the active governance envelope only when the constitutionally required quorum is reached.
+
+The A+B constitution requires independent Hospital A and Hospital B approval and a two-of-two quorum.
+
+### 20.1 Interactive two-smartphone demonstration
+
+For the accelerator demonstration, provision one smartphone with `HospitalA-admin.p12` and the other with `HospitalB-admin.p12`. These bundles are generated by `./src/tools/make_certs.sh true`.
+
+Ensure that `verifier.local` resolves to the deployment host on the demonstration LAN. On each phone open:
+
+```text
+https://verifier.local:8443/verify-start
+```
+
+Each phone presents its own administrator mTLS identity and receives an independent six-digit KYO code. Use the two codes in the dashboard KYO flow. The resulting envelope is created only after both independently authenticated administrators have approved the bind.
+
+### 20.2 Scripted KYO operation
+
+For automated testing or local troubleshooting, the same `/verify-start` endpoint can be exercised from `src/tools` without physical phones:
+
+```bash
+cd src/tools
+./simulatePhone.sh
+```
+
+The helper presents the Hospital A and Hospital B administrator certificates and prints the corresponding six-digit codes. It is a convenience client of the Gatekeeper KYO API, not a separate governance mechanism. Because the helper uses `curl -k`, it should not be treated as a server-certificate validation test.
+
+The complete automated envelope workflow can also be exercised from `src/tests` with:
+
 ```bash
 ./Test1A_createEnvelope.sh
 ```
-The A+B constitution requires Hospital A and Hospital B approval and a two-of-two quorum.
+
 Record the resulting identifier:
+
 ```bash
 export EID=<active-envelope-id>
 ```
+
 The same valid envelope should normally be retained while executing a complete regression sequence.
 Creating a new envelope is a governance action, not a generic reset operation.
 ## 21. Select the collaboration boundary

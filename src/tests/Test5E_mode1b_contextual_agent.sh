@@ -224,6 +224,7 @@ hub_runtime_mint() {
 verify_decision_record() {
   local decision_id="$1" subject="$2" action="$3" expected="$4" derivative="$5"
   local governed_value_id="${6:-}"
+  local governed_value_binding="${7:-}"
   local record="${DECISIONS_DIR}/${decision_id}.json"
   [[ -s "${record}" ]] || fail "Decision record missing: ${decision_id}"
   python3 "${EVIDENCE_VERIFIER}" \
@@ -245,6 +246,98 @@ verify_decision_record() {
       "${record}" >/dev/null \
       || fail "Governed value ID mismatch in signed decision: ${decision_id}"
   fi
+  if [[ -n "${governed_value_binding}" ]]; then
+    jq -e --arg b "${governed_value_binding}" \
+      '.governed_value_binding_result==$b' \
+      "${record}" >/dev/null \
+      || fail "Governed value binding result mismatch: ${decision_id}"
+  fi
+  if [[ "${governed_value_binding}" == "verified" ]]; then
+    python3 - "${record}" "${governed_value_id}" <<'PY2'
+import base64
+import hashlib
+import json
+import sys
+
+record_path, expected_id = sys.argv[1:3]
+with open(record_path, encoding="utf-8") as f:
+    record = json.load(f)
+
+w = dict(record.get("governed_value") or {})
+if not w:
+    raise SystemExit("signed decision does not contain governed_value")
+
+claimed = w.pop("value_id", None)
+canonical = json.dumps(
+    w,
+    sort_keys=True,
+    separators=(",", ":"),
+    ensure_ascii=False,
+).encode("utf-8")
+computed = "sha256:" + hashlib.sha256(canonical).hexdigest()
+
+if not (
+    computed == claimed == expected_id
+    == record.get("verified_governed_value_id")
+    == record.get("request", {}).get("governed_value_id")
+):
+    raise SystemExit("signed exact-W preimage does not match governed_value_id")
+
+image = w.get("derivative_image") or {}
+image_b64 = image.get("image_b64")
+derivative_sha256 = w.get("derivative_sha256")
+if not isinstance(image_b64, str) or not image_b64:
+    raise SystemExit("signed exact-W preimage has no derivative image")
+
+raw = base64.b64decode(image_b64, validate=True)
+if hashlib.sha256(raw).hexdigest() != derivative_sha256:
+    raise SystemExit("signed exact-W derivative digest mismatch")
+PY2
+  elif [[ "${governed_value_binding}" == "failed" ]]; then
+    jq -e '
+      (.governed_value == null)
+      and (.verified_governed_value_id == null)
+    ' "${record}" >/dev/null \
+      || fail "DENY evidence persisted unverified governed value: ${decision_id}"
+  fi
+}
+
+exact_w_admission() {
+  local tissue="$1" governed_value="$2" governed_value_id="$3"
+  local nonce jti dpop body
+
+  nonce="nonce-exactw-$(python3 -c 'import secrets; print(secrets.token_urlsafe(12))')"
+  jti="jti-exactw-$(python3 -c 'import secrets; print(secrets.token_urlsafe(12))')"
+  dpop="$(audrey_sign_dpop "${nonce}" "${jti}")"
+
+  body="$(jq -nc \
+    --arg e "${ENVELOPE_ID}" \
+    --arg r "${RUN_ID}" \
+    --arg tissue "${tissue}" \
+    --arg jti "${jti}" \
+    --arg derivative "${DERIVATIVE_REPRESENTATION}" \
+    --arg governed_value_id "${governed_value_id}" \
+    --argjson governed_value "${governed_value}" \
+    '{
+      envelope_id:$e,
+      run_id:$r,
+      resource:"pathmnist-derived-representation",
+      action:"consume_derivative",
+      purpose:"approved_derivative_consumption",
+      requested_tissues:[$tissue],
+      derivative_representation:$derivative,
+      governed_value_id:$governed_value_id,
+      governed_value:$governed_value,
+      jti:$jti
+    }')"
+
+  verifier_curl \
+    -H "Authorization: ECT ${AUDREY_ECT}" \
+    -H "DPoP: ${dpop}" \
+    -H "X-DPoP-Nonce: ${nonce}" \
+    -H 'content-type: application/json' \
+    -d "${body}" \
+    "https://verifier.local:${VERIFIER_PORT}/admission/check"
 }
 
 admission_case() {
@@ -472,6 +565,8 @@ run_context_case() {
         and .agent_decision.fallback == false
         and .unbind_admission.allow == true
         and .release_admission.allow == true
+        and .release_admission.governed_value_binding_result == "verified"
+        and .release_admission.governed_value_id == .governed_value_id
         and .executed == true
         and .representation == $representation
         and .prediction.derivative_representation == $derivative
@@ -544,7 +639,8 @@ PY2
       "consume_derivative" \
       "ALLOW" \
       "${DERIVATIVE_REPRESENTATION}" \
-      "${governed_value_id}"
+      "${governed_value_id}" \
+      "verified"
   fi
 
   pass "Gate 5E case ${case_no}: ${requester} / ${tissue} -> ${expected_source} -> ${expected_action} -> ${expected_representation}"
@@ -700,7 +796,119 @@ jq -e '
 
 pass "Adversarial control: requester-supplied provenance identifiers rejected with HTTP 422"
 
-section "6. Gate 5E result"
+section "6. Exact-W Gatekeeper binding adversarial controls"
+
+jq -e '
+  .governed_value_binding_result == "not_evaluated"
+  and (.governed_value == null)
+  and (.verified_governed_value_id == null)
+' "${DECISIONS_DIR}/${CHARLIE_RELEASE_DECISION}.json" >/dev/null \
+  || fail "Charlie DENY evidence persisted an unverified governed value"
+
+VALID_W="$(jq -c '.prediction' "${TMP}/mode1b-case-2.json")"
+VALID_W_ID="$(jq -r '.value_id' <<<"${VALID_W}")"
+
+# A self-consistent W with a correct content address must still be denied when
+# it describes a different object relation from the consume request.
+RELATION_FORGED_W="$(
+  python3 - "${TMP}/mode1b-case-2.json" "${OTHER_TISSUE}" <<'PY2'
+import hashlib
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    response = json.load(f)
+
+w = dict(response["prediction"])
+w["requested_tissue"] = sys.argv[2]
+w.pop("value_id", None)
+canonical = json.dumps(
+    w,
+    sort_keys=True,
+    separators=(",", ":"),
+    ensure_ascii=False,
+).encode("utf-8")
+w["value_id"] = "sha256:" + hashlib.sha256(canonical).hexdigest()
+print(json.dumps(w, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+PY2
+)"
+RELATION_FORGED_ID="$(jq -r '.value_id' <<<"${RELATION_FORGED_W}")"
+RELATION_RESPONSE="$(
+  exact_w_admission \
+    "${CANCER_TISSUE}" \
+    "${RELATION_FORGED_W}" \
+    "${RELATION_FORGED_ID}"
+)"
+
+jq -e '
+  .allow == false
+  and .reason == "governed_value_request_mismatch"
+  and .governed_value_binding_result == "failed"
+  and (.decision_id | type == "string" and length > 0)
+' <<<"${RELATION_RESPONSE}" >/dev/null || {
+  printf '%s\n' "${RELATION_RESPONSE}" | jq . >&2
+  fail "Exact-W control: self-consistent W was not bound to the admitted request"
+}
+
+RELATION_DECISION="$(jq -r '.decision_id' <<<"${RELATION_RESPONSE}")"
+verify_decision_record \
+  "${RELATION_DECISION}" \
+  "Audrey" \
+  "consume_derivative" \
+  "DENY" \
+  "${DERIVATIVE_REPRESENTATION}" \
+  "${RELATION_FORGED_ID}" \
+  "failed"
+pass "Exact-W control: self-consistent but relation-mismatched W denied"
+
+# Mutating one byte of the concrete derivative while retaining the previously
+# computed value_id must be rejected by the Gatekeeper.
+MUTATED_W="$(
+  python3 - "${TMP}/mode1b-case-2.json" <<'PY2'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    response = json.load(f)
+
+w = dict(response["prediction"])
+image = dict(w["derivative_image"])
+payload = image["image_b64"]
+replacement = "A" if payload[0] != "A" else "B"
+image["image_b64"] = replacement + payload[1:]
+w["derivative_image"] = image
+print(json.dumps(w, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+PY2
+)"
+MUTATION_RESPONSE="$(
+  exact_w_admission \
+    "${CANCER_TISSUE}" \
+    "${MUTATED_W}" \
+    "${VALID_W_ID}"
+)"
+
+jq -e '
+  .allow == false
+  and .reason == "governed_value_id_mismatch"
+  and .governed_value_binding_result == "failed"
+  and (.decision_id | type == "string" and length > 0)
+' <<<"${MUTATION_RESPONSE}" >/dev/null || {
+  printf '%s\n' "${MUTATION_RESPONSE}" | jq . >&2
+  fail "Exact-W control: mutated W was not rejected"
+}
+
+MUTATION_DECISION="$(jq -r '.decision_id' <<<"${MUTATION_RESPONSE}")"
+verify_decision_record \
+  "${MUTATION_DECISION}" \
+  "Audrey" \
+  "consume_derivative" \
+  "DENY" \
+  "${DERIVATIVE_REPRESENTATION}" \
+  "${VALID_W_ID}" \
+  "failed"
+pass "Exact-W control: byte-mutated W denied against the signed content identity"
+
+section "7. Gate 5E result"
 
 printf '%-6s %-10s %-44s %-8s %-16s %s\n' \
   "CASE" "REQUESTER" "TISSUE" "SOURCE" "LLM ACTION" "REPRESENTATION"
