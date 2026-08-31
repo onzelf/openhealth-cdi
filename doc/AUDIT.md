@@ -15,11 +15,11 @@ The audit history is part of the evidence, not an embarrassment appended to it. 
 
 Findings were graded by one question: **does the code contradict something the artifact claims about itself?** This is a research reference implementation, not a production system. Attack surface on a single-host demonstrator was out of scope. A property documented as a trust-boundary assumption is an assumption, not a defect; a property the documentation asserts but the implementation or tests cannot support is a defect regardless of exploitability.
 
-The boundary statements in `ARCHITECTURE.md` had been written with input from the same models that performed earlier reviews and had not had an independent read. The audit therefore treated the documentation itself as a subject, not as ground truth. The same applied to the statelessness claim in the JMIR manuscript, audited in the second round (§6).
+The boundary statements in [ARCHITECTURE.md](ARCHITECTURE.md) had been written with input from the same models that performed earlier reviews and had not had an independent read. The audit therefore treated the documentation itself as a subject, not as ground truth. The same applied to the statelessness claim in the JMIR manuscript, audited in the second round (§6).
 
 ## 3. Review chain
 
-Two prior model-based reviews were scoped to the governance plane's decision logic (maintainer-reported). The first round of the present audit was deliberately scoped to what those reviews had not covered: deployment topology (`src/infra/tofu/main.tf`), the nginx mTLS edges, the signer and issuers, the Hub's Mode 1B composition path, and the conformance suite. It read `doc/ARCHITECTURE.md` and `doc/GOVERNANCE_COMPOSITION.md` before any code, then audited the implementation against five claims fixed in advance by the maintainer. A second round audited one claim from the JMIR manuscript concerning stateless admission.
+Two prior model-based reviews were scoped to the governance plane's decision logic (maintainer-reported). The first round of the present audit was deliberately scoped to what those reviews had not covered: deployment topology (`src/infra/tofu/main.tf`), the nginx mTLS edges, the signer and issuers, the Hub's Mode 1B composition path, and the conformance suite. A second round audited one claim from the JMIR manuscript concerning stateless admission.
 
 Each round was repeated against the commits resolving the previous round's findings, until a round produced none.
 
@@ -50,7 +50,7 @@ The Gatekeeper validated only the *format* of `governed_value_id` (`sha256:` + 6
 
 At `1c5a108` the Hub was the only party that received Hal's derivative bytes (trusting Hal's reported digest without re-hashing) and computed `value_id`, and this trust concentration was not stated as an assumption. At `2b88a24` the Gatekeeper independently verifies both, the Hub re-hashes Hal's bytes locally, and the documentation states the mechanism; the finding no longer applies.
 
-### F-3 — Mode 1A guest-contribution endpoint broken by the exact-W change (Medium) — RESOLVED at `5430bd3`
+### F-3 — Mode 1A guest-contribution endpoint broken by the exact-W change (Medium) — RESOLVED at *5430bd3*
 
 **Location (at `1c5a108` and `2b88a24`):** `src/vfp-governance/gatekeeper/app.py`, `GuestContributionProbe`.
 
@@ -60,7 +60,7 @@ Commit `1c5a108` added `governed_value_id` to the shared admission core (`req_tu
 
 ## 6. Round two findings — stateless admission
 
-### R-1 — Admission reconstructed authority from mutable governance state (High) — RESOLVED at `17fcfd2``
+### R-1 — Admission reconstructed authority from mutable governance state (High) — RESOLVED at *17fcfd2*
 
 **Location (at `5430bd3`):** `src/vfp-governance/gatekeeper/app.py`, `_probe_impl`.
 
@@ -85,9 +85,6 @@ Anti-replay requires bounded mutable runtime state (`SET NX EX` over the DPoP `j
 
 In the round-two discussion the auditor claimed that inconsistent replay state across Gatekeeper replicas could only cause over-denial. This is wrong. Deny-monotonicity holds for the replay set as an input to a single decision point, but single-use is a global uniqueness property: two replicas with divergent replay sets each accept the same `jti` once, which is an over-grant relative to the single-use rule. The maintainer identified the error and supplied the correct statement, now carried in `ARCHITECTURE.md` §12.1: Gatekeeper replicas require no shared governance or authorization state, while strict cross-replica single-use DPoP requires a consistent replay domain or deterministic routing.
 
-## 8. Residual notes (not findings)
-
-Four items are recorded for maintenance, none contradicting a claim.
 
 ## 8. Residual notes (not findings)
 
@@ -107,12 +104,14 @@ No audit finding remains open at `1d395d7`.
 
 ## 10. Method and responsibility
 
-Generative AI systems were used as reviewing instruments throughout this audit chain: forensic code reading, claims-versus-implementation grading, counterfactual and adversarial challenge, patch drafting, and isolated verification of extracted logic. Their outputs were treated as provisional findings, not authoritative verdicts. Scoping of each review, adjudication of every finding, acceptance or replacement of every proposed fix, execution of the conformance suite, and this record's final content remained under the responsibility of the maintainer. The approach followed by the maintainer is described in the paper [Asymmetric Communication](https://arxiv.org/abs/2607.28137).
+Generative AI systems were used as reviewing instruments throughout this audit chain (OpenAI GPT-5.6 Sol High, Anthropic Opus 5 High and Fable 5): forensic code reading, claims-versus-implementation grading, counterfactual and adversarial challenge, patch drafting, and isolated verification of extracted logic. Their outputs were treated as provisional findings, not authoritative verdicts. Scoping of each review, adjudication of every finding, acceptance or replacement of every proposed fix, execution of the conformance suite, and this record's final content remained under the responsibility of the maintainer. 
 
 Both resolutions of substance are the maintainer's own designs, adopted after rejecting the auditor's proposals as solving a different problem: full candidate-W verification at the Gatekeeper (F-1) in place of a manifest-based content commitment, and phase separation (R-1) in place of envelope content-binding. One auditor claim was factually wrong and was corrected by the maintainer (§7). The division of responsibility this record documents is therefore not nominal: the reviewer's role was to establish where the artifact contradicted itself; the architecture, the repairs, and the corrections are the author's.
 
+The approach followed by the maintainer is described in the paper [Asymmetric Communication](https://arxiv.org/abs/2607.28137).
+
 ## 11. Limits
 
-This record supports the statement: *audited to a fixed point by the reviewers applied* — successive independent reviews, each covering ground the previous ones did not, repeated until a round produced no findings. It does not support the word "verified" in any formal sense, and it does not preclude a differently scoped review finding something further. Per-record evidence authenticity is claimed and tested; evidence completeness is not claimed (`ARCHITECTURE.md` §25). The isolation claim for the agent environment is the narrow one stated in `MODE1B.md` §13, not general hostile-code containment. Stateless admission is claimed in the scoped sense of §12.1, not as an absence of all runtime state.
+This record supports the statement: *audited to a fixed point by the reviewers applied* — successive independent reviews, each covering ground the previous ones did not, repeated until a round produced no findings. It does not support the word "verified" in any formal sense, and it does not preclude a differently scoped review finding something further. Per-record evidence authenticity is claimed and tested; evidence completeness is not claimed ([ARCHITECTURE](ARCHITECTURE.md) §25). The isolation claim for the agent environment is the narrow one stated in [MODE1B](MODE1B.md) §13, not general hostile-code containment. Stateless admission is claimed in the scoped sense of §12.1, not as an absence of all runtime state.
 
-Anyone disputing the claims is invited to do what this audit did: pick a forbidden simplification from `GOVERNANCE_COMPOSITION.md` §13, or reintroduce governance-state resolution into the admission path, apply it as a mutation, and name the test that goes red and for what reason.
+> Anyone disputing the claims is invited to do what this audit did: pick a forbidden simplification from [GOVERNANCE_COMPOSITION](GOVERNANCE_COMPOSITION.md) §13, or reintroduce governance-state resolution into the admission path, apply it as a mutation, and name the test that goes red and for what reason.
