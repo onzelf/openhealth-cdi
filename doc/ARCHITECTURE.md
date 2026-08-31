@@ -189,7 +189,7 @@ sequenceDiagram
 
 The caller initiates a process whose constitutional conditions already exist. It does not create those conditions by assertion.
 ## 9. Governance envelope
-A governance envelope identifies the currently approved collaboration context under which operations are admitted. Capabilities are bound to an `envelope_id`, and the Gatekeeper verifies that the envelope represented by the credential matches the envelope represented by the attempted operation. This prevents authority issued for one collaboration from being reused silently in another.
+A governance envelope identifies an approved collaboration context under which operations may be admitted. Capabilities are bound to an `envelope_id`, and the Gatekeeper verifies that the identifier carried by the credential matches the identifier carried by the attempted operation. This prevents authority issued for one collaboration from being reused silently in another.
 The envelope is not a training run and it is not a model identifier. Those concepts have different lifecycles. A model can be trained during one analytical run and later be used under another governance envelope that authorises a subsequent operation. Selecting the later envelope means that the current use of the model is governed by that collaboration context. It does not mean that the model was trained under the later envelope and it must not rewrite the historical provenance of the model artefact.
 The two lifecycles are therefore related only when an operation requires both.
 
@@ -197,7 +197,7 @@ The two lifecycles are therefore related only when an operation requires both.
 flowchart TB
     P["Policy"]
     B["Envelope binding"]
-    E["Active governance envelope"]
+    E["Governance envelope"]
     A["Admission of current operation"]
 
     R["Training run"]
@@ -245,7 +245,7 @@ OpenHealth-CDI therefore uses DPoP holder proof. The issued credential contains 
 Human participants use the separate `holder-signer` component in the reference implementation. Hal maintains its own computational holder identity. These are different mechanisms for producing proof, but the architectural rule is identical. Capability exercise must be bound to the legitimate holder rather than treated as bearer-token possession.
 The architecture consequently distinguishes three questions that are often collapsed. mTLS asks which service identity reached a protected network edge. The ECT asks which capability an issuer granted to a governed principal. DPoP asks whether the current request is being exercised by the legitimate holder of that capability.
 ## 12. Admission
-Admission evaluates a concrete attempted operation against the current governance context. The Gatekeeper considers the subject, issuer, capability, resource, action, purpose, requested scope, envelope, holder proof, sponsorship where required, validity conditions, and other policy constraints.
+Admission evaluates a concrete attempted operation against the governance authority already compiled into the presented credential. The Gatekeeper verifies the signed ECT and holder proof, checks the `envelope_id` relation and compiled-policy binding, and compares the requested resource, action, purpose, and scope against the capabilities carried by the ECT. Envelope validity, sponsorship, capability assignment, and the ECT lifetime bound are resolved during issuance and are not reconstructed from online governance state at admission.
 An ALLOW means that this particular operation is permitted under those conditions. It does not mean that every operation by the same participant is permitted. A DENY means that the attempted relation is outside the admitted authority. It does not mean that the participant is globally excluded from the federation.
 The process is therefore relational.
 
@@ -257,7 +257,7 @@ sequenceDiagram
     participant X as Execution service
 
     P->>H: Request operation
-    H->>G: ECT + DPoP + envelope + resource + action + purpose + scope
+    H->>G: ECT + DPoP + envelope_id + resource + action + purpose + scope
     G->>G: Evaluate complete governed relation
 
     alt ALLOW
@@ -272,6 +272,21 @@ sequenceDiagram
 ```
 
 Admission is therefore neither authentication nor execution. It sits between them and determines whether the federation accepts the requested relation.
+
+### 12.1 Stateless admission and distinction from IAM
+
+OpenHealth-CDI separates governance establishment and capability issuance from runtime admission. During setup and issuance, the selected governance envelope is validated, sponsorship conditions are evaluated, capability profiles are compiled into machine-evaluable operations, the credential lifetime is bounded by the envelope lifetime, and the resulting authority is signed into the ECT.
+
+Admission does not reconstruct those governance decisions. The Gatekeeper does not query a participant directory, retrieve current roles or group memberships, resolve an `envelope_id` into mutable governance state, or contact the issuing organisation to determine what the requester may do. The `envelope_id` is an opaque relation identifier whose consistency is verified across the ECT, holder proof, and attempted operation. Authority is carried by the signed ECT and evaluated against the locally compiled governance policy.
+
+This is the principal distinction from conventional Identity and Access Management. An IAM decision commonly derives current authority from centrally maintained identity, role, group, session, or entitlement state. OpenHealth-CDI instead verifies authority already established by independently governed issuers and presented as a holder-bound capability. The admission boundary therefore verifies a governed relation rather than reconstructing requester authority from an online authorization store.
+
+Admission is stateless with respect to governance and authorization state. Every ALLOW is determined from the presented ECT, holder proof, requested operation, opaque `envelope_id`, and locally compiled policy rather than from mutable authority state. This is the sense in which the FLICS and JMIR architectures describe stateless admission.
+
+DPoP anti-replay introduces one deliberately bounded form of mutable runtime security state. A presented proof identifier is recorded for its freshness window so that the same proof cannot be exercised more than once. This replay state does not supply, enlarge, or reconstruct authority. Failure to access the replay store is fail-closed. Gatekeeper replicas therefore require no shared governance or authorization database, although strict cross-replica single-use DPoP requires a consistent replay domain or deterministic routing.
+
+Signed decision evidence is persisted after evaluation. Evidence persistence records the result but is not consulted to determine the authority of subsequent requests.
+
 ## 13. The verifier mTLS trust boundary
 The verifier is reached through an nginx mTLS edge. nginx terminates TLS, validates the client certificate against the configured federation CA, obtains the verified subject DN from the TLS session, and forwards protected operations only when the endpoint-specific identity requirement is satisfied.
 For example, `/admission/check` accepts the Hub identity rather than arbitrary network callers. Administrative routes accept the relevant founding-organisation administrator identities. The Gatekeeper therefore receives requests through a boundary where transport identity has already been established by cryptographic verification.
@@ -404,6 +419,17 @@ This separation is a core architectural invariant because otherwise adding one o
 ## 19. Mode 1B and governed computational participation
 Mode 1B introduces Hal as a computational participant. Hal has its own holder identity and receives the `capset:pathmnist_bounded_agent` profile under sponsorship by Hospitals A and B. The current capability permits bounded inference and policy-authorised Unbind over the tissue classes defined by policy. It does not grant founding membership, quorum rights, general model-query authority, or privileged governance operations.
 Hal is therefore treated as another governed participant rather than as a special authority category. The fact that Hal is computational changes its execution implementation but does not replace the underlying admission model.
+
+The terminology used for computational participation is intentionally separated from governance authority:
+
+- **AI agent** denotes the broad class of computational agents.
+- **Governed agent** denotes the architectural role of an autonomous computational participant whose operations on governed resources remain subject to independently evaluated admission conditions.
+- **Bounded Agent** denotes the Mode 1B demonstrator using a predefined bounded task path.
+- **LLM Agent** denotes the Mode 1B demonstrator using contextual LLM reasoning for action selection.
+- **Gatekeeper** denotes the component that evaluates admission. Neither the Bounded Agent nor the LLM Agent exercises governance authority.
+
+Both Mode 1B agent paths use the same holder-binding, capability, Gatekeeper, and evidence architecture. The distinction concerns execution and action selection, not the source of authority.
+
 The important relation is:
 
 ```mermaid
