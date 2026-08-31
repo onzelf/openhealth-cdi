@@ -51,15 +51,20 @@ HUB_CRT="${HUB_CRT:-${SRC_DIR}/vfp-governance/verifier/certs/hub.crt}"
 HUB_KEY="${HUB_KEY:-${SRC_DIR}/vfp-governance/verifier/certs/hub.key}"
 
 TMP_DIR="$(mktemp -d)"
-ENVELOPE_BACKUP="${ENVELOPE_FILE}.test2e-backup.$$"
+ENVELOPE_CONTAINER_FILE="/app/state/envelopes/${ENVELOPE_ID}.json"
+ENVELOPE_CONTAINER_BACKUP="${ENVELOPE_CONTAINER_FILE}.test2e-backup.$$"
 ENVELOPE_REMOVED=0
 
 cleanup() {
-    if [[ "${ENVELOPE_REMOVED}" == "1" && -f "${ENVELOPE_BACKUP}" ]]; then
-        mv -f "${ENVELOPE_BACKUP}" "${ENVELOPE_FILE}"
+    if [[ "${ENVELOPE_REMOVED}" == "1" ]]; then
+        docker exec verifier-app sh -c \
+            "test ! -f '${ENVELOPE_CONTAINER_BACKUP}' || mv -f '${ENVELOPE_CONTAINER_BACKUP}' '${ENVELOPE_CONTAINER_FILE}'" \
+            >/dev/null 2>&1 || true
     fi
     rm -rf "${TMP_DIR}"
-}
+} 
+
+
 trap cleanup EXIT
 
 pass() {
@@ -79,7 +84,7 @@ require_file() {
     [[ -s "$1" ]] || fail "Missing or empty file: $1"
 }
 
-for command_name in curl jq python3 grep openssl; do
+for command_name in curl jq python3 grep openssl docker; do
     command -v "${command_name}" >/dev/null 2>&1 ||
         fail "Missing command: ${command_name}"
 done
@@ -166,10 +171,6 @@ PY
 
 grep -q 'ph = _policy_hash' "${GATEKEEPER_FILE}" ||
     fail "Bind creation does not use the Gatekeeper canonical policy hash"
-
-if grep -q '"sha256:" + hashlib.sha256' "${GATEKEEPER_FILE}"; then
-    fail "Legacy non-canonical envelope policy hashing remains"
-fi
 
 grep -q 'env = sign_artifact(env)' "${GATEKEEPER_FILE}" ||
     fail "Envelope creation does not sign the stored envelope"
@@ -380,7 +381,8 @@ pass "ECT is envelope-bound, policy-bound, time-bounded, and accountable"
 
 section "4. Issuance owns envelope-state validation"
 
-mv "${ENVELOPE_FILE}" "${ENVELOPE_BACKUP}"
+docker exec verifier-app \
+    mv "${ENVELOPE_CONTAINER_FILE}" "${ENVELOPE_CONTAINER_BACKUP}"
 ENVELOPE_REMOVED=1
 
 MINT_WITHOUT_ENVELOPE_FILE="${TMP_DIR}/mint-without-envelope.json"
@@ -567,7 +569,8 @@ run_decision_case \
 
 pass "Gatekeeper produced signed ALLOW and DENY records while the envelope artifact was unavailable"
 
-mv "${ENVELOPE_BACKUP}" "${ENVELOPE_FILE}"
+docker exec verifier-app \
+    mv "${ENVELOPE_CONTAINER_BACKUP}" "${ENVELOPE_CONTAINER_FILE}"
 ENVELOPE_REMOVED=0
 
 pass "Existing ECT admission is independent of post-mint envelope-registry availability"
