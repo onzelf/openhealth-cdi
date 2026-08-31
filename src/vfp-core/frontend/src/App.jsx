@@ -64,7 +64,7 @@ const SCENARIOS = [
     title: "Mode 1B",
     organisations: "Hospital A + Hospital B + AI agent",
     actors: "Audrey · Bob · Hal",
-    detail: "Bounded AI task · reuse A+B+C",
+    detail: "Predefined bounded task · reuse A+B+C",
     participantOrgIds: ["org://HospitalA", "org://HospitalB"],
     expectedRegisteredClients: 2,
     statement:
@@ -391,7 +391,7 @@ function ScenarioStrip({
                       onClick={() => onMode1bUseCaseChange("governance")}
                       type="button"
                     >
-                      Governance Agent
+                      Bounded Agent
                     </button>
 
                     <button
@@ -417,8 +417,8 @@ function ScenarioStrip({
 
                   <p className="scenario-detail">
                     {mode1bUseCase === "governance"
-                      ? "Bounded AI task · reuse A+B+C"
-                      : "Agent-mediated request · reuse A+B+C"}
+                      ? "Predefined bounded task · reuse A+B+C"
+                      : "Contextual agent reasoning · reuse A+B+C"}
                   </p>
                 </>
               ) : (
