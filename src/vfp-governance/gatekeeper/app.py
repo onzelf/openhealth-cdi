@@ -1276,9 +1276,9 @@ async def _probe_impl(
             "ect_sponsors_invalid",
         )
 
-    # Preserve identity only after the ECT has passed the complete governed
-    # validation path. Decision evidence consumes these already-verified claims
-    # and must not perform a second token verification.
+    # Preserve signed ECT identity after credential-level validation.
+    # Decision evidence consumes these signature-verified claims and must not
+    # perform a second token verification.
     _verified_ect_identity.set({
         "sub": ect.get("sub"),
         "actor_type": ect.get("actor_type"),
