@@ -51,7 +51,16 @@ HUB_CRT="${HUB_CRT:-${SRC_DIR}/vfp-governance/verifier/certs/hub.crt}"
 HUB_KEY="${HUB_KEY:-${SRC_DIR}/vfp-governance/verifier/certs/hub.key}"
 
 TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "${TMP_DIR}"' EXIT
+ENVELOPE_BACKUP="${ENVELOPE_FILE}.test2e-backup.$$"
+ENVELOPE_REMOVED=0
+
+cleanup() {
+    if [[ "${ENVELOPE_REMOVED}" == "1" && -f "${ENVELOPE_BACKUP}" ]]; then
+        mv -f "${ENVELOPE_BACKUP}" "${ENVELOPE_FILE}"
+    fi
+    rm -rf "${TMP_DIR}"
+}
+trap cleanup EXIT
 
 pass() {
     printf '\033[32m✓\033[0m %s\n' "$*"
@@ -92,19 +101,71 @@ for path in \
     require_file "${path}"
 done
 
-section "1. Static Fix 1 boundary"
+section "1. Static phase-separation boundary"
+
+python3 - "${GATEKEEPER_FILE}" <<'PY'
+from pathlib import Path
+import sys
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+
+def function_block(start_marker: str, end_marker: str) -> str:
+    try:
+        start = text.index(start_marker)
+        end = text.index(end_marker, start)
+    except ValueError as exc:
+        raise SystemExit(f"Unable to locate Gatekeeper function boundary: {exc}")
+    return text[start:end]
+
+mint = function_block(
+    'def mint_ect(request: Request, req: MintReq):',
+    '# -----------------------------------------------\n# POST /admission/check',
+)
+probe = function_block(
+    'async def _probe_impl(',
+    '@app.post("/admission/check", response_model=ProbeResp)',
+)
+
+required_mint = {
+    'load_active_envelope(req.envelope_id)':
+        "Issuance does not validate the selected envelope",
+    'exp = min(requested_exp, envelope_exp)':
+        "Issuance does not bound ECT lifetime by envelope lifetime",
+    '_sponsorship_validation_reason(':
+        "Issuance does not validate sponsorship",
+    '"policy_hash": _policy_hash':
+        "Issuance does not stamp the compiled policy hash into the ECT",
+}
+for needle, message in required_mint.items():
+    if needle not in mint:
+        raise SystemExit(message)
+
+for needle, message in {
+    'load_active_envelope(':
+        "Admission still resolves envelope governance state",
+    '_sponsorship_validation_reason(':
+        "Admission still reconstructs sponsorship authority",
+    'ect_envelope_policy_mismatch':
+        "Admission still depends on envelope-mediated policy binding",
+    'ect_exp_exceeds_envelope':
+        "Admission still re-evaluates envelope lifetime",
+}.items():
+    if needle in probe:
+        raise SystemExit(message)
+
+if 'ect_policy_hash != _policy_hash' not in probe:
+    raise SystemExit(
+        "Admission does not bind the ECT directly to the locally compiled policy"
+    )
+
+if 'ect.get("envelope_id") != body.envelope_id' not in probe:
+    raise SystemExit(
+        "Admission does not verify the opaque envelope identifier carried by the ECT"
+    )
+PY
 
 grep -q 'ph = _policy_hash' "${GATEKEEPER_FILE}" ||
     fail "Bind creation does not use the Gatekeeper canonical policy hash"
-
-grep -q 'envelope = load_active_envelope(body.envelope_id)' "${GATEKEEPER_FILE}" ||
-    fail "Admission does not reload the active envelope"
-
-grep -q 'ect_envelope_policy_mismatch' "${GATEKEEPER_FILE}" ||
-    fail "Admission does not reject ECT-to-envelope policy mismatch"
-
-grep -q 'ect_exp_exceeds_envelope' "${GATEKEEPER_FILE}" ||
-    fail "Admission does not reject an overlong ECT"
 
 if grep -q '"sha256:" + hashlib.sha256' "${GATEKEEPER_FILE}"; then
     fail "Legacy non-canonical envelope policy hashing remains"
@@ -114,7 +175,7 @@ grep -q 'env = sign_artifact(env)' "${GATEKEEPER_FILE}" ||
     fail "Envelope creation does not sign the stored envelope"
 
 grep -q 'verify_artifact(envelope, "fcac_envelope")' "${GATEKEEPER_FILE}" ||
-    fail "Admission does not verify the stored envelope signature"
+    fail "Issuance does not verify the stored envelope signature"
 
 grep -q 'emit_decision_record' "${GATEKEEPER_FILE}" ||
     fail "Gatekeeper decision-record emission is absent"
@@ -122,7 +183,7 @@ grep -q 'emit_decision_record' "${GATEKEEPER_FILE}" ||
 grep -q 'persist_record_ms' "${GATEKEEPER_FILE}" ||
     fail "Benchmark does not expose evidence persistence latency"
 
-pass "Canonical binding and signed-evidence checks are present"
+pass "Setup, issuance, admission, and evidence responsibilities are separated"
 
 section "2. Envelope state and canonical policy hash"
 
@@ -317,7 +378,33 @@ ECT_ORG_ISS="$(jq -r '.org_iss // empty' "${CLAIMS_FILE}")"
 
 pass "ECT is envelope-bound, policy-bound, time-bounded, and accountable"
 
-section "4. Signed ALLOW and DENY decision evidence"
+section "4. Issuance owns envelope-state validation"
+
+mv "${ENVELOPE_FILE}" "${ENVELOPE_BACKUP}"
+ENVELOPE_REMOVED=1
+
+MINT_WITHOUT_ENVELOPE_FILE="${TMP_DIR}/mint-without-envelope.json"
+MINT_WITHOUT_ENVELOPE_STATUS="$(
+    curl "${CURL_ISSUER[@]}" \
+        -o "${MINT_WITHOUT_ENVELOPE_FILE}" \
+        -w '%{http_code}' \
+        -X POST \
+        "${ISSUER_URL}/mint" \
+        -H 'content-type: application/json' \
+        -d "${MINT_REQUEST}"
+)"
+
+if [[ "${MINT_WITHOUT_ENVELOPE_STATUS}" == "200" ]]; then
+    cat "${MINT_WITHOUT_ENVELOPE_FILE}" >&2
+    fail "Issuance succeeded after the envelope registry artifact was removed"
+fi
+
+grep -q 'unknown_envelope' "${MINT_WITHOUT_ENVELOPE_FILE}" ||
+    fail "Missing envelope did not fail issuance with unknown_envelope"
+
+pass "Issuance fails closed when the selected envelope cannot be validated"
+
+section "5. Admission uses portable authority, not envelope-registry state"
 
 CURL_HUB=(
     -sS
@@ -478,7 +565,12 @@ run_decision_case \
     false \
     capability_scope_exceeded
 
-pass "Gatekeeper produced signed ALLOW and DENY decision records"
+pass "Gatekeeper produced signed ALLOW and DENY records while the envelope artifact was unavailable"
+
+mv "${ENVELOPE_BACKUP}" "${ENVELOPE_FILE}"
+ENVELOPE_REMOVED=0
+
+pass "Existing ECT admission is independent of post-mint envelope-registry availability"
 
 printf '\n'
-pass "Test2E passed: binding, signed evidence, and ECT accountability are operational"
+pass "Test2E passed: issuance establishes authority and admission verifies the portable result"
