@@ -409,8 +409,8 @@ AWS resource organisation should make this distinction easier to preserve, not h
 ## 32. Logging
 Each service should send operational logs to CloudWatch Logs or the agreed AWS logging destination.
 Logging must not become the only governance evidence mechanism. Signed Gatekeeper decision evidence remains a separate research artefact.
-CloudWatch logs are useful for diagnosing service and platform behaviour. Governance evidence is used to establish the result of a governed relation.
-Sensitive values, private keys, ECT bearer material where not required for evidence, DPoP private material, and `OPENAI_API_KEY` must not be written to operational logs.
+CloudWatch logs are useful for diagnosing service and platform behaviour. Governance evidence is used to establish the result of a governed relation. Sensitive values, private keys, ECT bearer material where not required for evidence, DPoP private material, and `OPENAI_API_KEY` must not be written to operational logs.
+Successful `consume_derivative` decision records contain the exact governed derivative W verified by the Gatekeeper. Access to those records must therefore be treated as access to governed derivative data, not merely as access to audit metadata, and the backing evidence store must receive the corresponding confidentiality and access controls.
 ## 33. Test-runner placement
 Several local tests assume that they execute on the Docker host and can access `127.0.0.1`, Docker networks, mounted state paths, and the Docker command.
 Those assumptions are not valid in ECS.
