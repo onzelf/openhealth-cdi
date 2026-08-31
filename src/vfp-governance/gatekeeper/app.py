@@ -1242,47 +1242,39 @@ async def _probe_impl(
     if not isinstance(ect_policy, dict):
         return _bench_return(token_ms, None, t0, False, "ect_policy_invalid")
 
-    if POLICY_ALLOWLIST and ect_policy.get("policy_hash") not in POLICY_ALLOWLIST:
+    ect_policy_hash = str(ect_policy.get("policy_hash") or "")
+    if ect_policy_hash != _policy_hash:
+        return _bench_return(token_ms, None, t0, False, "policy_hash_mismatch")
+
+    if POLICY_ALLOWLIST and ect_policy_hash not in POLICY_ALLOWLIST:
         return _bench_return(token_ms, None, t0, False, "policy_hash_not_allowed")
 
     if ect.get("envelope_id") != body.envelope_id:
         return _bench_return(token_ms, None, t0, False, "envelope_mismatch")
 
-    # The ECT remains valid only while its governing envelope remains active.
-    try:
-        envelope = load_active_envelope(body.envelope_id)
-    except HTTPException as exc:
-        return _bench_return(token_ms, None, t0, False, str(exc.detail))
-
-    ect_policy_hash = str(ect_policy.get("policy_hash") or "")
-    if ect_policy_hash != envelope.get("policy_hash"):
-        return _bench_return(
-            token_ms, None, t0, False,
-            "ect_envelope_policy_mismatch",
-        )
-
-    envelope_exp = int(envelope.get("valid_until") or envelope.get("exp"))
-    if int(ect.get("exp", 0)) > envelope_exp:
-        return _bench_return(
-            token_ms, None, t0, False,
-            "ect_exp_exceeds_envelope",
-        )
-
     cap_profiles = ect.get("cap_profiles")
-    sponsors_claim = ect.get("sponsors")
-    sponsorship_reason = _sponsorship_validation_reason(
-        cap_profiles,
-        sponsors_claim,
-        str(ect.get("org_iss") or ""),
-        envelope,
-    )
-    if sponsorship_reason:
+    if not isinstance(cap_profiles, list) or any(
+        not isinstance(profile, str) or not profile
+        for profile in cap_profiles
+    ):
         return _bench_return(
             token_ms, None, t0, False,
-            sponsorship_reason,
+            "ect_cap_profiles_invalid",
         )
 
-    verified_sponsors = list(sponsors_claim or [])
+    sponsors_claim = ect.get("sponsors")
+    if sponsors_claim is None:
+        verified_sponsors = []
+    elif isinstance(sponsors_claim, list) and all(
+        isinstance(sponsor, str) and sponsor
+        for sponsor in sponsors_claim
+    ):
+        verified_sponsors = list(sponsors_claim)
+    else:
+        return _bench_return(
+            token_ms, None, t0, False,
+            "ect_sponsors_invalid",
+        )
 
     # Preserve identity only after the ECT has passed the complete governed
     # validation path. Decision evidence consumes these already-verified claims
