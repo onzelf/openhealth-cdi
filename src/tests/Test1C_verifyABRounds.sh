@@ -11,6 +11,9 @@ set -euo pipefail
 
 RUN_ID="${1:-local-pathmnist-ab-001}"
 EXPECTED_ROUNDS="${2:-10}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+COMPUTE_FILE="${REPO_ROOT}/src/infra/tofu/compute.auto.tfvars"
 RUN_DIR="/vault/runs/${RUN_ID}"
 
 echo "Usage: $0 [run_id] [expected_rounds]"
@@ -24,21 +27,34 @@ fail() { printf "\033[31m✗\033[0m %s\n" "$*"; exit 1; }
 docker ps -a --format '{{.Names}}' | grep -qx flower-server \
   || fail "Missing flower-server container"
 
+[[ -s "${COMPUTE_FILE}" ]] \
+  || fail "Missing compute selection: ${COMPUTE_FILE}"
+
+COMPUTE_BACKEND="$(
+  sed -nE \
+    's/^[[:space:]]*compute_backend[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' \
+    "${COMPUTE_FILE}"
+)"
+
+[[ "${COMPUTE_BACKEND}" == "cpu" || "${COMPUTE_BACKEND}" == "cuda" ]] \
+  || fail "Invalid compute backend: ${COMPUTE_BACKEND}"
+
 for client in flower-client-a flower-client-b; do
   client_log="$(docker logs "$client" 2>&1 || true)"
+  runtime_marker="${COMPUTE_BACKEND^^} ready:"
 
-  grep -F "CUDA ready:" >/dev/null <<< "$client_log" \
-    || fail "$client did not report CUDA ready"
+  grep -F "${runtime_marker}" >/dev/null <<< "$client_log" \
+    || fail "$client did not report ${COMPUTE_BACKEND} runtime ready"
 
-  grep -F "torch=2.2.0+cu121" >/dev/null <<< "$client_log" \
-    || fail "$client did not report torch 2.2.0+cu121"
+  grep -F "torch=" >/dev/null <<< "$client_log" \
+    || fail "$client did not report PyTorch runtime"
 
-  grep -F "device=cuda" >/dev/null <<< "$client_log" \
-    || fail "$client did not load partition on CUDA"
+  grep -F "device=${COMPUTE_BACKEND}" >/dev/null <<< "$client_log" \
+    || fail "$client did not load partition on ${COMPUTE_BACKEND}"
 
-  pass "$client reported CUDA runtime"
+  pass "$client reported ${COMPUTE_BACKEND} runtime"
 done
-pass "Hospital A and B clients trained with the validated CUDA stack"
+pass "Hospital A and B clients trained on ${COMPUTE_BACKEND}"
 
 for file in \
   model.pt \

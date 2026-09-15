@@ -3,6 +3,7 @@
 **/.terraform/*
 spec/
 src/infra/tofu/terraform.tfstate*
+src/infra/tofu/compute.auto.tfvars
 src/vfp-governance/verifier/certs/
 src/vfp-governance/verifier/state/binds/
 src/vfp-governance/verifier/state/envelopes/
@@ -10,13 +11,16 @@ src/vfp-governance/verifier/state/events/
 src/vfp-governance/verifier/state/keys/
 src/vfp-governance/verifier/vault/
 src/tools/holder_keys/
+src/tools/demo_model.sh
 LOCAL_GIT_STATUS.txt
 LOCAL_BASE_COMMIT.txt
 *.log
 *.patch
+src/tools/datamiss.sh
 src/tests/holder_keys/
 __pycache__/
 *.py[cod]
+.vscode/
 
 # Local secrets
 secrets/

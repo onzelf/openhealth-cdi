@@ -73,29 +73,31 @@ The dashboard also provides **Clients**, **Events**, and **Evidence** tabs. They
 These views are particularly useful when the visible training state and the expected federation state do not agree.
 ## 9. Pane 5 — User mode governed model use
 ![Pane 5 — User mode governed model use](image/DB_pane_5.png)
-Pane 5 shows the ordinary A+B participant experience in **User** mode.
-The User navigation contains:
-`Model use`
-`Events`
-`Evidence`
-The model-use pane begins from an administrator-minted ECT for the selected collaboration boundary. Each request creates fresh DPoP holder proof before the request is submitted for Gatekeeper admission.
-The **Holder** selector chooses the currently credentialled participant. The **Tissue** selector identifies the requested PathMNIST resource class.
-**RUN GOVERNED INFERENCE** submits the bounded request through the governed model-use path.
-The result side reports the selected boundary, ECT status, model run, and Gatekeeper admission result. When an admitted inference executes, the pane also presents the sample image, requested tissue, actual dataset label, predicted tissue, and top-ranked model outputs.
-A returned model result therefore follows a chain that includes holder selection, an envelope-bound ECT, fresh holder proof, Gatekeeper admission, and model execution.
-> 🔑 **Takeaway**
-> - In User mode, model access is not direct.
-> - Possessing a model or being able to reach the application does not replace holder capability and admission.
+Pane 5 shows the governed model-use path for **Mode 1B**. The example uses **Audrey** as requester, **Hal** as the bounded agent, and **colorectal_adenocarcinoma_epithelium** as the requested tissue.
+
+In this case, Audrey is **not** authorized to consume the unrestricted source result. The first decision therefore denies direct source access. The request then continues through the bounded-agent path. Hal receives a separate admission for bounded inference, then a separate admission for **Unbind**, which produces a governed derivative **W**. Audrey does not receive that derivative automatically. A further admission is required for **Consume W**. Only after that fresh decision is the derivative released.
+
+The five-stage strip at the top of the pane makes this composition visible
+1.  **SOURCE V** The requester asks for the source representation. In this example the result is **DENY**.
+2.  **UNBIND V→W** The bounded agent performs the policy-authorized transformation under its own admitted authority. In this example the result is **ALLOW**.
+3.  **DERIVATIVE W** The pane shows the governed derivative as a content-addressed value. The displayed hash identifies the exact derivative under governance.
+4.  **CONSUME W** The requester seeks authority to consume that exact governed derivative. This is a fresh decision, independent from the source denial.
+5.  **RELEASE W** The derivative is released only if the separate consumption decision is allowed. The value released is the same governed value identified in stage 3.
+
+The right-hand detail pane exposes the decision identifiers that connect the dashboard to the evidence trail:
+-  **SOURCE DECISION**
+-  **HAL INFERENCE**
+-  **UNBIND DECISION**
+-  **CONSUME(W) DECISION**
+
+These identifiers allow the viewer to move from the dashboard to the signed decision records and verify the complete governance chain. The lower result block shows the governed value **W**. The displayed fields are part of its content-addressed identity. In this example they include the blurred derivative image, the requested tissue, the actual label, the predicted tissue, and the top-k output. The hash shown in the pane therefore identifies the exact released derivative rather than a generic class of results.
+
+### Key takeaway
+> Pane 5 does not show a single access decision. It shows **governance composition**. Source access, bounded inference, unbind, derivative consumption, and release are distinct governed relations, and the dashboard makes that distinction explicit. 
 ## 10. Why Pane 5 uses the A+B scenario
-The generic dashboard guide intentionally illustrates User mode with the A+B baseline.
+The generic dashboard guide intentionally illustrates User mode with the A+B+C baseline.
 That view exposes the ordinary governed model-use path without mixing it with the special semantics of sponsored contribution or computational-agent mediation.
 Mode 1A is primarily demonstrated through sponsored contribution and the A+B+C training relation. Its governance meaning is documented in [SCENARIOS.md](SCENARIOS.md) and [GOVERNANCE.md](GOVERNANCE.md).
-Mode 1B introduces additional requester, agent, reasoning, unbind, and derivative-release state. Its dashboard interpretation is therefore documented separately in [MODE1B.md](MODE1B.md).
-The dedicated Mode 1B annotated image is:
-```text
-DB_pane_1B.png
-```
-It is intentionally not reproduced in this generic navigation guide.
 ## 11. Administration versus User mode
 Administration mode operates the collaboration and analytical lifecycle. It selects governance boundaries, manages holder ECT readiness, starts training, and inspects metrics, clients, events, and evidence.
 User mode exercises participant-facing governed operations. It does not redefine issuer entitlements or collaboration constitution.
@@ -123,7 +125,8 @@ Pane 1
 Switch role to User
         ↓
 Pane 5
-Select holder and tissue, then run governed inference
+Select requester, bounded agent where required, and tissue,
+then run the governed operation
         ↓
 Events / Evidence
 Inspect the resulting operational and governance record
@@ -145,6 +148,6 @@ Signed Gatekeeper decision records and the executable conformance tests provide 
 The dashboard can show that a request was reported as ALLOW or DENY. The evidence path establishes the recorded decision and the relation that produced it.
 This distinction is particularly important for Mode 1A sponsorship and the Mode 1B source/unbind/derivative sequence, where several separate admission decisions can belong to one user-visible workflow.
 ## 16. Dashboard summary
-The dashboard presents the OpenHealth-CDI lifecycle as five principal operating panes. Pane 1 selects the collaboration scenario and dashboard role. Pane 2 shows the current governed state. Pane 3 selects and administers the active collaboration boundary and holder credentials. Panes 4A and 4B operate and inspect federated training. Pane 5 presents ordinary governed model use to a participant.
+The dashboard presents the OpenHealth-CDI lifecycle as five principal operating panes. Pane 1 selects the collaboration scenario and dashboard role. Pane 2 shows the current governed state. Pane 3 selects and administers the active collaboration boundary and holder credentials. Panes 4A and 4B operate and inspect federated training. Pane 5 presents governed participant model use and, in the illustrated Mode 1B case, makes the composed source, bounded-agent, Unbind, derivative-consumption, and release decisions visible in one operational view.
 The visual sequence is designed to keep context visible before action. The operator sees which collaboration is active, which envelope governs the operation, which model is being used, which holder capability is ready, and which admission result applies.
 The interface should therefore be used as an operational view over the architecture rather than as a replacement for the architecture.

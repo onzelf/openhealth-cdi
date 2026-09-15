@@ -37,14 +37,17 @@ LAN_IP="${HOST_IP}" \
     "${SCRIPT_DIR}/Test5A_agent_isolation.sh"
 
 section "HAL CREDENTIAL ADMISSION — Test5C"
-"${SCRIPT_DIR}/Test5C_agent_credential_admission.sh" "${EID}"
+ISSUER_IP="${HOST_IP}" VERIFIER_IP="${HOST_IP}" \
+    "${SCRIPT_DIR}/Test5C_agent_credential_admission.sh" "${EID}"
 
 section "TABLE 7 DECISION PLANE — Test5D"
-"${SCRIPT_DIR}/Test5D_mode1b_table7_conformance.sh" "${EID}" 2>&1 \
+ISSUER_IP="${HOST_IP}" VERIFIER_IP="${HOST_IP}" \
+    "${SCRIPT_DIR}/Test5D_mode1b_table7_conformance.sh" "${EID}" 2>&1 \
     | tee "${REPO_ROOT}/JMIR_paper/table7/Test5D_mode1b_conformance.txt"
 
 section "MODE 1B GOVERNANCE COMPOSITION — Test5E"
-"${SCRIPT_DIR}/Test5E_mode1b_contextual_agent.sh" "${EID}"
+ISSUER_IP="${HOST_IP}" VERIFIER_IP="${HOST_IP}" \
+    "${SCRIPT_DIR}/Test5E_mode1b_contextual_agent.sh" "${EID}"
 
 section "DELIVERY REGRESSION GREEN"
 printf '✓ Test0B delivery preflight\n'

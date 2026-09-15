@@ -57,11 +57,15 @@ def log(message: str) -> None:
 
 
 def validate_cuda_runtime() -> None:
-    """Require the exact CUDA-enabled stack validated on the Titan X."""
+    """Validate the selected compute runtime."""
+
+    if DEVICE.type == "cpu":
+        log(f"CPU ready: torch={torch.__version__} device={DEVICE}")
+        return
 
     if DEVICE.type != "cuda":
         raise RuntimeError(
-            f"Flower clients require DEVICE=cuda, received {DEVICE}"
+            f"Unsupported Flower device: expected DEVICE=cuda, received {DEVICE}"
         )
     if not torch.cuda.is_available():
         raise RuntimeError(
@@ -86,6 +90,7 @@ def validate_cuda_runtime() -> None:
         f"device={torch.cuda.get_device_name(0)} "
         f"capability={torch.cuda.get_device_capability(0)}"
     )
+
 
 
 def validate_configuration() -> None:

@@ -6,9 +6,18 @@
 
 **OpenHealth-CDI is a research reference implementation of governed cross-organizational Federated Computing.**
 
-It is not a production system or an MVP. Its purpose is to make federation architecture, governance relations, trust boundaries, and behavioural invariants executable, inspectable, and reproducible.
+Its purpose is to make federation architecture, governance relations, trust boundaries, and behavioural invariants executable, inspectable, and reproducible.
 
-The central design principle is simple. **Authority and execution are separate.** Organisations retain authority over their resources, while participation in a federated activity is established through explicit relations defining who may participate, under whose authority, for which purpose, within which scope, and with what evidence.
+> OpenHealth-CDI is a reference implementation of governed federation — an architecture in which every operation on a governed resource is admitted or denied as a constituted relation: a credentialed principal, holder-bound proof, an envelope naming the collaboration context, and locally compiled policy, evaluated statelessly at a single boundary and producing signed, independently verifiable evidence per decision; AI agents participate under the same discipline, as sponsored, capability-bounded principals rather than trusted infrastructure.
+
+ Structurally it's four separated planes:
+ 1. constitution (KYO, bind, quorum, signed envelopes),  
+ 2.  issuance (entitlements compiled into portable ECTs, lifetime-clamped), 
+ 3. admission (the stateless waist, fail-closed, evidenced),  
+ 4.  execution (Flower, Hal) — with the separation enforced as a conformance
+    invariant,
+
+The central design principle is simple: **Authority and execution are separate.** Organisations retain authority over their resources, while participation in a federated activity is established through explicit relations defining who may participate, under whose authority, for which purpose, within which scope, and with what evidence.
 
 ## Three executable modes
 
@@ -60,6 +69,20 @@ The implementation also keeps **model lifecycle and governance-envelope lifecycl
 
 ---
 
+## Portable reference deployment
+
+The reference implementation supports both **CPU-only** and **CUDA** execution profiles for the PathMNIST Flower clients. The deployment selects the compute backend before OpenTofu is applied. A host without NVIDIA GPU hardware uses CPU. A host with NVIDIA GPU hardware must have a working NVIDIA container runtime and CUDA path rather than silently falling back to CPU.
+
+A fresh clone intentionally excludes mutable trust state, holder private keys, OpenTofu state, and local secrets. Reproducing the system therefore has three distinct stages:
+
+1. bootstrap and validate local trust material, holder identities, name resolution, secrets, and compute selection;
+2. deploy the Docker/OpenTofu infrastructure;
+3. enrol runtime members and execute the conformance regression.
+
+See [DEPLOYMENT.md](doc/DEPLOYMENT.md) for the clean-clone procedure and [AWS-PORTING.md](doc/AWS-PORTING.md) for the mapping from the local reference deployment to AWS.
+
+---
+
 ## Executable conformance
 
 The repository tests governance as an executable systems property rather than inferring it from configuration or documentation.
@@ -69,25 +92,20 @@ The principal regression families cover federation-envelope establishment, issue
 In particular:
 
 `Test2E_fcac_conformance.sh` verifies the shared admission-governance substrate.
-
 `Test4C_sponsorship_regression.sh` verifies sponsorship without collapsing provenance, membership, or delegated authority.
-
 `Test5A_agent_isolation.sh` verifies the Mode 1B execution boundary.
-
 `Test5C_agent_credential_admission.sh` verifies Hal's holder-bound admitted capability relation.
-
 `Test5D_mode1b_table7_conformance.sh` makes the JMIR Table 7 requirements executable.
-
 `Test5E_mode1b_contextual_agent.sh` extends the experiment across different requester-resource relations.
+`Test0C_delivery_regression.sh` is the top-level delivery regression for the Mode 1B release path. A successful run terminates with `ALL DELIVERY GATES GREEN`.
 
-Detailed prerequisites, commands, expected results, and the invariant established by every test are documented separately.
+Detailed prerequisites, commands, expected results, and the invariant established by every test are documented in [TESTING.md](doc/TESTING.md).
 
 ---
 
 ## Documentation
 
 Detailed documentation is organised by concern:
-
 - [Architecture and trust boundaries](doc/ARCHITECTURE.md)
 - [Governance model](doc/GOVERNANCE.md)
 - [Executable scenarios](doc/SCENARIOS.md)
@@ -98,20 +116,20 @@ Detailed documentation is organised by concern:
 - [Troubleshooting](doc/TROUBLESHOOTING.md)
 - [Release and reproducibility](doc/RELEASE.md)
 
-The final JMIR manuscript will also be retained under `doc/`, keeping the original paper architecture, the implemented architecture, and the executable evidence together.
+The JMIR manuscript is retained under `doc/` so that the original paper architecture, the implemented architecture, and the executable evidence remain available together.
 
 ---
 
-## Status
+## Release status
 
-The `delivery` branch contains the complete executable baseline for **A+B, Mode 1A, and Mode 1B**.
+**v1.0.0** is the frozen audited baseline for A+B, Mode 1A, and Mode 1B. It is archived as a [GitHub release](https://github.com/onzelf/openhealth-cdi/releases/tag/v1.0.0) and on [Zenodo](https://zenodo.org/records/22209771).
 
-The current release is a **research reference implementation**. It demonstrates governed federation evolution and provides reproducible evidence for the implemented invariants. It does not claim clinical effectiveness, production-scale deployment, or general-purpose AI-agent safety.
+The **v1.1.0** release line adds portable clean-clone deployment across CPU-only and CUDA hosts together with explicit bootstrap and deployment prerequisites. It does not change the governance semantics established by v1.0.0.
 
-A stable tagged release and corresponding Zenodo version will provide the archival reference for this implementation.
+> **Disclaimer**: OpenHealth-CDI is a **research reference implementation**. It demonstrates governed federation evolution and provides reproducible evidence for the implemented invariants. It does not claim clinical effectiveness, production-scale deployment, or general-purpose AI-agent safety.
 
 ## License
 
 OpenHealth-CDI is released under the **GNU Affero General Public License v3.0**.
 
-See [LICENSE](LICENSE).
+See [LICENSE](LICENSE). 

@@ -166,10 +166,15 @@ def load_openai_api_key() -> str:
     if key:
         return key
 
-    if not OPENAI_ENV_FILE.exists():
+    if not OPENAI_ENV_FILE.is_file():
         raise RuntimeError("openai_api_key_not_configured")
+    
+    try:
+        lines = OPENAI_ENV_FILE.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise RuntimeError("openai_api_key_not_configured") from exc
 
-    for raw_line in OPENAI_ENV_FILE.read_text(encoding="utf-8").splitlines():
+    for raw_line in lines:
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue

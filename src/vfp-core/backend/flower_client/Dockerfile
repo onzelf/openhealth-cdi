@@ -25,6 +25,6 @@ RUN python -m pip install --upgrade pip \
 COPY pathmnist /app/pathmnist
 COPY flower_client/client.py /app/client.py
 
-ENV DEVICE=cuda
+ 
 
 CMD ["python", "-u", "client.py"]

@@ -12,16 +12,27 @@ provider "docker" {}
 # -----------------------------
 # Inputs
 # -----------------------------
-variable "lan_ip" {
-  description = "Host LAN IP to bind nginx mTLS edge (Test_createEnvelope_v3.sh uses https://LAN:8443)"
+variable "edge_bind_ip" {
+  description = "Host interface on which the verifier and issuer mTLS edges are published"
   type        = string
-  default     = "192.168.1.25"
+  default     = "0.0.0.0"
 }
 
 variable "mtls_port" {
   description = "LAN port for nginx mTLS edge"
   type        = number
   default     = 8443
+}
+
+variable "compute_backend" {
+  description = "Compute backend selected by Test0A: cpu or cuda"
+  type        = string
+  default     = "cpu"
+
+  validation {
+    condition     = contains(["cpu", "cuda"], lower(var.compute_backend))
+    error_message = "compute_backend must be either cpu or cuda."
+  }
 }
 
 # Flower knobs
@@ -255,7 +266,7 @@ resource "docker_container" "verifier_proxy" {
   ports {
     internal = 8443
     external = var.mtls_port
-    ip       = var.lan_ip
+    ip       = var.edge_bind_ip
   }
 
   # mTLS material used by nginx; Test_createEnvelope_v3.sh also uses hub.crt/hub.key from this tree.
@@ -298,7 +309,7 @@ resource "docker_container" "issuer_proxy" {
   ports {
     internal = 8443
     external = var.issuer_mtls_port
-    ip       = var.lan_ip
+    ip       = var.edge_bind_ip
   }
 
   # reuse the same cert directory you already use; now it also contains issuer-proxy.crt/key
@@ -698,7 +709,7 @@ resource "docker_image" "flower_client" {
 resource "docker_container" "flower_client_a" {
   name  = "flower-client-a"
   image = docker_image.flower_client.name
-  gpus  = "all"
+  gpus  = lower(var.compute_backend) == "cuda" ? "all" : null
 
   networks_advanced {
     name = docker_network.fc.name
@@ -718,7 +729,7 @@ resource "docker_container" "flower_client_a" {
     "PATHMNIST_PARTITION_PROFILE=${var.pathmnist_partition_profile}",
     "PATHMNIST_PARTITION_SEED=${var.pathmnist_partition_seed}",
     "MEDMNIST_ROOT=/tmp/medmnist",
-    "DEVICE=cuda",
+    "DEVICE=${lower(var.compute_backend)}",
   ]
 
   depends_on = [docker_container.flower_server]
@@ -730,7 +741,7 @@ resource "docker_container" "flower_client_a" {
 resource "docker_container" "flower_client_b" {
   name  = "flower-client-b"
   image = docker_image.flower_client.name
-  gpus  = "all"
+  gpus  = lower(var.compute_backend) == "cuda" ? "all" : null
 
   networks_advanced {
     name = docker_network.fc.name
@@ -750,7 +761,7 @@ resource "docker_container" "flower_client_b" {
     "PATHMNIST_PARTITION_PROFILE=${var.pathmnist_partition_profile}",
     "PATHMNIST_PARTITION_SEED=${var.pathmnist_partition_seed}",
     "MEDMNIST_ROOT=/tmp/medmnist",
-    "DEVICE=cuda",
+    "DEVICE=${lower(var.compute_backend)}",
   ]
 
   depends_on = [docker_container.flower_server]
@@ -765,7 +776,7 @@ resource "docker_container" "flower_client_b" {
 resource "docker_container" "flower_client_c" {
   name  = "flower-client-c"
   image = docker_image.flower_client.name
-  gpus  = "all"
+  gpus  = lower(var.compute_backend) == "cuda" ? "all" : null
 
   networks_advanced {
     name = docker_network.fc.name
@@ -785,7 +796,7 @@ resource "docker_container" "flower_client_c" {
     "PATHMNIST_PARTITION_PROFILE=${var.pathmnist_partition_profile}",
     "PATHMNIST_PARTITION_SEED=${var.pathmnist_partition_seed}",
     "MEDMNIST_ROOT=/tmp/medmnist",
-    "DEVICE=cuda",
+    "DEVICE=${lower(var.compute_backend)}",
   ]
 
   depends_on = [docker_container.flower_server]
@@ -815,6 +826,6 @@ output "client_c_container" {
 
 
 output "mtls_base_url" {
-  value       = "https://${var.lan_ip}:${var.mtls_port}"
-  description = "Use this as LAN in Test_createEnvelope.sh (https://LAN:8443)"
+  value       = "https://127.0.0.1:${var.mtls_port}"
+  description = "Local verifier mTLS endpoint"
 }
