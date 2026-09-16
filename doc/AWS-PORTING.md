@@ -124,8 +124,7 @@ The Rapid Reference Port deliberately requires a small AWS footprint.
 The minimum AWS resources are:
 
 ```text
-EC2 Linux instance
-GPU capability compatible with the current CUDA workload
+GPU-capable EC2 Linux instance
 persistent EC2 storage
 network connectivity
 security group
@@ -149,6 +148,8 @@ OpenSSL
 The instance must have sufficient CPU, memory and disk capacity for the complete OpenHealth container set and sufficient GPU capability for the existing PathMNIST Flower clients.
 
 No ECS cluster, ECR repository, EFS filesystem, managed Redis service or AWS-native policy service is required for the Rapid Reference Port.
+
+The Rapid Reference Port uses a GPU-capable EC2 host so that the complete CUDA reference workload remains available. The initial deployment may nevertheless select compute_backend = "cpu" to reduce GPU execution dependencies during bootstrap and validation. Switching to cuda changes the execution profile, not the governance architecture.
 
 ---
 
@@ -196,8 +197,7 @@ http://127.0.0.1:8082
 
 This preserves the existing deployment behaviour.
 
-The verifier and issuer mTLS edges continue to use the host address supplied through the OpenTofu `lan_ip` variable.
-
+The verifier and issuer mTLS edges remain published by Docker on the interface selected by the OpenTofu `edge_bind_ip` variable. The default value `0.0.0.0` exposes the ports on the EC2 host interfaces, while `verifier.local` retains the logical TLS identity used by clients.
 ---
 
 ## 6. EC2 host address and verifier identity
@@ -298,7 +298,7 @@ Then clone the repository:
 ```bash
 git clone https://github.com/onzelf/openhealth-cdi.git
 cd openhealth-cdi
-git checkout delivery
+git checkout main
 ```
 
 Record the source baseline:
@@ -371,16 +371,13 @@ tofu validate
 Review the initial deployment:
 
 ```bash
-tofu plan \
-  -var="lan_ip=${HOST_IP}"
+tofu plan 
 ```
 
 Then create the reference deployment:
 
 ```bash
-tofu apply \
-  -var="lan_ip=${HOST_IP}" \
-  -auto-approve
+tofu apply  -auto-approve
 ```
 
 This initial apply creates the Docker networks, persistent Docker volumes and application containers on the new EC2 host.
@@ -581,8 +578,10 @@ These checks establish that the AWS runtime contains the same essential referenc
 Once the AWS reference deployment has been bootstrapped and validated, subsequent cold starts use the same controlled startup procedure as the local deployment:
 
 ```bash
-./src/tools/demo_start.sh "$HOST_IP"
+VERIFIER_IP="$HOST_IP" ./src/tools/demo_start.sh
 ```
+> local WSL    verifier.local → 127.0.0.1
+  EC2          verifier.local → EC2 private address
 
 Before modifying containers, `demo_start.sh` validates:
 

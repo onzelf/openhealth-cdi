@@ -11,15 +11,17 @@ set -euo pipefail
 #      OpenTofu, preserving the existing networks and persistent volumes.
 #
 # Usage:
-#   ./demo_start.sh [lan-ip]
+#   ./demo_start.sh
 #
-# The optional lan-ip is passed to OpenTofu exactly as in the previous script.
+# VERIFIER_IP may override the expected host-side address of verifier.local.
+# It defaults to 127.0.0.1 for the local WSL deployment.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TOFU_DIR="${REPO_ROOT}/src/infra/tofu"
 KEY_DIR="${REPO_ROOT}/src/vfp-governance/verifier/vault/holder_keys"
 GEN_KEYS="${REPO_ROOT}/src/tools/gen_member_keys.py"
 PATHMNIST_HOST="${PATHMNIST_HOST:-${REPO_ROOT}/../data/pathmnist.npz}"
+EXPECTED_VERIFIER_IP="${VERIFIER_IP:-127.0.0.1}"
 
 CA="${REPO_ROOT}/src/vfp-governance/verifier/certs/ca.crt"
 HUB_CRT="${REPO_ROOT}/src/vfp-governance/verifier/certs/hub.crt"
@@ -174,6 +176,9 @@ pass "Docker daemon is reachable"
 # ------------------------------------------------------------
 # 2. WSL verifier.local invariant
 # ------------------------------------------------------------
+#
+# EC2 can use:
+# VERIFIER_IP="$HOST_IP" ./src/tools/demo_start.sh
 
 echo
 echo "[2/9] Checking verifier.local..."
@@ -183,8 +188,8 @@ getent hosts verifier.local >/dev/null 2>&1 \
 
 getent hosts verifier.local \
   | awk '{print $1}' \
-  | grep -qx '127.0.0.1' \
-  || fail "verifier.local does not resolve to 127.0.0.1 in WSL."
+  | grep -qx "${EXPECTED_VERIFIER_IP}" \
+  || fail "verifier.local does not resolve to ${EXPECTED_VERIFIER_IP}."
 
 pass "verifier.local -> 127.0.0.1"
 
@@ -334,18 +339,16 @@ done
 # ------------------------------------------------------------
 # 7. Reconcile deployment from the already-validated OpenTofu state
 # ------------------------------------------------------------
+#
+# main.tf uses edege_bind_ip 
+# edge_bind_ip = "0.0.0.0"
 
 echo
 echo "[7/9] Applying OpenTofu deployment..."
 
 cd "${TOFU_DIR}"
 
-if [[ $# -ge 1 && -n "${1}" ]]; then
-  echo "LAN IP: ${1}"
-  tofu apply -auto-approve -var="lan_ip=${1}"
-else
-  tofu apply -auto-approve
-fi
+tofu apply -auto-approve
 
 # Persistent networks and volumes must not have been replaced by the apply.
 [[ "$(docker network inspect -f '{{.Id}}' fc)" == "${FC_ID_BEFORE}" ]] \

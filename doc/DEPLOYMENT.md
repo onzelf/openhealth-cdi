@@ -74,7 +74,7 @@ tofu version
 
 ## 4. Repository checkout and PathMNIST data
 
-The deployment described here corresponds to the `delivery` branch.
+The deployment described here corresponds to the current `main` branch.
 
 The PathMNIST dataset is kept outside the Git repository so that it survives repository replacement and is shared by the local deployment.
 
@@ -105,7 +105,7 @@ Then clone the repository:
 ```bash
 git clone https://github.com/onzelf/openhealth-cdi.git
 cd openhealth-cdi
-git checkout delivery
+git checkout main
 ```
 
 The resulting layout is:
@@ -398,7 +398,7 @@ the reference deployment. For cold starts, especially after a host or Docker Des
 repository root:
 
 ```bash
- ./src/tools/demo_start.sh [<host-ip>]
+ ./src/tools/demo_start.sh 
 ```
 The helper recreates the disposable container layer, reapplies OpenTofu, and verifies holder-key, model, and 
 dashboard readiness before use.
@@ -694,7 +694,7 @@ Environment-specific failures observed during portability work, including Docker
 The normal cold-start procedure is:
 
 ```bash
-./src/tools/demo_start.sh "$HOST_IP"
+./src/tools/demo_start.sh 
 ```
 
 `demo_start.sh` performs the deployment preflight before modifying the running container layer. It checks the Docker runtime, `verifier.local`, OpenTofu ownership, required networks and persistent volumes, holder identities, issuer registrations, persisted model state, and the external PathMNIST dataset.

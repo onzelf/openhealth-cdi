@@ -1,12 +1,12 @@
-# OpenHealth-CDI AWS Porting Guide
+# OpenHealth-CDI AWS Refactoring Guide
 
 ## 1. Purpose
 
-This document defines how to port the OpenHealth-CDI local Docker/OpenTofu reference implementation to AWS while preserving the architecture and executable governance invariants.
+This document defines the Agile Team Environment used to investigate AWS-native realisations of the OpenHealth-CDI architecture.
 
-The first AWS deployment is a **port**, not a redesign.
+The Rapid Reference Port is documented separately in [AWS-PORTING.md](AWS-PORTING.md). It provides the stable EC2/Docker/OpenTofu baseline against which the changes described here are evaluated.
 
-AWS services may replace local mechanisms, but they must preserve the same observable relations among:
+This track may replace local implementation mechanisms with AWS services, but every substitution must preserve the observable relations among:
 
 - governance envelope;
 - issuer;
@@ -23,39 +23,26 @@ The governing rule is:
 
 > **Implementation mechanisms may change. Architectural invariants must remain observable and testable.**
 
-The local reference deployment is documented in [DEPLOYMENT.md](DEPLOYMENT.md). The executable invariants are documented in [TESTING.md](TESTING.md).
+The local reference deployment is documented in [DEPLOYMENT.md](DEPLOYMENT.md), the Rapid Reference Port in [AWS-PORTING.md](AWS-PORTING.md), and the executable invariants in [TESTING.md](TESTING.md).
 
 ---
 
-## 2. Scope of the first port
+## 2. Scope of the AWS refactoring track
 
-The first AWS port should reproduce the behaviour of the reference implementation with minimal application changes.
+The Agile Team Environment starts from a GREEN Rapid Reference Port and investigates controlled AWS-native substitutions.
 
-It should support:
+Candidate changes include container orchestration, networking, service discovery, persistent storage, secret management, operational observability, trust-edge implementation, and other AWS mechanisms that may improve the deployment without changing the OpenHealth federation model.
 
-- A+B governance-envelope establishment;
-- A+B PathMNIST training;
-- Mode 1A sponsored contribution;
-- issuer-owned entitlement assignment;
-- holder-bound DPoP;
-- Gatekeeper ALLOW/DENY admission;
-- signed decision evidence;
-- Mode 1B Hal isolation;
-- Hal bounded inference and Unbind;
-- governed derivative release;
-- the contextual Audrey/Bob Mode 1B experiment;
-- the dashboard.
-
-The first port should **not**:
+The refactoring track must **not**:
 
 - replace federation governance with AWS IAM;
-- redesign the ECT model;
+- redesign the ECT model without explicit architectural justification;
 - collapse issuer, sponsor, holder, and execution authority into one AWS role;
-- create a generic AI-agent containment platform;
-- redesign the model format;
-- migrate every container to a managed AWS service before equivalence is proven.
+- infer federation membership from AWS infrastructure ownership;
+- replace signed OpenHealth governance evidence with AWS operational logging;
+- accept an AWS substitution merely because connectivity or service health is GREEN.
 
-Port first. Optimise after conformance.
+Each proposed substitution must identify the OpenHealth relation and invariant that it preserves and the acceptance test that demonstrates equivalence.
 
 ---
 
@@ -152,9 +139,9 @@ The AWS implementation does not need Docker networks. It must preserve the permi
 
 ---
 
-## 5. Recommended first-port baseline
+## 5. Candidate AWS-native baseline
 
-A conservative first port can use:
+A conservative first refactoring baseline can use:
 
 - Amazon ECS for container orchestration;
 - `awsvpc` networking;
@@ -168,7 +155,7 @@ A conservative first port can use:
 - Fargate for CPU services where suitable;
 - GPU EC2 capacity only when the CUDA profile is selected.
 
-This is a compatibility baseline, not a final production architecture.
+This is an experimental AWS-native baseline evaluated against the Rapid Reference Port, not a final production architecture.
 
 ---
 
@@ -273,7 +260,7 @@ The local verifier nginx terminates TLS, validates the client certificate agains
 
 The issuer edge uses the same architectural pattern for organisation-administrative authority.
 
-The safest first AWS port preserves that trust boundary:
+The safest initial AWS-native substitution preserves that trust boundary:
 
 ```text
 client
@@ -291,7 +278,7 @@ nginx
 application
 ```
 
-Use NLB **TCP**, not NLB TLS termination, for the first port.
+Use NLB **TCP**, not NLB TLS termination, for the initial refactoring baseline.
 
 This keeps the existing nginx verification semantics authoritative.
 
@@ -380,7 +367,7 @@ model/run artefacts
 Hal identity
 ```
 
-For the first port, encrypted EFS can preserve the existing file-oriented semantics with minimal application change.
+For an initial AWS-native storage substitution, encrypted EFS can preserve the existing file-oriented semantics with minimal application change.
 
 Later migrations to S3, DynamoDB, RDS, or another service are possible, but each storage redesign must preserve the relationships and persistence semantics currently relied upon by the application and tests.
 
@@ -414,7 +401,7 @@ frontend does not receive human holder private keys
 issuer does not become holder
 ```
 
-The first port can retain the holder-signer service and move its protected storage to an AWS-managed encrypted mechanism.
+The refactoring track can retain the holder-signer service while moving its protected storage to an AWS-managed encrypted mechanism.
 
 A later HSM/KMS redesign is possible, but should be treated as a separate cryptographic implementation change.
 
@@ -522,7 +509,7 @@ A service replacement should not require editing application configuration or re
 
 The local clean-clone deployment creates demonstration CA and leaf certificates with repository bootstrap scripts.
 
-The AWS first port has two valid strategies.
+The AWS refactoring track has two candidate strategies.
 
 ### Compatibility strategy
 
@@ -591,7 +578,7 @@ AWS IAM permissions used to deploy infrastructure are operational cloud permissi
 
 ## 25. AWS acceptance testing
 
-Do not declare the AWS port equivalent merely because all ECS services are healthy.
+> Do not declare an AWS-native refactoring equivalent merely because all ECS services are healthy.
 
 The local tests must be classified into two groups.
 
@@ -761,35 +748,28 @@ An AWS task becoming reachable after a security-group change is not evidence tha
 
 ---
 
-## 32. Porting sequence
+## 32. Refactoring sequence
 
-Recommended sequence:
+Each AWS-native substitution should be introduced independently where practical:
 
 ```text
-1. Deploy CPU profile first.
-2. Establish private service discovery and security groups.
-3. Preserve verifier/issuer mTLS through NLB TCP passthrough.
-4. Provision persistent governance and identity state.
-5. Bootstrap human members.
-6. Establish A+B governance envelope.
-7. Run A+B analytical lifecycle.
-8. Port issuer/capability tests.
-9. Port Mode 1A tests.
-10. Implement AWS Test5A equivalent.
-11. Run Test5C and Test5D.
-12. Run contextual Test5E.
-13. Declare architectural equivalence only after all affected gates are GREEN.
-14. Add CUDA profile if GPU acceleration is required.
-15. Optimise cloud architecture only after equivalence is frozen.
+1. Start from the GREEN Rapid Reference Port.
+2. Select one local implementation mechanism to replace.
+3. Identify the architectural relation and invariant it currently realises.
+4. Introduce the AWS-native mechanism in the Agile Team Environment.
+5. Run the corresponding positive and negative acceptance tests.
+6. Compare behaviour and evidence with the Rapid Reference Port.
+7. Accept the substitution only when the invariant remains observable.
+8. Freeze the accepted change before introducing the next substitution.
 ```
 
 Starting with CPU removes GPU infrastructure as a confounding variable during the first architectural port.
 
 ---
 
-## 33. Definition of first-port success
+## 33. Definition of refactoring success
 
-The first AWS port is successful when:
+The AWS refactoring track is successful when:
 
 1. the reference application runs on AWS;
 2. the selected CPU or CUDA compute profile is explicit and operational;
