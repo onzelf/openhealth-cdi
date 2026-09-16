@@ -18,7 +18,7 @@ ENVELOPE_ID="${1:-}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-ISSUER_IP="${ISSUER_IP:-192.168.1.25}"
+ISSUER_IP="${ISSUER_IP:-127.0.0.1}"
 ISSUER_PORT="${ISSUER_PORT:-9443}"
 
 POLICY_JSON="${SRC_DIR}/vfp-governance/verifier/state/policy.json"

@@ -3,7 +3,6 @@
 
 set -euo pipefail
 
-#LAN="${LAN:-192.168.1.25}"
 LAN="verifier.local"
 CRT="../vfp-governance/verifier/certs/hub.crt"
 KEY="../vfp-governance/verifier/certs/hub.key"

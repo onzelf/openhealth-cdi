@@ -25,7 +25,7 @@ HUB_URL="${HUB_URL:-http://127.0.0.1:8080}"
 
 ISSUER_HOST="${ISSUER_HOST:-issuer-hospitala.local}"
 ISSUER_PORT="${ISSUER_PORT:-9443}"
-ISSUER_IP="${ISSUER_IP:-192.168.1.25}"
+ISSUER_IP="${ISSUER_IP:-127.0.0.1}"
 ISSUER_URL="https://${ISSUER_HOST}:${ISSUER_PORT}"
 
 ORG_ID="org://HospitalA"

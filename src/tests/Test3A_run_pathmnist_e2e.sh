@@ -16,7 +16,7 @@ HTU="${HTU:-https://verifier.local/admission/check}"
 ISSUER_A_CONTAINER="${ISSUER_A_CONTAINER:-issuer-hospitala}"
 ISSUER_B_CONTAINER="${ISSUER_B_CONTAINER:-issuer-hospitalb}"
 
-ISSUER_PROXY_IP="${ISSUER_PROXY_IP:-192.168.1.25}"
+ISSUER_PROXY_IP="${ISSUER_PROXY_IP:-127.0.0.1}"
 ISSUER_PROXY_PORT="${ISSUER_PROXY_PORT:-9443}"
 
 CA_CRT="${CA_CRT:-../vfp-governance/verifier/certs/ca.crt}"

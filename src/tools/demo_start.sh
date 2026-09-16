@@ -4,7 +4,7 @@ set -euo pipefail
 # OpenHealth-CDI WSL cold-start bootstrap.
 #
 # Contract:
-#   1. Prove that the expected Docker Desktop  / OpenTofu substrate is
+#   1. Prove that the expected Docker  / OpenTofu substrate is
 #      coherent before touching the running deployment.
 #   2. Refuse to proceed if persistent identity or issuer state is missing.
 #   3. Only then replace the disposable container layer and reconcile it from

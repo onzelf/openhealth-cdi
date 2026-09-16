@@ -5,7 +5,7 @@
 # It does not edit files, register members, or invoke OpenTofu.
 #
 # Usage:
-#   ISSUER_IP=192.168.1.25 \
+#   ISSUER_IP=127.0.0.1 \
 #     ./Test2D_issuer_owned_entitlements.sh <valid-envelope-id>
 
 set -euo pipefail
@@ -13,7 +13,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ENVELOPE_ID="${1:-}"
-ISSUER_IP="${ISSUER_IP:-192.168.1.25}"
+ISSUER_IP="${ISSUER_IP:-127.0.0.1}"
 ISSUER_PORT="${ISSUER_PORT:-9443}"
 
 ACTORS="${SRC_DIR}/vfp-core/issuers/config/actors.json"
