@@ -112,7 +112,8 @@ Detailed documentation is organised by concern:
 - [Mode 1B and agent participation](doc/MODE1B.md)
 - [Tests and conformance evidence](doc/TESTING.md)
 - [Deployment](doc/DEPLOYMENT.md)
-- [AWS porting guide](doc/AWS-PORTING.md)
+- [AWS Rapid Reference Port](doc/AWS-PORTING.md)
+- [AWS refactoring guide](doc/AWS-REFACTORING.md)
 - [Troubleshooting](doc/TROUBLESHOOTING.md)
 - [Release and reproducibility](doc/RELEASE.md)
 

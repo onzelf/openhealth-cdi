@@ -61,7 +61,7 @@ This changes the AWS baseline materially.
 
 The A, B, and C Flower clients can run as ordinary CPU container workloads.
 
-This makes ECS on Fargate a valid first-port option for the complete application stack if its CPU and memory requirements are acceptable.
+This makes ECS on Fargate a valid refactoring option for the complete application stack if its CPU and memory requirements are acceptable.
 
 ### CUDA profile
 
@@ -69,7 +69,7 @@ When GPU acceleration is required, Flower clients must run on GPU-capable comput
 
 The CUDA profile also requires the appropriate NVIDIA runtime and container configuration.
 
-### Porting invariant
+### Refactoring invariant
 
 CPU versus CUDA is an execution-profile choice. It is **not** a governance distinction.
 
@@ -150,7 +150,7 @@ A conservative first refactoring baseline can use:
 - ECS Service Connect or equivalent private service discovery;
 - an HTTPS load balancer for the dashboard only;
 - internal NLB TCP passthrough for verifier and issuer mTLS edges;
-- encrypted EFS for first-port file-compatible persistent state;
+- encrypted EFS for file-compatible persistent state;
 - AWS Secrets Manager for the external reasoning credential;
 - Fargate for CPU services where suitable;
 - GPU EC2 capacity only when the CUDA profile is selected.
@@ -180,7 +180,7 @@ This is an experimental AWS-native baseline evaluated against the Rapid Referenc
 | Docker DNS names | Service Connect/private DNS | service replacement does not require manual address repair |
 | CPU/CUDA environment | task definition / capacity selection | selected compute backend is explicit and testable |
 
-The AWS port should be reviewed against this table before architectural optimisation.
+The AWS refactoring should be reviewed against this table before architectural optimisation.
 
 ---
 
@@ -226,7 +226,7 @@ path.
 
 ## 8. Security-group matrix
 
-A first-port matrix should explicitly encode the allowed relationships.
+The refactoring environment should explicitly encode the allowed relationships.
 
 | Source | Destination | Expected |
 | --- | --- | --- |
@@ -435,7 +435,7 @@ DEVICE=cpu
 
 No NVIDIA runtime is required for that task.
 
-The AWS port should not assume that the presence of a CUDA-capable wheel means GPU infrastructure is mandatory.
+The AWS refactoring should not assume that the presence of a CUDA-capable wheel means GPU infrastructure is mandatory.
 
 ---
 
@@ -661,7 +661,7 @@ Table 7 decision plane
 contextual Mode 1B execution
 ```
 
-The AWS port should preserve this composite acceptance structure.
+The AWS refactoring should preserve this composite acceptance structure.
 
 The literal shell script may change because endpoint discovery and isolation assertions change, but the final release condition should remain equivalent:
 
@@ -763,7 +763,7 @@ Each AWS-native substitution should be introduced independently where practical:
 8. Freeze the accepted change before introducing the next substitution.
 ```
 
-Starting with CPU removes GPU infrastructure as a confounding variable during the first architectural port.
+Using CPU for an initial substitution can remove GPU execution as an irrelevant confounding variable while the Rapid Reference Port retains the complete GPU-capable baseline.
 
 ---
 

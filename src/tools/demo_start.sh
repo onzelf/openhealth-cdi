@@ -4,7 +4,7 @@ set -euo pipefail
 # OpenHealth-CDI WSL cold-start bootstrap.
 #
 # Contract:
-#   1. Prove that the expected Docker Desktop / WSL / OpenTofu substrate is
+#   1. Prove that the expected Docker Desktop  / OpenTofu substrate is
 #      coherent before touching the running deployment.
 #   2. Refuse to proceed if persistent identity or issuer state is missing.
 #   3. Only then replace the disposable container layer and reconcile it from
@@ -156,11 +156,11 @@ done
 pass "Required commands available"
 
 # ------------------------------------------------------------
-# 1. Docker Desktop / WSL integration
+# 1. Docker runtime
 # ------------------------------------------------------------
 
 echo
-echo "[1/9] Checking Docker Desktop / WSL integration..."
+echo "[1/9] Checking Docker runtime..."
 
 for _ in $(seq 1 30); do
   if docker info >/dev/null 2>&1; then
@@ -174,7 +174,7 @@ docker info >/dev/null 2>&1 || fail "Docker is not ready."
 pass "Docker daemon is reachable"
 
 # ------------------------------------------------------------
-# 2. WSL verifier.local invariant
+# 2. verifier.local invariant
 # ------------------------------------------------------------
 #
 # EC2 can use:
@@ -184,14 +184,14 @@ echo
 echo "[2/9] Checking verifier.local..."
 
 getent hosts verifier.local >/dev/null 2>&1 \
-  || fail "verifier.local is not resolvable. Expected 127.0.0.1 verifier.local in /etc/hosts."
+  || fail "verifier.local is not resolvable."
 
 getent hosts verifier.local \
   | awk '{print $1}' \
   | grep -qx "${EXPECTED_VERIFIER_IP}" \
   || fail "verifier.local does not resolve to ${EXPECTED_VERIFIER_IP}."
 
-pass "verifier.local -> 127.0.0.1"
+pass "verifier.local -> ${EXPECTED_VERIFIER_IP}"
 
 # ------------------------------------------------------------
 # 3. Host-backed persistent material
@@ -340,7 +340,7 @@ done
 # 7. Reconcile deployment from the already-validated OpenTofu state
 # ------------------------------------------------------------
 #
-# main.tf uses edege_bind_ip 
+# main.tf uses edge_bind_ip 
 # edge_bind_ip = "0.0.0.0"
 
 echo

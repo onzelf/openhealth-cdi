@@ -149,7 +149,7 @@ The instance must have sufficient CPU, memory and disk capacity for the complete
 
 No ECS cluster, ECR repository, EFS filesystem, managed Redis service or AWS-native policy service is required for the Rapid Reference Port.
 
-The Rapid Reference Port uses a GPU-capable EC2 host so that the complete CUDA reference workload remains available. The initial deployment may nevertheless select compute_backend = "cpu" to reduce GPU execution dependencies during bootstrap and validation. Switching to cuda changes the execution profile, not the governance architecture.
+The Rapid Reference Port uses a GPU-capable EC2 host so that the complete CUDA reference workload remains available. The initial deployment defaults to **compute_backend = "cpu"** to reduce GPU execution dependencies during bootstrap and validation. Switching to cuda changes the execution profile, not the governance architecture.
 
 ---
 
