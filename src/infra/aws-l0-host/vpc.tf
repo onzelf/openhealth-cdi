@@ -1,19 +1,15 @@
-# adopts the account's existing default vpc/subnet into terraform, rather
-# than creating a new one. matches "normal ec2 networking" from the l0 spec -
-# no custom network design needed at this stage.
+# reads the account's existing default vpc/subnet - read-only, changes
+# nothing in aws. we use existing networking as-is rather than owning or
+# tagging it, matching "normal ec2 networking" from the l0 spec.
 
-resource "aws_default_vpc" "main" {
-  tags = {
-    Name = "${var.project_name}-vpc"
-  }
+data "aws_vpc" "default" {
+  default = true
 }
 
-# only one subnet is needed for a single-host l0 deployment. the other 3
-# default subnets (b/c/d) stay in aws, untouched and unmanaged by this module.
-resource "aws_default_subnet" "main" {
+# only one subnet is needed for a single-host l0 deployment. the other
+# default subnets (b/c/d) exist in aws but are never looked up here.
+data "aws_subnet" "default" {
+  vpc_id            = data.aws_vpc.default.id
   availability_zone = "${var.aws_region}a"
-
-  tags = {
-    Name = "${var.project_name}-subnet-a"
-  }
+  default_for_az    = true
 }
