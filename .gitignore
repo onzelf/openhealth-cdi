@@ -4,6 +4,8 @@
 spec/
 src/infra/tofu/terraform.tfstate*
 src/infra/tofu/compute.auto.tfvars
+src/infra/aws-l0-host/terraform.tfstate*
+src/infra/aws-l0-host/*.auto.tfvars
 src/vfp-governance/verifier/certs/
 src/vfp-governance/verifier/state/binds/
 src/vfp-governance/verifier/state/envelopes/
