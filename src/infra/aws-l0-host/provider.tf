@@ -1,7 +1,4 @@
-# which aws account and region this module talks to.
-#
-# chris/igor: profile/region come from variables.tf, not hardcoded here -
-# same file works against the sandbox now and the permanent/other account later.
+# Configure AWS authentication, region and resource tags.
 
 provider "aws" {
   region  = var.aws_region

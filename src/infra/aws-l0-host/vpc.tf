@@ -1,13 +1,10 @@
-# reads the account's existing default vpc/subnet - read-only, changes
-# nothing in aws. we use existing networking as-is rather than owning or
-# tagging it, matching "normal ec2 networking" from the l0 spec.
+# Look up existing default networking without managing its settings or tags.
 
 data "aws_vpc" "default" {
   default = true
 }
 
-# only one subnet is needed for a single-host l0 deployment. the other
-# default subnets (b/c/d) exist in aws but are never looked up here.
+# Select the default subnet in the configured region's availability zone a.
 data "aws_subnet" "default" {
   vpc_id            = data.aws_vpc.default.id
   availability_zone = "${var.aws_region}a"

@@ -1,4 +1,4 @@
-# which terraform version and aws provider this module needs.
+# Terraform and AWS provider version requirements.
 
 terraform {
   required_version = ">= 1.5"

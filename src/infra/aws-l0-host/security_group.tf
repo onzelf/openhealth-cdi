@@ -1,6 +1,5 @@
-# allows ssh in on port 22 from one address only (ssh_allowed_cidr).
-# outbound is left unrestricted - a deliberate choice for this l0 bootstrap
-# stage; scoping egress down to specific ports is follow-up work.
+# Allow SSH from one IPv4 address and unrestricted IPv4 outbound traffic
+# for the L0 bootstrap.
 
 resource "aws_security_group" "l0_host" {
   name        = "${var.project_name}-ssh-only"
@@ -15,8 +14,8 @@ resource "aws_security_group" "l0_host" {
     cidr_blocks = [var.ssh_allowed_cidr]
   }
 
-  # dashboard/hub ports are deliberately not opened here - per the l0 spec,
-  # they're reached through an ssh tunnel, never exposed directly.
+  # Access the dashboard and Hub through an SSH tunnel; no inbound rules
+  # for their ports are defined here.
 
   egress {
     description = "all outbound traffic - deliberately unrestricted for now"
