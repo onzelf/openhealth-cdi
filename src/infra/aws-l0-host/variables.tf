@@ -37,3 +37,18 @@ variable "root_volume_size_gb" {
   type        = number
   default     = 150
 }
+
+# no default on purpose - this makes the value a required input at
+# plan/apply time, not a stored default. it doesn't by itself stop the
+# value from being committed elsewhere (a tracked tfvars file, etc).
+variable "ssh_allowed_cidr" {
+  description = "CIDR allowed to SSH in on port 22, e.g. your_ip/32"
+  type        = string
+
+  # must be exactly one ipv4 address (/32) - cidrnetmask() only accepts
+  # ipv4, so this also rejects ipv6 input.
+  validation {
+    condition     = can(cidrnetmask(var.ssh_allowed_cidr)) && endswith(var.ssh_allowed_cidr, "/32")
+    error_message = "ssh_allowed_cidr must be a single IPv4 address in /32 form, e.g. 203.0.113.4/32."
+  }
+}
