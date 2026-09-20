@@ -1,8 +1,13 @@
 import os
 import time
+import base64
+import hashlib
+import hmac
 from typing import Dict, Optional
 
 import requests
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
@@ -23,6 +28,18 @@ ADMIN_KEY = os.getenv("ADMIN_KEY", "/run/certs/admin.key")
 REGISTRY_DIR = os.getenv("REGISTRY_DIR", "/vault/registry")
 
 _registry_lock = Lock()
+_mint_replay_lock = Lock()
+
+MINT_PROOF_HTU = os.getenv(
+    "MINT_PROOF_HTU",
+    "urn:openhealth:issuer:mint",
+).strip()
+MINT_PROOF_MAX_AGE_SECONDS = int(
+    os.getenv("MINT_PROOF_MAX_AGE_SECONDS", "120")
+)
+MINT_PROOF_CLOCK_SKEW_SECONDS = int(
+    os.getenv("MINT_PROOF_CLOCK_SKEW_SECONDS", "30")
+)
 
 def _org_slug(org: str) -> str:
     return org.replace("://", "__").replace("/", "_").replace(":", "_")
@@ -42,6 +59,139 @@ def _save_registry(org: str, data: Dict[str, dict]) -> None:
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, indent=2, sort_keys=True))
     os.replace(tmp, p)  # atomic
+
+
+def _b64url_decode(value: str) -> bytes:
+    encoded = value.encode("ascii")
+    encoded += b"=" * ((4 - len(encoded) % 4) % 4)
+    return base64.urlsafe_b64decode(encoded)
+
+
+def _jwk_thumbprint(jwk: Dict[str, str]) -> str:
+    canonical = json.dumps(
+        {
+            "crv": jwk["crv"],
+            "kty": jwk["kty"],
+            "x": jwk["x"],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    digest = hashlib.sha256(canonical).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
+def _mint_replay_path(org: str) -> pathlib.Path:
+    pathlib.Path(REGISTRY_DIR).mkdir(parents=True, exist_ok=True)
+    return pathlib.Path(REGISTRY_DIR) / f"{_org_slug(org)}.mint-jti.json"
+
+
+def _consume_mint_jti(org: str, jti: str, now: int) -> None:
+    path = _mint_replay_path(org)
+    with _mint_replay_lock:
+        if path.exists():
+            try:
+                seen = json.loads(path.read_text())
+            except Exception:
+                seen = {}
+        else:
+            seen = {}
+
+        seen = {
+            key: int(expiry)
+            for key, expiry in seen.items()
+            if int(expiry) > now
+        }
+        if jti in seen:
+            raise HTTPException(409, "mint_proof_replayed")
+
+        seen[jti] = (
+            now
+            + MINT_PROOF_MAX_AGE_SECONDS
+            + MINT_PROOF_CLOCK_SKEW_SECONDS
+        )
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(seen, indent=2, sort_keys=True))
+        os.replace(tmp, path)
+
+
+def _verify_holder_mint_proof(
+    compact_jws: str,
+    member: Dict[str, str],
+    envelope_id: str,
+) -> None:
+    try:
+        encoded_header, encoded_claims, encoded_signature = compact_jws.split(".")
+        header = json.loads(_b64url_decode(encoded_header))
+        claims = json.loads(_b64url_decode(encoded_claims))
+        signature = _b64url_decode(encoded_signature)
+    except Exception as exc:
+        raise HTTPException(401, "invalid_holder_mint_proof") from exc
+
+    if not isinstance(header, dict) or not isinstance(claims, dict):
+        raise HTTPException(401, "invalid_holder_mint_proof")
+
+    jwk = header.get("jwk") or {}
+    if (
+        header.get("typ") != "dpop+jwt"
+        or header.get("alg") != "EdDSA"
+        or not isinstance(jwk, dict)
+        or jwk.get("kty") != "OKP"
+        or jwk.get("crv") != "Ed25519"
+        or not jwk.get("x")
+    ):
+        raise HTTPException(401, "invalid_holder_mint_proof_header")
+
+    try:
+        proof_jkt = _jwk_thumbprint(jwk)
+    except Exception as exc:
+        raise HTTPException(401, "invalid_holder_mint_proof_jwk") from exc
+
+    if not hmac.compare_digest(str(member.get("jkt") or ""), proof_jkt):
+        raise HTTPException(401, "holder_mint_key_mismatch")
+    if not hmac.compare_digest(
+        str(member.get("pub_b64") or ""),
+        str(jwk["x"]),
+    ):
+        raise HTTPException(401, "holder_mint_public_key_mismatch")
+
+    try:
+        public_key = Ed25519PublicKey.from_public_bytes(
+            _b64url_decode(str(jwk["x"]))
+        )
+        public_key.verify(
+            signature,
+            f"{encoded_header}.{encoded_claims}".encode("ascii"),
+        )
+    except (InvalidSignature, ValueError, TypeError) as exc:
+        raise HTTPException(401, "invalid_holder_mint_signature") from exc
+
+    if claims.get("htu") != MINT_PROOF_HTU:
+        raise HTTPException(401, "holder_mint_htu_mismatch")
+    if claims.get("htm") != "POST":
+        raise HTTPException(401, "holder_mint_htm_mismatch")
+    if claims.get("envelope_id") != envelope_id:
+        raise HTTPException(401, "holder_mint_envelope_mismatch")
+
+    jti = str(claims.get("jti") or "").strip()
+    if not jti:
+        raise HTTPException(401, "holder_mint_jti_missing")
+    if not str(claims.get("nonce") or "").strip():
+        raise HTTPException(401, "holder_mint_nonce_missing")
+
+    try:
+        iat = int(claims["iat"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(401, "holder_mint_iat_invalid") from exc
+
+    now = int(time.time())
+    if iat > now + MINT_PROOF_CLOCK_SKEW_SECONDS:
+        raise HTTPException(401, "holder_mint_proof_from_future")
+    if now - iat > MINT_PROOF_MAX_AGE_SECONDS:
+        raise HTTPException(401, "holder_mint_proof_expired")
+
+    _consume_mint_jti(ORG, jti, now)
+
 
 # Organization-scoped issuer profile -> policy capset mapping.
 CAP_PROFILE_BY_ORG = json.load(
@@ -65,6 +215,7 @@ def _verify_arg():
 class MintReq(BaseModel):
     sub: str
     envelope_id: str
+    holder_dpop: str
     nbf: Optional[str] = None
     exp: Optional[str] = None
 
@@ -171,6 +322,12 @@ def mint(req: MintReq):
     m = db.get(subject)
     if not m:
         raise HTTPException(404, f"unknown_sub:{subject}")
+
+    _verify_holder_mint_proof(
+        req.holder_dpop,
+        m,
+        req.envelope_id,
+    )
 
     # The issuer, not the caller, assigns the authorization profiles.
     entitlement_org = str(MEMBER_ENTITLEMENTS.get("org", "")).strip()

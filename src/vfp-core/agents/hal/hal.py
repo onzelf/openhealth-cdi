@@ -25,6 +25,10 @@ DPOP_HTU = os.getenv(
     "DPOP_HTU",
     "https://verifier.local/admission/check",
 )
+MINT_PROOF_HTU = os.getenv(
+    "MINT_PROOF_HTU",
+    "urn:openhealth:issuer:mint",
+)
 
 OPENAI_ENV_FILE = Path(
     os.getenv("OPENAI_ENV_FILE", "/run/secrets/openai.env")
@@ -131,7 +135,8 @@ def encode_json(value: dict) -> str:
 def sign_dpop(private_key: Ed25519PrivateKey, payload: dict) -> str:
     # Holder identity is established by the key bound into the ECT.
     # The caller does not select a subject name for this signer.
-    if payload.get("htu") != DPOP_HTU:
+    htu = str(payload.get("htu") or "").strip()
+    if htu not in {DPOP_HTU, MINT_PROOF_HTU}:
         raise ValueError("invalid_htu")
     if payload.get("htm") != "POST":
         raise ValueError("invalid_htm")
@@ -149,7 +154,7 @@ def sign_dpop(private_key: Ed25519PrivateKey, payload: dict) -> str:
         "jwk": jwk,
     })
     claims = encode_json({
-        "htu": DPOP_HTU,
+        "htu": htu,
         "htm": "POST",
         "iat": int(time.time()),
         "jti": jti,

@@ -79,6 +79,10 @@ DPOP_HTU = os.getenv(
     "DPOP_HTU",
     "https://verifier.local/admission/check",
 )
+MINT_PROOF_HTU = os.getenv(
+    "MINT_PROOF_HTU",
+    "urn:openhealth:issuer:mint",
+)
 
 VERIFIER_URL = os.getenv(
     "VERIFIER_URL",
@@ -244,6 +248,7 @@ class KyoApprovalRequest(BaseModel):
 
 class HolderEctMintRequest(BaseModel):
     envelope_id: str
+    holder_dpop: Optional[str] = None
 
 
 class UserInferenceRequest(BaseModel):
@@ -518,13 +523,19 @@ def mint_principal_ect(
     principal: str,
     principal_context: Dict[str, Any],
     envelope_id: str,
+    holder_dpop: Optional[str] = None,
 ) -> str:
+    holder_proof = str(holder_dpop or "").strip()
+    if not holder_proof:
+        raise HTTPException(400, "holder_mint_proof_required")
+
     try:
         response = requests.post(
             principal_context["issuer_url"] + "/mint",
             json={
                 "sub": principal,
                 "envelope_id": envelope_id,
+                "holder_dpop": holder_proof,
             },
             timeout=15,
         )
@@ -548,6 +559,7 @@ def sign_principal_dpop(
     nonce: str,
     jti: str,
     signer_url: Optional[str] = None,
+    htu: str = DPOP_HTU,
 ) -> str:
     target_signer = (signer_url or SIGNER_URL).rstrip("/")
     try:
@@ -555,7 +567,7 @@ def sign_principal_dpop(
             target_signer + "/dpop/sign",
             json={
                 "sub": principal,
-                "htu": DPOP_HTU,
+                "htu": htu,
                 "htm": "POST",
                 "jti": jti,
                 "nonce": nonce,
@@ -1348,7 +1360,30 @@ def administration_mint_holder_ect(
     if active_envelope.get("exp") and float(active_envelope["exp"]) <= time.time():
         raise HTTPException(409, "selected_envelope_expired")
 
-    ect = mint_principal_ect(principal, principal_context, selected_id)
+    holder_dpop = str(req.holder_dpop or "").strip()
+    if not holder_dpop:
+        if principal_context.get("actor_type") != "agent":
+            raise HTTPException(400, "holder_mint_proof_required")
+        signer_url = str(
+            principal_context.get("dpop_signer_url") or ""
+        ).strip()
+        if not signer_url:
+            raise HTTPException(409, "holder_signer_not_configured")
+        holder_dpop = sign_principal_dpop(
+            principal,
+            selected_id,
+            "mint-" + secrets.token_urlsafe(18),
+            "mint-" + secrets.token_urlsafe(18),
+            signer_url=signer_url,
+            htu=MINT_PROOF_HTU,
+        )
+
+    ect = mint_principal_ect(
+        principal,
+        principal_context,
+        selected_id,
+        holder_dpop,
+    )
     claims = decode_ect_claims(ect)
     if claims.get("envelope_id") != selected_id:
         raise HTTPException(502, "minted_ect_envelope_mismatch")
@@ -1359,21 +1394,28 @@ def administration_mint_holder_ect(
     if expires_at <= int(time.time()):
         raise HTTPException(502, "minted_ect_already_expired")
 
-    credential_key = principal_runtime_key(selected_id, principal)
-    holder_runtime_credentials[credential_key] = {
-        "principal": principal,
-        "envelope_id": selected_id,
-        "ect": ect,
-        "expires_at": expires_at,
-        "expired": False,
-    }
+    if principal_context.get("actor_type") == "agent":
+        credential_key = principal_runtime_key(selected_id, principal)
+        holder_runtime_credentials[credential_key] = {
+            "principal": principal,
+            "envelope_id": selected_id,
+            "ect": ect,
+            "expires_at": expires_at,
+            "expired": False,
+        }
 
     return {
         "principal": principal,
         "envelope_id": selected_id,
+        "ect": ect,
         "ect_preview": compact_ect_preview(ect),
         "expires_at": expires_at,
         "ready": True,
+        "custody": (
+            "hub_runtime"
+            if principal_context.get("actor_type") == "agent"
+            else "holder"
+        ),
     }
 
 
