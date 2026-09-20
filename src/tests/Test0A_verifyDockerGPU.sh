@@ -49,7 +49,7 @@ if [[ -d /sys/bus/pci/devices ]]; then
       NVIDIA_GPU_PRESENT=1
       break
     fi
-  done < <(find /sys/bus/pci/devices -maxdepth 2 -name vendor -type f 2>/dev/null)
+  done < <(find -L /sys/bus/pci/devices -maxdepth 2 -name vendor -type f 2>/dev/null)
 fi
 
 if [[ "$NVIDIA_GPU_PRESENT" -eq 0 ]]; then
