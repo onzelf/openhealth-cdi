@@ -11,9 +11,20 @@ import {
 } from "recharts";
 
 import logoUrl from "../openhealth_logo.avif";
+import {
+  createHolderIdentity,
+  getHolderCredential,
+  getHolderIdentity,
+  holderEnrollmentRecord,
+  putHolderCredential,
+  signHolderDpop,
+} from "./holderCrypto";
+
 const RUN_ID = import.meta.env.VITE_RUN_ID || "local-pathmnist-ab-001";
 const APP_VERSION = "v0.3.2-react-vite";
 const POLL_MS = 2500;
+const DPOP_HTU = "https://verifier.local/admission/check";
+const MINT_PROOF_HTU = "urn:openhealth:issuer:mint";
 const ADMIN_TABS = ["training", "metrics", "clients", "events", "evidence"];
 const USER_TABS = ["model-use", "events", "evidence"];
 const USER_TISSUES = [
@@ -80,10 +91,14 @@ async function getJson(path) {
   return response.json();
 }
 
-async function postJson(path, payload) {
+async function postJson(path, payload, extraHeaders = {}) {
+  const headers = {
+    ...(payload ? { "Content-Type": "application/json" } : {}),
+    ...extraHeaders,
+  };
   const response = await fetch(`/api${path}`, {
     method: "POST",
-    headers: payload ? { "Content-Type": "application/json" } : undefined,
+    headers: Object.keys(headers).length ? headers : undefined,
     body: payload ? JSON.stringify(payload) : undefined,
   });
   if (!response.ok) {
@@ -97,6 +112,25 @@ async function postJson(path, payload) {
     throw new Error(`${path} failed: ${response.status}${detail}`);
   }
   return response.json();
+}
+
+function proofToken(prefix) {
+  return `${prefix}-${window.crypto.randomUUID()}`;
+}
+
+function downloadJsonFile(filename, payload) {
+  const blob = new Blob(
+    [JSON.stringify(payload, null, 2) + "\n"],
+    { type: "application/json" }
+  );
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 function formatMetric(rows, key) {
@@ -127,6 +161,55 @@ function compactIdentifier(value) {
   return value.length > 18
     ? `${value.slice(0, 8)}…${value.slice(-4)}`
     : value;
+}
+
+async function overlayBrowserHolderCredentials(boundary) {
+  const envelopeId = boundary.selected_envelope_id;
+  if (!envelopeId) {
+    return boundary;
+  }
+
+  const holders = await Promise.all(
+    (boundary.holders || []).map(async (holder) => {
+      if (holder.actor_type !== "human") {
+        return holder;
+      }
+
+      const credential = await getHolderCredential(
+        holder.principal,
+        envelopeId
+      );
+      if (!credential) {
+        return {
+          ...holder,
+          credential_custody: "holder",
+          ect_status: "missing",
+          ect_preview: "",
+          expires_at: null,
+        };
+      }
+
+      const expiresAt = Number(credential.expires_at || 0);
+      const expired =
+        Boolean(expiresAt) &&
+        expiresAt <= Math.floor(Date.now() / 1000);
+
+      return {
+        ...holder,
+        credential_custody: "holder",
+        ect_status: expired ? "expired" : "ready",
+        ect_preview: expired
+          ? ""
+          : compactIdentifier(credential.ect),
+        expires_at: expiresAt || null,
+      };
+    })
+  );
+
+  return {
+    ...boundary,
+    holders,
+  };
 }
 
 function admissionDecision(admission) {
@@ -1807,7 +1890,9 @@ export default function App() {
   async function refreshAdministration() {
     try {
       const boundary = await getJson("/administration/boundary");
-      setAdministration(boundary);
+      const browserAwareBoundary =
+        await overlayBrowserHolderCredentials(boundary);
+      setAdministration(browserAwareBoundary);
       setAdministrationError("");
     } catch (err) {
       setAdministrationError(err.message);
@@ -1917,9 +2002,68 @@ export default function App() {
     setAdministrationBusy(true);
     setAdministrationError("");
     try {
-      await postJson(`/administration/holders/${principal}/mint-ect`, {
-        envelope_id: administration.selected_envelope_id,
-      });
+      const holder = (administration.holders || []).find(
+        (item) => item.principal === principal
+      );
+      if (!holder) {
+        throw new Error(`unknown_holder:${principal}`);
+      }
+
+      const envelopeId = administration.selected_envelope_id;
+      if (!envelopeId) {
+        throw new Error("no_envelope_selected");
+      }
+
+      if (holder.actor_type === "human") {
+        let identity = await getHolderIdentity(principal);
+        if (!identity) {
+          identity = await createHolderIdentity(principal);
+          const enrollment = await holderEnrollmentRecord(
+            principal,
+            holder.organization_id
+          );
+          downloadJsonFile(
+            `${principal}-holder-enrollment.json`,
+            enrollment
+          );
+          setAdministrationError(
+            `Browser key created for ${principal}. ` +
+            "Rotate the issuer binding with " +
+            "src/tools/rotate_holder_key.sh using the downloaded file, " +
+            "then click MINT ECT again."
+          );
+          return;
+        }
+
+        const holderDpop = await signHolderDpop(principal, {
+          htu: MINT_PROOF_HTU,
+          htm: "POST",
+          jti: proofToken("mint-jti"),
+          nonce: proofToken("mint-nonce"),
+          envelopeId,
+        });
+        const result = await postJson(
+          `/administration/holders/${principal}/mint-ect`,
+          {
+            envelope_id: envelopeId,
+            holder_dpop: holderDpop,
+          }
+        );
+        await putHolderCredential(
+          principal,
+          envelopeId,
+          {
+            ect: result.ect,
+            expires_at: result.expires_at,
+          }
+        );
+      } else {
+        await postJson(
+          `/administration/holders/${principal}/mint-ect`,
+          { envelope_id: envelopeId }
+        );
+      }
+
       await refreshAll();
     } catch (err) {
       setAdministrationError(err.message);
@@ -1934,7 +2078,6 @@ export default function App() {
     setUserError("");
     setUserInferenceResult(null);
     try {
-
       const llmAgent =
         activeScenarioId === "mode1b" && mode1bUseCase === "llm";
 
@@ -1961,7 +2104,46 @@ export default function App() {
             topk: 3,
           };
 
-    const result = await postJson(inferencePath, requestBody);
+      let evidenceHeaders = {};
+      if (!llmAgent && !governanceAgent) {
+        const envelopeId = administration.selected_envelope_id;
+        const credential = await getHolderCredential(
+          userPrincipal,
+          envelopeId
+        );
+        if (!credential) {
+          throw new Error(`ect_not_ready:${userPrincipal}`);
+        }
+        if (
+          credential.expires_at &&
+          Number(credential.expires_at) <=
+            Math.floor(Date.now() / 1000)
+        ) {
+          throw new Error(`ect_expired:${userPrincipal}`);
+        }
+
+        const jti = proofToken("jti");
+        const nonce = proofToken("nonce");
+        const dpop = await signHolderDpop(userPrincipal, {
+          htu: DPOP_HTU,
+          htm: "POST",
+          jti,
+          nonce,
+          envelopeId,
+        });
+        requestBody.jti = jti;
+        evidenceHeaders = {
+          Authorization: `ECT ${credential.ect}`,
+          DPoP: dpop,
+          "X-DPoP-Nonce": nonce,
+        };
+      }
+
+      const result = await postJson(
+        inferencePath,
+        requestBody,
+        evidenceHeaders
+      );
       setUserInferenceResult(result);
     } catch (err) {
       setUserError(err.message);

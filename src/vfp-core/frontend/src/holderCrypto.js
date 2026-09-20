@@ -189,3 +189,52 @@ export async function signHolderDpop(
   );
   return `${signingInput}.${bytesToBase64Url(signature)}`;
 }
+
+export async function getHolderCredential(principal, envelopeId) {
+  const identity = await getHolderIdentity(principal);
+  if (!identity) {
+    return null;
+  }
+  return identity.credentials?.[envelopeId] || null;
+}
+
+export async function putHolderCredential(
+  principal,
+  envelopeId,
+  credential
+) {
+  const identity = await getHolderIdentity(principal);
+  if (!identity) {
+    throw new Error(`holder_key_missing:${principal}`);
+  }
+  if (!envelopeId || !credential?.ect) {
+    throw new Error("invalid_holder_credential");
+  }
+
+  const record = {
+    ...identity,
+    credentials: {
+      ...(identity.credentials || {}),
+      [envelopeId]: {
+        ect: credential.ect,
+        expires_at: credential.expires_at || null,
+        stored_at: new Date().toISOString(),
+      },
+    },
+  };
+  await withStore("readwrite", (store) => store.put(record));
+  return record.credentials[envelopeId];
+}
+
+export async function deleteHolderCredential(principal, envelopeId) {
+  const identity = await getHolderIdentity(principal);
+  if (!identity) {
+    return;
+  }
+  const credentials = { ...(identity.credentials || {}) };
+  delete credentials[envelopeId];
+  await withStore(
+    "readwrite",
+    (store) => store.put({ ...identity, credentials })
+  );
+}

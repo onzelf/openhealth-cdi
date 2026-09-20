@@ -257,6 +257,7 @@ class UserInferenceRequest(BaseModel):
     run_id: str = RUN_ID
     requested_tissue: str
     topk: int = Field(default=3, ge=1, le=9)
+    jti: Optional[str] = None
 
 class AgentMediatedInferenceRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -2585,8 +2586,13 @@ def mode1b_agent_request(
 
 
 @app.post("/user/inference")
-def user_inference(req: UserInferenceRequest) -> Dict[str, Any]:
-    """Use the Hub-held ECT for governed user inference with fresh DPoP."""
+def user_inference(
+    req: UserInferenceRequest,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    dpop_header: Optional[str] = Header(None, alias="DPoP"),
+    dpop_nonce: Optional[str] = Header(None, alias="X-DPoP-Nonce"),
+) -> Dict[str, Any]:
+    """Relay holder-custodied ECT and DPoP to Gatekeeper."""
     if req.run_id != RUN_ID:
         raise HTTPException(404, f"unknown_run:{req.run_id}")
     if req.requested_tissue not in PATHMNIST_QUERY_TISSUES + ["background"]:
@@ -2606,33 +2612,29 @@ def user_inference(req: UserInferenceRequest) -> Dict[str, Any]:
         raise HTTPException(400, f"unknown_principal:{req.principal}")
     if not actor_is_operational(principal_context):
         raise HTTPException(409, f"actor_not_operational:{req.principal}")
+    if principal_context.get("actor_type") != "human":
+        raise HTTPException(403, "human_holder_required")
 
-    credential_key = principal_runtime_key(selected_id, req.principal)
-    credential = holder_runtime_credentials.get(credential_key)
-    if not credential:
-        raise HTTPException(409, "ect_not_ready")
+    if not authorization or not authorization.startswith("ECT "):
+        raise HTTPException(401, "holder_ect_required")
+    if not dpop_header or not dpop_nonce or not req.jti:
+        raise HTTPException(401, "holder_proof_required")
 
-    expires_at = credential.get("expires_at")
-    if expires_at and int(expires_at) <= int(time.time()):
-        credential["expired"] = True
-        raise HTTPException(409, "ect_expired")
+    ect = authorization.split(" ", 1)[1].strip()
+    if not ect:
+        raise HTTPException(401, "holder_ect_required")
+    claims = decode_ect_claims(ect)
+    if str(claims.get("sub") or "") != req.principal:
+        raise HTTPException(401, "presented_ect_subject_mismatch")
 
-    nonce = "nonce-" + secrets.token_urlsafe(18)
-    jti = "jti-" + secrets.token_urlsafe(18)
-    dpop = sign_principal_dpop(
-        req.principal,
-        selected_id,
-        nonce,
-        jti,
-    )
     admission = request_prediction_admission(
         envelope_id=selected_id,
         run_id=req.run_id,
         requested_tissues=[req.requested_tissue],
-        jti=jti,
-        authorization=f"ECT {credential['ect']}",
-        dpop=dpop,
-        dpop_nonce=nonce,
+        jti=req.jti,
+        authorization=authorization,
+        dpop=dpop_header,
+        dpop_nonce=dpop_nonce,
     )
 
     model_evidence = envelope_model_evidence(selected_id)
