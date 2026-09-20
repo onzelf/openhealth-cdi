@@ -2647,61 +2647,6 @@ def user_inference(req: UserInferenceRequest) -> Dict[str, Any]:
     return response
 
 
-@app.post("/predict")
-def predict(
-    req: PredictionRequest,
-    authorization: str = Header(..., alias="Authorization"),
-    dpop: str = Header(..., alias="DPoP"),
-    dpop_nonce: str = Header(..., alias="X-DPoP-Nonce"),
-) -> Dict[str, Any]:
-    """Admission first; prediction only after ALLOW."""
-
-    if req.run_id != RUN_ID:
-        raise HTTPException(404, f"unknown_run:{req.run_id}")
-    if len(req.requested_tissues) != 1:
-        raise HTTPException(400, "exactly_one_tissue_required")
-
-    admission = request_prediction_admission(
-        envelope_id=req.envelope_id,
-        run_id=req.run_id,
-        requested_tissues=req.requested_tissues,
-        jti=req.jti,
-        authorization=authorization,
-        dpop=dpop,
-        dpop_nonce=dpop_nonce,
-    )
-    if not admission.get("allow", False):
-        return {"admission": admission, "executed": False}
-
-    try:
-        backend = requests.post(
-            FLOWER_BACKEND_URL + "/predict",
-            json={
-                "envelope_id": req.envelope_id,
-                "run_id": req.run_id,
-                "requested_tissues": req.requested_tissues,
-                "topk": req.topk,
-            },
-            timeout=30,
-        )
-        backend.raise_for_status()
-        prediction = backend.json()
-    except Exception as exc:
-        raise HTTPException(502, f"prediction_error:{exc}") from exc
-
-    append_event(
-        "prediction_executed",
-        envelope_id=req.envelope_id,
-        requested_tissues=req.requested_tissues,
-        jti=req.jti,
-    )
-    return {
-        "admission": admission,
-        "executed": True,
-        "prediction": prediction,
-    }
-
-
 if __name__ == "__main__":
     uvicorn.run(
         "hub:app",

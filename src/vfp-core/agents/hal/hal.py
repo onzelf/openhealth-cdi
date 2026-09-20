@@ -129,8 +129,8 @@ def encode_json(value: dict) -> str:
 
 
 def sign_dpop(private_key: Ed25519PrivateKey, payload: dict) -> str:
-    if payload.get("sub") != "Hal":
-        raise ValueError("invalid_subject")
+    # Holder identity is established by the key bound into the ECT.
+    # The caller does not select a subject name for this signer.
     if payload.get("htu") != DPOP_HTU:
         raise ValueError("invalid_htu")
     if payload.get("htm") != "POST":
