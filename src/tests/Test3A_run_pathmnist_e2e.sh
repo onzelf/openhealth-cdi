@@ -26,7 +26,7 @@ ADMIN_B_CRT="${ADMIN_B_CRT:-../vfp-governance/verifier/certs/HospitalB-admin.crt
 ADMIN_B_KEY="${ADMIN_B_KEY:-../vfp-governance/verifier/certs/HospitalB-admin.key}"
 
 POLICY_JSON="${POLICY_JSON:-../vfp-governance/verifier/state/policy.json}"
-HOLDER_KEYS_DIR="${HOLDER_KEYS_DIR:-../vfp-governance/verifier/vault/holder_keys}"
+HOLDER_KEYS_DIR="${HOLDER_KEYS_DIR:-../../secrets/holder_keys}"
 GEN_MEMBER_KEYS="${GEN_MEMBER_KEYS:-../tools/gen_member_keys.py}"
 
 [[ -n "${ENVELOPE_ID}" ]] || {

@@ -40,7 +40,7 @@ DPOP_HTU="${DPOP_HTU:-https://verifier.local/admission/check}"
 ALLOW_TISSUE="${ALLOW_TISSUE:-mucus}"
 DENY_TISSUE="${DENY_TISSUE:-cancer_associated_stroma}"
 
-HOLDER_PRIVATE="${HOLDER_PRIVATE:-${SRC_DIR}/vfp-governance/verifier/vault/holder_keys/${SUBJECT}.privhex}"
+HOLDER_PRIVATE="${HOLDER_PRIVATE:-${SRC_DIR}/../secrets/holder_keys/${SUBJECT}.privhex}"
 GEN_MEMBER_KEYS="${SRC_DIR}/tools/gen_member_keys.py"
 MAKE_DPOP="${SRC_DIR}/tools/make_dpop_jwt_eddsa.py"
 

@@ -19,7 +19,7 @@ HTU="${HTU:-https://verifier.local/admission/check}"
 
 ISSUER_A_CONTAINER="${ISSUER_A_CONTAINER:-issuer-hospitala}"
 
-HOLDER_KEYS_DIR="${HOLDER_KEYS_DIR:-../vfp-governance/verifier/vault/holder_keys}"
+HOLDER_KEYS_DIR="${HOLDER_KEYS_DIR:-../../secrets/holder_keys}"
 GEN_MEMBER_KEYS="${GEN_MEMBER_KEYS:-../tools/gen_member_keys.py}"
 
 # Must be comfortably beyond the Gatekeeper defaults

@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CERT_DIR="${SRC_DIR}/vfp-governance/verifier/certs"
 REPO_ROOT="$(cd "${SRC_DIR}/.." && pwd)"
-HOLDER_KEYS_DIR="${SRC_DIR}/vfp-governance/verifier/vault/holder_keys"
+HOLDER_KEYS_DIR="${REPO_ROOT}/secrets/holder_keys"
 GEN_MEMBER_KEYS="${SRC_DIR}/tools/gen_member_keys.py"
 OPENAI_ENV_FILE="${REPO_ROOT}/secrets/.env"
 

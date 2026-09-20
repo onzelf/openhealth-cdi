@@ -175,7 +175,7 @@ resource "docker_container" "holder_signer" {
   ]
 
   volumes {
-    host_path      = abspath("${local.repo_root}/vfp-governance/verifier/vault/holder_keys")
+    host_path      = abspath("${local.repo_root}/../secrets/holder_keys")
     container_path = "/vault/holder_keys"
     read_only      = true
   }

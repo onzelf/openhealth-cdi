@@ -7,7 +7,7 @@ SRC_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ISSUER_IP="${1:-127.0.0.1}"
 ISSUER_PORT="${ISSUER_PORT:-9443}"
 
-HOLDER_KEYS_DIR="${SRC_DIR}/vfp-governance/verifier/vault/holder_keys"
+HOLDER_KEYS_DIR="${SRC_DIR}/../secrets/holder_keys"
 GEN_MEMBER_KEYS="${SRC_DIR}/tools/gen_member_keys.py"
 
 CAC="${SRC_DIR}/vfp-governance/verifier/certs/ca.crt"

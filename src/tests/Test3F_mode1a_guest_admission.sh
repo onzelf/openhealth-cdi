@@ -42,7 +42,7 @@ POLICY_JSON="${SRC_DIR}/vfp-governance/verifier/state/policy.json"
 GEN_MEMBER_KEYS="${SRC_DIR}/tools/gen_member_keys.py"
 INSPECT_ECT="${SRC_DIR}/tools/inspect_ect.py"
 
-HOLDER_KEYS_DIR="${SRC_DIR}/vfp-governance/verifier/vault/holder_keys"
+HOLDER_KEYS_DIR="${SRC_DIR}/../secrets/holder_keys"
 HOLDER_PRIVATE="${HOLDER_KEYS_DIR}/${SUBJECT}.privhex"
 
 CAC="${SRC_DIR}/vfp-governance/verifier/certs/ca.crt"

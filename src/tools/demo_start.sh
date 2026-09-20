@@ -18,7 +18,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TOFU_DIR="${REPO_ROOT}/src/infra/tofu"
-KEY_DIR="${REPO_ROOT}/src/vfp-governance/verifier/vault/holder_keys"
+KEY_DIR="${REPO_ROOT}/secrets/holder_keys"
 GEN_KEYS="${REPO_ROOT}/src/tools/gen_member_keys.py"
 PATHMNIST_HOST="${PATHMNIST_HOST:-${REPO_ROOT}/../data/pathmnist.npz}"
 EXPECTED_VERIFIER_IP="${VERIFIER_IP:-127.0.0.1}"
