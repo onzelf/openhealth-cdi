@@ -847,6 +847,7 @@ function UserModePanel({
   onPrincipalChange,
   onTissueChange,
   onRunInference,
+  onAuthorizePendingDerivative,
   busy,
   error,
   result,
@@ -940,6 +941,9 @@ function UserModePanel({
     result?.governed_value_id ||
     prediction?.value_id ||
     null;
+  const pendingConsumerAuthorization =
+    result?.authorization_state ===
+    "PENDING_CONSUMER_AUTHORIZATION";
 
   const derivativeState =
     sourceDecision === "ALLOW"
@@ -958,6 +962,8 @@ function UserModePanel({
   const releaseState =
     sourceDecision === "ALLOW"
       ? "NOT USED"
+      : pendingConsumerAuthorization
+      ? "AWAITING"
       : consumeDecision === "ALLOW" && governedValueId
       ? "RELEASED"
       : consumeDecision === "DENY" || result?.released === false
@@ -1035,8 +1041,9 @@ function UserModePanel({
       <div className="user-mode-layout">
         <div className="workspace-controls">
           <p>
-            Use the administrator-minted ECT for the selected boundary.
-            Each request generates fresh DPoP before Gatekeeper admission.
+            Use the holder-custodied ECT for the selected boundary.
+            Each authority-bearing request generates fresh DPoP before
+            Gatekeeper admission.
           </p>
 
           {llmAgent && (
@@ -1130,6 +1137,16 @@ function UserModePanel({
               ? "RUN HAL BOUNDED INFERENCE"
               : "RUN GOVERNED INFERENCE"}
           </button>
+
+          {llmAgent && pendingConsumerAuthorization ? (
+            <button
+              disabled={busy || !governedValueId}
+              onClick={onAuthorizePendingDerivative}
+              type="button"
+            >
+              AUTHORIZE EXACT W
+            </button>
+          ) : null}
         </div>
 
         <div className="user-mode-result-card">
@@ -2105,26 +2122,29 @@ export default function App() {
           };
 
       let evidenceHeaders = {};
-      if (!llmAgent && !governanceAgent) {
+      if (!governanceAgent) {
         const envelopeId = administration.selected_envelope_id;
+        const holderPrincipal = llmAgent
+          ? requesterPrincipal
+          : userPrincipal;
         const credential = await getHolderCredential(
-          userPrincipal,
+          holderPrincipal,
           envelopeId
         );
         if (!credential) {
-          throw new Error(`ect_not_ready:${userPrincipal}`);
+          throw new Error(`ect_not_ready:${holderPrincipal}`);
         }
         if (
           credential.expires_at &&
           Number(credential.expires_at) <=
             Math.floor(Date.now() / 1000)
         ) {
-          throw new Error(`ect_expired:${userPrincipal}`);
+          throw new Error(`ect_expired:${holderPrincipal}`);
         }
 
         const jti = proofToken("jti");
         const nonce = proofToken("nonce");
-        const dpop = await signHolderDpop(userPrincipal, {
+        const dpop = await signHolderDpop(holderPrincipal, {
           htu: DPOP_HTU,
           htm: "POST",
           jti,
@@ -2143,6 +2163,70 @@ export default function App() {
         inferencePath,
         requestBody,
         evidenceHeaders
+      );
+      setUserInferenceResult(result);
+    } catch (err) {
+      setUserError(err.message);
+      console.error(err);
+    } finally {
+      setUserBusy(false);
+    }
+  }
+
+  async function authorizePendingDerivative() {
+    setUserBusy(true);
+    setUserError("");
+    try {
+      if (
+        userInferenceResult?.authorization_state !==
+        "PENDING_CONSUMER_AUTHORIZATION"
+      ) {
+        throw new Error("no_pending_consumer_authorization");
+      }
+
+      const envelopeId = administration.selected_envelope_id;
+      const governedValueId =
+        userInferenceResult.governed_value_id;
+      const credential = await getHolderCredential(
+        requesterPrincipal,
+        envelopeId
+      );
+      if (!credential) {
+        throw new Error(`ect_not_ready:${requesterPrincipal}`);
+      }
+      if (
+        credential.expires_at &&
+        Number(credential.expires_at) <=
+          Math.floor(Date.now() / 1000)
+      ) {
+        throw new Error(`ect_expired:${requesterPrincipal}`);
+      }
+
+      const jti = proofToken("consume-jti");
+      const nonce = proofToken("consume-nonce");
+      const dpop = await signHolderDpop(requesterPrincipal, {
+        htu: DPOP_HTU,
+        htm: "POST",
+        jti,
+        nonce,
+        envelopeId,
+        governedValueId,
+      });
+
+      const result = await postJson(
+        "/mode1b/agent/consume",
+        {
+          requester: requesterPrincipal,
+          envelope_id: envelopeId,
+          pending_id: userInferenceResult.pending_id,
+          governed_value_id: governedValueId,
+          jti,
+        },
+        {
+          Authorization: `ECT ${credential.ect}`,
+          DPoP: dpop,
+          "X-DPoP-Nonce": nonce,
+        }
       );
       setUserInferenceResult(result);
     } catch (err) {
@@ -2323,6 +2407,9 @@ export default function App() {
                 setUserInferenceResult(null);
                 setUserError("");
               }}
+              onAuthorizePendingDerivative={
+                authorizePendingDerivative
+              }
               onPrincipalChange={(principal) => {
                 setUserPrincipal(principal);
                 setUserInferenceResult(null);

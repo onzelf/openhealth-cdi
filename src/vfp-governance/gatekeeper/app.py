@@ -1334,6 +1334,9 @@ async def _probe_impl(
         jti = str(pl.get("jti", ""))
         nonce_claim = str(pl.get("nonce", ""))
         proof_envelope_id = str(pl.get("envelope_id", ""))
+        proof_governed_value_id = str(
+            pl.get("governed_value_id", "")
+        )
 
         if "iat" not in pl:
             return _bench_return(token_ms, t, t0, False, "dpop_iat_missing")
@@ -1372,6 +1375,26 @@ async def _probe_impl(
 
         if (dpop_nonce or "") != nonce_claim:
             return _bench_return(token_ms, t, t0, False, "dpop_nonce_mismatch")
+
+        if body.action == "consume_derivative":
+            if not proof_governed_value_id:
+                return _bench_return(
+                    token_ms,
+                    t,
+                    t0,
+                    False,
+                    "dpop_governed_value_id_missing",
+                )
+            if proof_governed_value_id != str(
+                body.governed_value_id or ""
+            ):
+                return _bench_return(
+                    token_ms,
+                    t,
+                    t0,
+                    False,
+                    "dpop_governed_value_id_mismatch",
+                )
 
     except Exception as e:
         return _bench_return(token_ms, t, t0, False, f"dpop_claims:{e}")

@@ -154,7 +154,14 @@ export async function holderEnrollmentRecord(principal, orgId) {
 
 export async function signHolderDpop(
   principal,
-  { htu, htm = "POST", jti, nonce, envelopeId }
+  {
+    htu,
+    htm = "POST",
+    jti,
+    nonce,
+    envelopeId,
+    governedValueId = null,
+  }
 ) {
   const identity = await getHolderIdentity(principal);
   if (!identity) {
@@ -176,6 +183,9 @@ export async function signHolderDpop(
     jti,
     nonce,
     envelope_id: envelopeId,
+    ...(governedValueId
+      ? { governed_value_id: governedValueId }
+      : {}),
   };
   const encodedHeader = utf8Base64Url(canonicalJson(header));
   const encodedClaims = utf8Base64Url(canonicalJson(claims));

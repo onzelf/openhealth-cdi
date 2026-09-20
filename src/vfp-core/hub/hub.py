@@ -83,6 +83,9 @@ MINT_PROOF_HTU = os.getenv(
     "MINT_PROOF_HTU",
     "urn:openhealth:issuer:mint",
 )
+MODE1B_PENDING_TTL_SECONDS = int(
+    os.getenv("MODE1B_PENDING_TTL_SECONDS", "300")
+)
 
 VERIFIER_URL = os.getenv(
     "VERIFIER_URL",
@@ -267,6 +270,17 @@ class AgentMediatedInferenceRequest(BaseModel):
     run_id: str = RUN_ID
     requested_tissue: str
     topk: int = Field(default=3, ge=1, le=9)
+    jti: Optional[str] = None
+
+
+class AgentDerivativeConsumeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    requester: str
+    envelope_id: str
+    pending_id: str
+    governed_value_id: str
+    jti: str
 
 # ---------------------------------------------------------------------
 # Runtime state
@@ -291,6 +305,7 @@ envelope_listener_task: Optional[asyncio.Task[Any]] = None
 pending_binding_task: Optional[asyncio.Task[Any]] = None
 envelope_binding_lock = asyncio.Lock()
 holder_runtime_credentials: Dict[Tuple[str, str], Dict[str, Any]] = {}
+pending_mode1b_derivatives: Dict[str, Dict[str, Any]] = {}
 
 
 # ---------------------------------------------------------------------
@@ -2288,6 +2303,9 @@ def mode1b_inference(req: UserInferenceRequest) -> Dict[str, Any]:
 @app.post("/mode1b/agent/request")
 def mode1b_agent_request(
     req: AgentMediatedInferenceRequest,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    dpop_header: Optional[str] = Header(None, alias="DPoP"),
+    dpop_nonce: Optional[str] = Header(None, alias="X-DPoP-Nonce"),
 ) -> Dict[str, Any]:
     if req.run_id != RUN_ID:
         raise HTTPException(404, f"unknown_run:{req.run_id}")
@@ -2302,14 +2320,42 @@ def mode1b_agent_request(
     if not binding_state.get("bound", False):
         raise HTTPException(409, "envelope_not_bound")
 
-    runtime_credential(req.requester, selected_id)
+    requester_context = ACTOR_CONTEXTS.get(req.requester)
+    if requester_context is None:
+        raise HTTPException(
+            400,
+            f"unknown_principal:{req.requester}",
+        )
+    if not actor_is_operational(requester_context):
+        raise HTTPException(
+            409,
+            f"actor_not_operational:{req.requester}",
+        )
+    if requester_context.get("actor_type") != "human":
+        raise HTTPException(403, "human_requester_required")
+    if not authorization or not authorization.startswith("ECT "):
+        raise HTTPException(401, "holder_ect_required")
+    if not dpop_header or not dpop_nonce or not req.jti:
+        raise HTTPException(401, "holder_proof_required")
+
+    requester_ect = authorization.split(" ", 1)[1].strip()
+    requester_claims = decode_ect_claims(requester_ect)
+    if str(requester_claims.get("sub") or "") != req.requester:
+        raise HTTPException(
+            401,
+            "presented_ect_subject_mismatch",
+        )
+
     runtime_credential("Hal", selected_id)
 
-    source_admission = admit_principal_operation(
-        principal=req.requester,
+    source_admission = request_prediction_admission(
         envelope_id=selected_id,
         run_id=req.run_id,
-        tissue=req.requested_tissue,
+        requested_tissues=[req.requested_tissue],
+        jti=req.jti,
+        authorization=authorization,
+        dpop=dpop_header,
+        dpop_nonce=dpop_nonce,
         action="query_model",
         purpose="approved_model_query",
         event_type="mode1b_requester_source_admission",
@@ -2318,6 +2364,22 @@ def mode1b_agent_request(
     source_authorized = bool(
         source_admission.get("allow", False)
     )
+    source_reason = str(source_admission.get("reason") or "")
+    source_requester_verified = (
+        source_authorized
+        or source_reason in {
+            "reserved_tissue",
+            "capability_violation",
+            "capability_scope_exceeded",
+        }
+    )
+    if not source_requester_verified:
+        return {
+            "requester": req.requester,
+            "source_admission": source_admission,
+            "executed": False,
+            "released": False,
+        }
 
     available_actions = [
         "blur_image",
@@ -2472,80 +2534,36 @@ def mode1b_agent_request(
             governed_value
         )
 
-        release_admission = admit_principal_operation(
-            principal=req.requester,
-            envelope_id=selected_id,
-            run_id=req.run_id,
-            tissue=req.requested_tissue,
-            resource="pathmnist-derived-representation",
-            action="consume_derivative",
-            purpose="approved_derivative_consumption",
-            derivative_representation=derivative_name,
-            governed_value_id=governed_value["value_id"],
-            governed_value=governed_value,
-            event_type="mode1b_derivative_release_admission",
-        )
-
-        if not release_admission.get("allow", False):
-            return {
-                "requester": req.requester,
-                "source_admission": source_admission,
-                "agent_decision": decision,
-                "hal_inference": hal_inference_public,
-                "unbind_admission": unbind_admission,
-                "release_admission": release_admission,
-                "governed_value_id": governed_value["value_id"],
-                "executed": False,
-                "released": False,
-            }
-
-        if (
-            release_admission.get("governed_value_binding_result")
-            != "verified"
-            or release_admission.get("governed_value_id")
-            != governed_value["value_id"]
-        ):
-            raise HTTPException(
-                502,
-                "governed_value_binding_not_confirmed",
-            )
-
-        if governed_value_content_id(governed_value) != governed_value["value_id"]:
-            raise HTTPException(
-                500,
-                "governed_value_changed_after_admission",
-            )
-
-        try:
-            release_derivative_bytes = base64.b64decode(
-                str(governed_value["derivative_image"]["image_b64"]),
-                validate=True,
-            )
-        except Exception as exc:
-            raise HTTPException(
-                500,
-                "governed_value_changed_after_admission",
-            ) from exc
-
-        if (
-            hashlib.sha256(release_derivative_bytes).hexdigest()
-            != governed_value["derivative_sha256"]
-        ):
-            raise HTTPException(
-                500,
-                "governed_value_changed_after_admission",
-            )
-
+        pending_id = "pending-" + secrets.token_urlsafe(24)
+        pending_mode1b_derivatives[pending_id] = {
+            "state": "PENDING_CONSUMER_AUTHORIZATION",
+            "pending_id": pending_id,
+            "requester": req.requester,
+            "envelope_id": selected_id,
+            "run_id": req.run_id,
+            "requested_tissue": req.requested_tissue,
+            "derivative_representation": derivative_name,
+            "governed_value_id": governed_value["value_id"],
+            "governed_value": governed_value,
+            "source_admission": source_admission,
+            "agent_decision": decision,
+            "hal_inference": hal_inference_public,
+            "unbind_admission": unbind_admission,
+            "created_at": time.time(),
+            "expires_at": (
+                time.time() + MODE1B_PENDING_TTL_SECONDS
+            ),
+        }
         append_event(
-            "mode1b_derivative_released",
+            "mode1b_derivative_pending_authorization",
             run_id=req.run_id,
             envelope_id=selected_id,
             requester=req.requester,
             requested_tissues=[req.requested_tissue],
+            pending_id=pending_id,
             governed_value_id=governed_value["value_id"],
             derivative_sha256=governed_value["derivative_sha256"],
             unbind_decision_id=unbind_admission.get("decision_id"),
-            release_decision_id=release_admission.get("decision_id"),
         )
 
         return {
@@ -2554,12 +2572,22 @@ def mode1b_agent_request(
             "agent_decision": decision,
             "hal_inference": hal_inference_public,
             "unbind_admission": unbind_admission,
-            "release_admission": release_admission,
+            "authorization_state":
+                "PENDING_CONSUMER_AUTHORIZATION",
+            "pending_id": pending_id,
             "governed_value_id": governed_value["value_id"],
             "executed": True,
-            "released": True,
+            "released": False,
             "representation": "derivative",
-            "prediction": governed_value,
+            "governed_value_summary": {
+                "resource": governed_value["resource"],
+                "requested_tissue":
+                    governed_value["requested_tissue"],
+                "derivative_representation":
+                    governed_value["derivative_representation"],
+                "derivative_sha256":
+                    governed_value["derivative_sha256"],
+            },
         }
 
     if action == "minimal_statistics":
@@ -2581,6 +2609,196 @@ def mode1b_agent_request(
         500,
         "unsupported_agent_action",
     )
+
+
+@app.post("/mode1b/agent/consume")
+def mode1b_agent_consume(
+    req: AgentDerivativeConsumeRequest,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    dpop_header: Optional[str] = Header(None, alias="DPoP"),
+    dpop_nonce: Optional[str] = Header(None, alias="X-DPoP-Nonce"),
+) -> Dict[str, Any]:
+    binding_state = selected_envelope_binding_state()
+    selected_id = binding_state.get("selected_envelope_id")
+    if not selected_id:
+        raise HTTPException(409, "no_envelope_selected")
+    if req.envelope_id != selected_id:
+        raise HTTPException(409, "envelope_mismatch")
+    if not binding_state.get("bound", False):
+        raise HTTPException(409, "envelope_not_bound")
+
+    pending = pending_mode1b_derivatives.get(req.pending_id)
+    if pending is None:
+        raise HTTPException(404, "unknown_pending_authorization")
+    if pending.get("state") != "PENDING_CONSUMER_AUTHORIZATION":
+        raise HTTPException(
+            409,
+            f"pending_authorization_not_open:{pending.get('state')}",
+        )
+    if float(pending.get("expires_at") or 0) <= time.time():
+        pending["state"] = "EXPIRED"
+        raise HTTPException(410, "pending_authorization_expired")
+    if pending.get("requester") != req.requester:
+        raise HTTPException(403, "pending_requester_mismatch")
+    if pending.get("envelope_id") != req.envelope_id:
+        raise HTTPException(409, "pending_envelope_mismatch")
+    if pending.get("governed_value_id") != req.governed_value_id:
+        raise HTTPException(409, "pending_governed_value_mismatch")
+
+    requester_context = ACTOR_CONTEXTS.get(req.requester)
+    if requester_context is None:
+        raise HTTPException(
+            400,
+            f"unknown_principal:{req.requester}",
+        )
+    if not actor_is_operational(requester_context):
+        raise HTTPException(
+            409,
+            f"actor_not_operational:{req.requester}",
+        )
+    if requester_context.get("actor_type") != "human":
+        raise HTTPException(403, "human_requester_required")
+    if not authorization or not authorization.startswith("ECT "):
+        raise HTTPException(401, "holder_ect_required")
+    if not dpop_header or not dpop_nonce:
+        raise HTTPException(401, "holder_proof_required")
+
+    requester_ect = authorization.split(" ", 1)[1].strip()
+    requester_claims = decode_ect_claims(requester_ect)
+    if str(requester_claims.get("sub") or "") != req.requester:
+        raise HTTPException(
+            401,
+            "presented_ect_subject_mismatch",
+        )
+
+    governed_value = pending["governed_value"]
+    if (
+        governed_value_content_id(governed_value)
+        != req.governed_value_id
+    ):
+        pending["state"] = "DENIED"
+        raise HTTPException(
+            500,
+            "governed_value_changed_before_admission",
+        )
+
+    # Claim the pending authorization before the external Gatekeeper call.
+    # A concurrent second consume observes AUTHORIZING and is rejected.
+    pending["state"] = "AUTHORIZING"
+
+    release_admission = request_prediction_admission(
+        envelope_id=req.envelope_id,
+        run_id=str(pending["run_id"]),
+        requested_tissues=[str(pending["requested_tissue"])],
+        jti=req.jti,
+        authorization=authorization,
+        dpop=dpop_header,
+        dpop_nonce=dpop_nonce,
+        resource="pathmnist-derived-representation",
+        action="consume_derivative",
+        purpose="approved_derivative_consumption",
+        derivative_representation=str(
+            pending["derivative_representation"]
+        ),
+        governed_value_id=req.governed_value_id,
+        governed_value=governed_value,
+        event_type="mode1b_derivative_release_admission",
+    )
+
+    if not release_admission.get("allow", False):
+        pending["state"] = "DENIED"
+        return {
+            "requester": req.requester,
+            "source_admission": pending["source_admission"],
+            "agent_decision": pending["agent_decision"],
+            "hal_inference": pending["hal_inference"],
+            "unbind_admission": pending["unbind_admission"],
+            "release_admission": release_admission,
+            "authorization_state": "DENIED",
+            "pending_id": req.pending_id,
+            "governed_value_id": req.governed_value_id,
+            "executed": False,
+            "released": False,
+            "representation": "derivative",
+        }
+
+    if (
+        release_admission.get("governed_value_binding_result") != "verified"
+        or release_admission.get("governed_value_id")
+        != req.governed_value_id
+    ):
+        pending["state"] = "DENIED"
+        raise HTTPException(
+            502,
+            "governed_value_binding_not_confirmed",
+        )
+
+    if (
+        governed_value_content_id(governed_value)
+        != req.governed_value_id
+    ):
+        pending["state"] = "DENIED"
+        raise HTTPException(
+            500,
+            "governed_value_changed_after_admission",
+        )
+
+    try:
+        release_derivative_bytes = base64.b64decode(
+            str(governed_value["derivative_image"]["image_b64"]),
+            validate=True,
+        )
+    except Exception as exc:
+        pending["state"] = "DENIED"
+        raise HTTPException(
+            500,
+            "governed_value_changed_after_admission",
+        ) from exc
+
+    if (
+        hashlib.sha256(release_derivative_bytes).hexdigest()
+        != governed_value["derivative_sha256"]
+    ):
+        pending["state"] = "DENIED"
+        raise HTTPException(
+            500,
+            "governed_value_changed_after_admission",
+        )
+
+    pending["state"] = "RELEASED"
+    pending["release_decision_id"] = release_admission.get(
+        "decision_id"
+    )
+    append_event(
+        "mode1b_derivative_released",
+        run_id=str(pending["run_id"]),
+        envelope_id=req.envelope_id,
+        requester=req.requester,
+        requested_tissues=[str(pending["requested_tissue"])],
+        pending_id=req.pending_id,
+        governed_value_id=req.governed_value_id,
+        derivative_sha256=governed_value["derivative_sha256"],
+        unbind_decision_id=pending["unbind_admission"].get(
+            "decision_id"
+        ),
+        release_decision_id=release_admission.get("decision_id"),
+    )
+
+    return {
+        "requester": req.requester,
+        "source_admission": pending["source_admission"],
+        "agent_decision": pending["agent_decision"],
+        "hal_inference": pending["hal_inference"],
+        "unbind_admission": pending["unbind_admission"],
+        "release_admission": release_admission,
+        "authorization_state": "RELEASED",
+        "pending_id": req.pending_id,
+        "governed_value_id": req.governed_value_id,
+        "executed": True,
+        "released": True,
+        "representation": "derivative",
+        "prediction": governed_value,
+    }
 
 
 
@@ -2644,7 +2862,7 @@ def user_inference(
             "envelope_id": selected_id,
             "run_id": req.run_id,
             "requested_tissue": req.requested_tissue,
-            "jti": jti,
+            "jti": req.jti,
         },
         "admission": admission,
         "executed": False,
@@ -2675,7 +2893,7 @@ def user_inference(
         envelope_id=selected_id,
         principal=req.principal,
         requested_tissues=[req.requested_tissue],
-        jti=jti,
+        jti=req.jti,
         image_sha256=prediction.get("image_sha256"),
     )
     response.update(
