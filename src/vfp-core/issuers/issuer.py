@@ -111,6 +111,43 @@ def register_member(req: MemberRegReq):
 
     return {"status": "ok", "sub": entry["sub"]}
 
+@app.post("/members/rotate")
+def rotate_member(req: MemberRegReq):
+    """Replace holder public-key binding under issuer-admin authority."""
+    if not ORG:
+        raise HTTPException(500, "issuer_not_configured:missing_ORG")
+
+    if req.org_id.strip() != ORG:
+        raise HTTPException(403, f"org_mismatch:{req.org_id}")
+
+    subject = req.sub.strip()
+    member_id = req.member_id.strip()
+    pub_b64 = req.pub_b64.strip()
+    jkt = req.jkt.strip()
+    if not subject or not member_id or not pub_b64 or not jkt:
+        raise HTTPException(400, "invalid_member_record")
+
+    with _registry_lock:
+        reg = _load_registry(ORG)
+        current = reg.get(subject)
+        if current is None:
+            raise HTTPException(404, f"unknown_sub:{subject}")
+        if str(current.get("member_id") or "") != member_id:
+            raise HTTPException(409, f"member_id_mismatch:{subject}")
+
+        reg[subject] = {
+            **current,
+            "pub_b64": pub_b64,
+            "jkt": jkt,
+            "updated_at": time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ",
+                time.gmtime(),
+            ),
+        }
+        _save_registry(ORG, reg)
+
+    return {"status": "rotated", "sub": subject, "jkt": jkt}
+
 @app.get("/members")  # Debugging endpoint
 def list_members():
     if not ORG:
