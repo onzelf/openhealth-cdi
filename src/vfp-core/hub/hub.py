@@ -65,15 +65,11 @@ ACTOR_CATALOG_PATH = Path(
 
 ISSUER_A_URL = os.getenv(
     "ISSUER_A_URL",
-    "http://issuer-hospitala:8080",
+    "https://issuer-hospitala.local:8443",
 ).rstrip("/")
 ISSUER_B_URL = os.getenv(
     "ISSUER_B_URL",
-    "http://issuer-hospitalb:8080",
-).rstrip("/")
-SIGNER_URL = os.getenv(
-    "SIGNER_URL",
-    "http://holder-signer:8090",
+    "https://issuer-hospitalb.local:8443",
 ).rstrip("/")
 DPOP_HTU = os.getenv(
     "DPOP_HTU",
@@ -306,6 +302,7 @@ pending_binding_task: Optional[asyncio.Task[Any]] = None
 envelope_binding_lock = asyncio.Lock()
 holder_runtime_credentials: Dict[Tuple[str, str], Dict[str, Any]] = {}
 pending_mode1b_derivatives: Dict[str, Dict[str, Any]] = {}
+mode1a_guest_admissions: Dict[str, Dict[str, Any]] = {}
 
 
 # ---------------------------------------------------------------------
@@ -525,6 +522,8 @@ def issuer_member_lookup(
         response = requests.get(
             issuer_url.rstrip("/") + "/members",
             timeout=10,
+            verify=CA_CRT,
+            cert=(HUB_CERT_CRT, HUB_CERT_KEY),
         )
         response.raise_for_status()
         payload = response.json()
@@ -554,6 +553,8 @@ def mint_principal_ect(
                 "holder_dpop": holder_proof,
             },
             timeout=15,
+            verify=CA_CRT,
+            cert=(HUB_CERT_CRT, HUB_CERT_KEY),
         )
     except Exception as exc:
         raise HTTPException(502, f"issuer_error:{exc}") from exc
@@ -574,10 +575,13 @@ def sign_principal_dpop(
     envelope_id: str,
     nonce: str,
     jti: str,
-    signer_url: Optional[str] = None,
+    signer_url: str,
     htu: str = DPOP_HTU,
 ) -> str:
-    target_signer = (signer_url or SIGNER_URL).rstrip("/")
+    target_signer = str(signer_url or "").strip().rstrip("/")
+    if not target_signer:
+        raise HTTPException(409, "agent_signer_not_configured")
+
     try:
         response = requests.post(
             target_signer + "/dpop/sign",
@@ -1552,6 +1556,7 @@ def experiments_initialise(
     phase = req.phase.strip().upper()
     if phase not in {"AB_BASE", "MODE1A"}:
         raise HTTPException(400, f"unsupported_training_phase:{phase}")
+    mode1a_guest_admissions.clear()
 
     previous_run_id = experiment_state.get("run_id")
     same_run = previous_run_id == req.run_id
@@ -1844,6 +1849,11 @@ def ab_prediction_options() -> Dict[str, Any]:
 def ab_prediction(req: ABPredictionRequest) -> Dict[str, Any]:
     """Run the A+B dashboard query through issuer, DPoP and Gatekeeper."""
 
+    raise HTTPException(
+        status_code=410,
+        detail="legacy_endpoint_removed:use_/user/inference",
+    )
+
     if req.run_id != RUN_ID:
         raise HTTPException(404, f"unknown_run:{req.run_id}")
     if req.requested_tissue not in PATHMNIST_QUERY_TISSUES:
@@ -1931,6 +1941,9 @@ def ab_prediction(req: ABPredictionRequest) -> Dict[str, Any]:
 @app.post("/mode1a/guest/contribution/admission")
 async def mode1a_guest_contribution_admission(
     request: Request,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    dpop_header: Optional[str] = Header(None, alias="DPoP"),
+    dpop_nonce: Optional[str] = Header(None, alias="X-DPoP-Nonce"),
 ) -> Dict[str, Any]:
     """Present an existing sponsored-guest ECT for contribution admission."""
     try:
@@ -1945,6 +1958,7 @@ async def mode1a_guest_contribution_admission(
     envelope_id = str(payload.get("envelope_id") or "").strip()
     run_id_value = payload.get("run_id")
     requested_tissues = payload.get("requested_tissues")
+    jti = str(payload.get("jti") or "").strip()
 
     if not principal:
         raise HTTPException(400, "missing_principal")
@@ -1956,6 +1970,8 @@ async def mode1a_guest_contribution_admission(
         raise HTTPException(400, "invalid_run_id")
     else:
         run_id = run_id_value.strip()
+    if not jti:
+        raise HTTPException(400, "missing_jti")
     if (
         not isinstance(requested_tissues, list)
         or not requested_tissues
@@ -2010,40 +2026,14 @@ async def mode1a_guest_contribution_admission(
     if "mode1a" not in principal_context.get("modes", []):
         raise HTTPException(403, "mode1a_guest_required")
 
-    credential_key = principal_runtime_key(selected_id, principal)
-    credential = holder_runtime_credentials.get(credential_key)
-    if not credential:
-        raise HTTPException(409, "ect_not_ready")
-
-    expires_at = credential.get("expires_at")
-    if expires_at and int(expires_at) <= int(time.time()):
-        credential["expired"] = True
-        raise HTTPException(409, "ect_expired")
-
-    nonce = "nonce-" + secrets.token_urlsafe(18)
-    jti = "jti-" + secrets.token_urlsafe(18)
-    guest_htu = "https://verifier.local/admission/guest-contribution"
-
-    try:
-        signer = requests.post(
-            SIGNER_URL + "/dpop/sign",
-            json={
-                "sub": principal,
-                "htu": guest_htu,
-                "htm": "POST",
-                "jti": jti,
-                "nonce": nonce,
-                "envelope_id": selected_id,
-            },
-            timeout=15,
-        )
-        signer.raise_for_status()
-        dpop = signer.json().get("dpop")
-    except Exception as exc:
-        raise HTTPException(502, f"dpop_sign_failed:{exc}") from exc
-
-    if not dpop:
-        raise HTTPException(502, "dpop_sign_failed:missing_dpop")
+    if not authorization or not authorization.startswith("ECT "):
+        raise HTTPException(401, "holder_ect_required")
+    if not dpop_header or not dpop_nonce:
+        raise HTTPException(401, "holder_proof_required")
+    ect = authorization.split(" ", 1)[1].strip()
+    claims = decode_ect_claims(ect)
+    if str(claims.get("sub") or "") != principal:
+        raise HTTPException(401, "presented_ect_subject_mismatch")
 
     verifier_payload: Dict[str, Any] = {
         "envelope_id": selected_id,
@@ -2057,9 +2047,9 @@ async def mode1a_guest_contribution_admission(
         verifier = requests.post(
             VERIFIER_URL + "/admission/guest-contribution",
             headers={
-                "Authorization": f"ECT {credential['ect']}",
-                "DPoP": str(dpop),
-                "X-DPoP-Nonce": nonce,
+                "Authorization": authorization,
+                "DPoP": dpop_header,
+                "X-DPoP-Nonce": dpop_nonce,
             },
             json=verifier_payload,
             timeout=15,
@@ -2070,6 +2060,16 @@ async def mode1a_guest_contribution_admission(
         admission = verifier.json()
     except Exception as exc:
         raise HTTPException(502, f"verifier_error:{exc}") from exc
+
+    if run_id is not None:
+        mode1a_guest_admissions[run_id] = {
+            "principal": principal,
+            "envelope_id": selected_id,
+            "run_id": run_id,
+            "requested_tissues": list(requested_tissues),
+            "admission": admission,
+            "recorded_at": time.time(),
+        }
 
     return {
         "principal": principal,
@@ -2082,6 +2082,33 @@ async def mode1a_guest_contribution_admission(
         },
         "admission": admission,
         "executed": False,
+    }
+
+
+@app.get("/mode1a/guest/contribution/admission/status")
+def mode1a_guest_contribution_admission_status(
+    run_id: str,
+    envelope_id: str,
+    principal: str = "Charlie",
+) -> Dict[str, Any]:
+    record = mode1a_guest_admissions.get(run_id)
+    if record is None:
+        return {
+            "ready": False,
+            "principal": principal,
+            "envelope_id": envelope_id,
+            "run_id": run_id,
+            "admission": None,
+        }
+
+    if record.get("principal") != principal:
+        raise HTTPException(409, "guest_admission_principal_mismatch")
+    if record.get("envelope_id") != envelope_id:
+        raise HTTPException(409, "guest_admission_envelope_mismatch")
+
+    return {
+        "ready": True,
+        **record,
     }
 
 
@@ -2120,15 +2147,17 @@ def admit_principal_operation(
     context = ACTOR_CONTEXTS.get(principal)
     if context is None:
         raise HTTPException(400, f"unknown_principal:{principal}")
+    if context.get("actor_type") != "agent":
+        raise HTTPException(403, "agent_operation_required")
 
     credential = runtime_credential(principal, envelope_id)
 
     nonce = "nonce-" + secrets.token_urlsafe(18)
     jti = "jti-" + secrets.token_urlsafe(18)
 
-    signer_url = str(
-        context.get("dpop_signer_url") or ""
-    ).strip() or None
+    signer_url = str(context.get("dpop_signer_url") or "").strip()
+    if not signer_url:
+        raise HTTPException(409, "agent_signer_not_configured")
 
     dpop = sign_principal_dpop(
         principal,

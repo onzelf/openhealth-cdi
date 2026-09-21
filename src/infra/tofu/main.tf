@@ -130,6 +130,10 @@ resource "docker_network" "agent_edge" {
   name = "agent-edge"
 }
 
+resource "docker_network" "issuer_internal" {
+  name = "issuer-internal"
+}
+
 # -----------------------------
 # Redis
 #  - app.py default REDIS_URL expects hostname "redis"
@@ -148,43 +152,6 @@ resource "docker_container" "redis" {
   must_run = true
   restart  = "unless-stopped"
 }
-
-
-# ------------------------------------------------------
-# signer 
-#    - simulate a secure enclave for members private keys
-#    - it provides DPoP on request form clients
-# -------------------------------------------------------
-resource "docker_image" "holder_signer" {
-  name = "fcac/holder-signer:local"
-  build {
-    context    = "${local.repo_root}/vfp-governance/signer"
-    dockerfile = "${local.repo_root}/vfp-governance/signer/Dockerfile"
-    no_cache   = false
-  }
-}
-
-resource "docker_container" "holder_signer" {
-  name  = "holder-signer"
-  image = docker_image.holder_signer.name
-
-  networks_advanced { name = docker_network.fc.name }
-
-  env = [
-    "HOLDER_KEYS_DIR=/vault/holder_keys",
-  ]
-
-  volumes {
-    host_path      = abspath("${local.repo_root}/../secrets/holder_keys")
-    container_path = "/vault/holder_keys"
-    read_only      = true
-  }
-
-  must_run = true
-  restart  = "unless-stopped"
-}
-
-
 
 # -----------------------------
 # verifier-app (Gatekeeper / envelope service)
@@ -263,6 +230,10 @@ resource "docker_container" "verifier_proxy" {
     aliases = ["verifier.local"]
   }
 
+  networks_advanced {
+    name = docker_network.issuer_internal.name
+  }
+
   ports {
     internal = 8443
     external = var.mtls_port
@@ -306,6 +277,10 @@ resource "docker_container" "issuer_proxy" {
     aliases = ["issuer-hospitala.local", "issuer-hospitalb.local"]
   }
 
+  networks_advanced {
+    name = docker_network.issuer_internal.name
+  }
+
   ports {
     internal = 8443
     external = var.issuer_mtls_port
@@ -347,7 +322,7 @@ resource "docker_container" "issuer_hospitala" {
   name  = "issuer-hospitala"
   image = docker_image.issuer.name
 
-  networks_advanced { name = docker_network.fc.name }
+  networks_advanced { name = docker_network.issuer_internal.name }
 
   env = [
     "ORG=${var.org_a_id}",
@@ -401,7 +376,7 @@ resource "docker_container" "issuer_hospitalb" {
   name  = "issuer-hospitalb"
   image = docker_image.issuer.name
 
-  networks_advanced { name = docker_network.fc.name }
+  networks_advanced { name = docker_network.issuer_internal.name }
 
   env = [
     "ORG=${var.org_b_id}",
@@ -545,6 +520,8 @@ resource "docker_container" "hub" {
     "HUB_CERT_KEY=/run/certs/hub.key",
     "VERIFIER_URL=https://verifier.local:8443",
     "ACTOR_CATALOG_PATH=/app/config/actors.json",
+    "ISSUER_A_URL=https://issuer-hospitala.local:8443",
+    "ISSUER_B_URL=https://issuer-hospitalb.local:8443",
   ]
 
 
@@ -612,18 +589,13 @@ resource "docker_container" "frontend_even" {
 
   env = [
     "HUB_URL=http://fc-hub:8080",
-    "ISSUER_A_URL=http://issuer-hospitala:8080",
-    "ISSUER_B_URL=http://issuer-hospitalb:8080",
     "DPoP_HTU=https://verifier.local/admission/check",
-    "SIGNER_URL=http://holder-signer:8090",
-
   ]
 
   depends_on = [docker_container.hub,
     docker_container.verifier_proxy,
     docker_container.issuer_hospitala,
-    docker_container.issuer_hospitalb,
-    docker_container.holder_signer
+    docker_container.issuer_hospitalb
   ]
 
   must_run = true

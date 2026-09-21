@@ -68,7 +68,6 @@ for c in \
   redis \
   verifier-app verifier-proxy \
   issuer-hospitala issuer-hospitalb issuer-proxy \
-  holder-signer \
   fc-hub fcac-frontend \
   flower-server flower-client-a flower-client-b \
   hal

@@ -22,6 +22,7 @@ VERIFIER_IP="${VERIFIER_IP:-127.0.0.1}"
 VERIFIER_PORT="${VERIFIER_PORT:-8443}"
 RUN_ID="${RUN_ID:-local-pathmnist-ab-001}"
 HAL_CONTAINER="${HAL_CONTAINER:-hal}"
+MINT_PROOF_HTU="urn:openhealth:issuer:mint"
 DPOP_HTU="https://verifier.local/admission/check"
 TISSUE="${TISSUE:-colorectal_adenocarcinoma_epithelium}"
 DERIVATIVE_REPRESENTATION="blurred_image_with_qualitative_accuracy"
@@ -117,6 +118,16 @@ audrey_sign_dpop() {
     "${DPOP_HTU}" \
     "${ENVELOPE_ID}"
 }
+audrey_sign_mint_proof() {
+  python3 "${MAKE_DPOP}" \
+    "${AUDREY_PRIV_HEX}" \
+    "${AUDREY_PUB_B64}" \
+    "$1" \
+    "$2" \
+    POST \
+    "${MINT_PROOF_HTU}" \
+    "${ENVELOPE_ID}"
+}
 
 ensure_member() {
   local subject="$1" member_id="$2" pub="$3" jkt="$4"
@@ -140,14 +151,33 @@ ensure_member() {
 
 mint_ect() {
   local subject="$1" out="$2" response
-  response="$(issuer_curl -H 'content-type: application/json' \
-    -d "$(jq -nc --arg s "${subject}" --arg e "${ENVELOPE_ID}" \
-      '{sub:$s,envelope_id:$e}')" \
-    "https://issuer-hospitala.local:${ISSUER_PORT}/mint")"
+
+  if [[ "${subject}" == "Hal" ]]; then
+    response="$(curl -sS \
+      -H 'content-type: application/json' \
+      -d "$(jq -nc --arg e "${ENVELOPE_ID}" '{envelope_id:$e}')" \
+      "http://127.0.0.1:8080/administration/holders/Hal/mint-ect")"
+  else
+    local nonce jti holder_dpop
+    nonce="mint-$(python3 -c 'import secrets; print(secrets.token_urlsafe(12))')"
+    jti="mint-$(python3 -c 'import secrets; print(secrets.token_urlsafe(12))')"
+    holder_dpop="$(audrey_sign_mint_proof "${nonce}" "${jti}")"
+
+    response="$(issuer_curl \
+      -H 'content-type: application/json' \
+      -d "$(jq -nc \
+        --arg s "${subject}" \
+        --arg e "${ENVELOPE_ID}" \
+        --arg d "${holder_dpop}" \
+        '{sub:$s,envelope_id:$e,holder_dpop:$d}')" \
+      "https://issuer-hospitala.local:${ISSUER_PORT}/mint")"
+  fi
+
   printf '%s' "${response}" | jq -e '.ect | type == "string" and length > 0' >/dev/null \
     || { printf '%s\n' "${response}" | jq . >&2; fail "ECT mint failed for ${subject}"; }
+
   printf '%s' "${response}" | jq -r '.ect' >"${out}"
-}
+} 
 
 verify_decision_record() {
   local decision_id="$1" subject="$2" action="$3" expected="$4" derivative="$5"

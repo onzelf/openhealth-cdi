@@ -846,13 +846,12 @@ def require_mode1a_guest_admission(
 
     while True:
         try:
-            response = requests.post(
-                f"{HUB_URL}/mode1a/guest/contribution/admission",
-                json={
+            response = requests.get(
+                f"{HUB_URL}/mode1a/guest/contribution/admission/status",
+                params={
                     "principal": MODE1A_GUEST_PRINCIPAL,
                     "envelope_id": envelope_id,
                     "run_id": run_id,
-                    "requested_tissues": MODE1A_GUEST_TISSUES,
                 },
                 timeout=15,
             )
@@ -896,6 +895,17 @@ def require_mode1a_guest_admission(
                 time.sleep(GUEST_ADMISSION_RETRY_SECONDS)
 
         result = response.json()
+        if not result.get("ready", False):
+            write_event(
+                "guest_contribution_admission_wait",
+                principal=MODE1A_GUEST_PRINCIPAL,
+                envelope_id=envelope_id,
+                admission_run_id=run_id,
+                reason="holder_evidence_not_presented",
+            )
+            time.sleep(GUEST_ADMISSION_RETRY_SECONDS)
+            continue
+
         admission = result.get("admission") or {}
         if not admission.get("allow", False):
             reason = str(admission.get("reason") or "admission_denied")

@@ -110,9 +110,10 @@ fi
 pass "Hospital A binds Hal to the Hal-owned JKT"
 
 section "3. Hal bounded-agent ECT"
-MINT="$(issuer_curl -H 'content-type: application/json' \
-  -d "$(jq -nc --arg e "${ENVELOPE_ID}" '{sub:"Hal",envelope_id:$e}')" \
-  "https://issuer-hospitala.local:${ISSUER_PORT}/mint")"
+MINT="$(curl -sS \
+  -H 'content-type: application/json' \
+  -d "$(jq -nc --arg e "${ENVELOPE_ID}" '{envelope_id:$e}')" \
+  "http://127.0.0.1:8080/administration/holders/Hal/mint-ect")"
 ECT="$(printf '%s' "${MINT}" | jq -r '.ect // empty')"
 [[ -n "${ECT}" ]] || { printf '%s\n' "${MINT}" | jq . >&2; fail "Hal ECT mint failed"; }
 decode_ect "${ECT}" >"${TMP}/claims.json"

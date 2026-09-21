@@ -36,6 +36,7 @@ HUB_URL="${HUB_URL:-http://127.0.0.1:8080}"
 RUN_ID="${RUN_ID:-local-pathmnist-ab-001}"
 HAL_CONTAINER="${HAL_CONTAINER:-hal}"
 DPOP_HTU="https://verifier.local/admission/check"
+MINT_PROOF_HTU="urn:openhealth:issuer:mint"
 OTHER_TISSUE="${OTHER_TISSUE:-mucus}"
 CANCER_TISSUE="${CANCER_TISSUE:-colorectal_adenocarcinoma_epithelium}"
 DERIVATIVE_REPRESENTATION="blurred_image_with_qualitative_accuracy"
@@ -150,6 +151,28 @@ audrey_sign_dpop() {
     "${ENVELOPE_ID}"
 }
 
+audrey_sign_mint_proof() {
+  python3 "${MAKE_DPOP}" \
+    "${AUDREY_PRIV_HEX}" \
+    "${AUDREY_PUB_B64}" \
+    "$1" \
+    "$2" \
+    POST \
+    "${MINT_PROOF_HTU}" \
+    "${ENVELOPE_ID}"
+}
+
+bob_sign_mint_proof() {
+  python3 "${MAKE_DPOP}" \
+    "${BOB_PRIV_HEX}" \
+    "${BOB_PUB_B64}" \
+    "$1" \
+    "$2" \
+    POST \
+    "${MINT_PROOF_HTU}" \
+    "${ENVELOPE_ID}"
+}
+
 ensure_member() {
   local subject="$1" member_id="$2" pub="$3" jkt="$4"
   local members existing_jkt body out
@@ -192,33 +215,51 @@ ensure_bob_member() {
 
 mint_ect() {
   local subject="$1" out="$2" response
-  response="$(issuer_curl -H 'content-type: application/json' \
-    -d "$(jq -nc --arg s "${subject}" --arg e "${ENVELOPE_ID}" \
-      '{sub:$s,envelope_id:$e}')" \
-    "https://issuer-hospitala.local:${ISSUER_PORT}/mint")"
+
+  if [[ "${subject}" == "Hal" ]]; then
+    response="$(curl -sS \
+      -H 'content-type: application/json' \
+      -d "$(jq -nc --arg e "${ENVELOPE_ID}" '{envelope_id:$e}')" \
+      "${HUB_URL}/administration/holders/Hal/mint-ect")"
+  else
+    local nonce jti holder_dpop
+    nonce="mint-$(python3 -c 'import secrets; print(secrets.token_urlsafe(12))')"
+    jti="mint-$(python3 -c 'import secrets; print(secrets.token_urlsafe(12))')"
+    holder_dpop="$(audrey_sign_mint_proof "${nonce}" "${jti}")"
+
+    response="$(issuer_curl \
+      -H 'content-type: application/json' \
+      -d "$(jq -nc \
+        --arg s "${subject}" \
+        --arg e "${ENVELOPE_ID}" \
+        --arg d "${holder_dpop}" \
+        '{sub:$s,envelope_id:$e,holder_dpop:$d}')" \
+      "https://issuer-hospitala.local:${ISSUER_PORT}/mint")"
+  fi
+
   printf '%s' "${response}" | jq -e '.ect | type == "string" and length > 0' >/dev/null \
     || { printf '%s\n' "${response}" | jq . >&2; fail "ECT mint failed for ${subject}"; }
   printf '%s' "${response}" | jq -r '.ect' >"${out}"
 }
 
 mint_bob_ect() {
-  local response
-  response="$(issuer_b_curl -H 'content-type: application/json' \
-    -d "$(jq -nc --arg e "${ENVELOPE_ID}" '{sub:"Bob",envelope_id:$e}')" \
+  local response nonce jti holder_dpop
+
+  nonce="mint-$(python3 -c 'import secrets; print(secrets.token_urlsafe(12))')"
+  jti="mint-$(python3 -c 'import secrets; print(secrets.token_urlsafe(12))')"
+  holder_dpop="$(bob_sign_mint_proof "${nonce}" "${jti}")"
+
+  response="$(issuer_b_curl \
+    -H 'content-type: application/json' \
+    -d "$(jq -nc \
+      --arg e "${ENVELOPE_ID}" \
+      --arg d "${holder_dpop}" \
+      '{sub:"Bob",envelope_id:$e,holder_dpop:$d}')" \
     "https://issuer-hospitalb.local:${ISSUER_PORT}/mint")"
+
   printf '%s' "${response}" | jq -e '.ect | type == "string" and length > 0' >/dev/null \
     || { printf '%s\n' "${response}" | jq . >&2; fail "ECT mint failed for Bob"; }
   printf '%s' "${response}" | jq -r '.ect' >"${TMP}/bob.ect"
-}
-
-hub_runtime_mint() {
-  local principal="$1" response
-  response="$(curl -sS \
-    -H 'content-type: application/json' \
-    -d "$(jq -nc --arg e "${ENVELOPE_ID}" '{envelope_id:$e}')" \
-    "${HUB_URL}/administration/holders/${principal}/mint-ect")"
-  printf '%s' "${response}" | jq -e '.ready == true' >/dev/null \
-    || { printf '%s\n' "${response}" | jq . >&2; fail "Hub runtime ECT mint failed for ${principal}"; }
 }
 
 verify_decision_record() {
@@ -470,11 +511,7 @@ jq -e --arg e "${ENVELOPE_ID}" --arg jkt "${BOB_JKT}" '
 
 pass "Credentials encode requester-specific source authority and shared derivative authority"
 
-hub_runtime_mint "Hal"
-hub_runtime_mint "Audrey"
-hub_runtime_mint "Bob"
-hub_runtime_mint "Charlie"
-pass "Hub runtime credentials are ready for contextual execution and release control"
+pass "Credential custody paths conform for Hal, Audrey and Bob"
 
 section "3. Contextual LLM-mediated execution"
 

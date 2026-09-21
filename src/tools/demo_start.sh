@@ -18,8 +18,6 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TOFU_DIR="${REPO_ROOT}/src/infra/tofu"
-KEY_DIR="${REPO_ROOT}/secrets/holder_keys"
-GEN_KEYS="${REPO_ROOT}/src/tools/gen_member_keys.py"
 PATHMNIST_HOST="${PATHMNIST_HOST:-${REPO_ROOT}/../data/pathmnist.npz}"
 EXPECTED_VERIFIER_IP="${VERIFIER_IP:-127.0.0.1}"
 
@@ -44,7 +42,6 @@ CONTAINERS=(
   verifier-proxy
   verifier-app
   redis
-  holder-signer
 )
 
 EXPECTED_CONTAINERS=("${CONTAINERS[@]}")
@@ -102,44 +99,24 @@ print(json.dumps(record, sort_keys=True))
     "${subject}"
 }
 
-check_member_identity() {
+check_member_registration() {
   local volume="$1"
   local registry_file="$2"
   local subject="$3"
-  local private_key="$4"
-
   local record
-  local derived
   local registry_jkt
   local registry_pub
-  local derived_jkt
-  local derived_pub
 
   record="$(registry_record "${volume}" "${registry_file}" "${subject}")" \
     || fail "Issuer registry ${volume} does not contain ${subject}."
 
-  derived="$(
-    python3 "${GEN_KEYS}" \
-      --derive \
-      --private-key "${private_key}" \
-      --format json
-  )" || fail "Cannot derive holder identity from ${private_key}."
-
   registry_jkt="$(jq -r '.jkt // empty' <<<"${record}")"
   registry_pub="$(jq -r '.pub_b64 // empty' <<<"${record}")"
-  derived_jkt="$(jq -r '.jkt // empty' <<<"${derived}")"
-  derived_pub="$(jq -r '.pub_b64 // empty' <<<"${derived}")"
 
   [[ -n "${registry_jkt}" && -n "${registry_pub}" ]] \
     || fail "Incomplete issuer registry identity for ${subject}."
 
-  [[ "${registry_jkt}" == "${derived_jkt}" ]] \
-    || fail "Issuer JKT for ${subject} does not match the persisted private key."
-
-  [[ "${registry_pub}" == "${derived_pub}" ]] \
-    || fail "Issuer public key for ${subject} does not match the persisted private key."
-
-  pass "${subject} issuer registration matches persisted holder key"
+  pass "${subject} issuer registration is present"
 }
 
 echo "OpenHealth-CDI cold demo startup"
@@ -200,11 +177,6 @@ pass "verifier.local -> ${EXPECTED_VERIFIER_IP}"
 echo
 echo "[3/9] Checking host-backed persistent demo material..."
 
-for holder in Audrey Bob Charlie; do
-  require_file "${KEY_DIR}/${holder}.privhex"
-done
-
-require_file "${GEN_KEYS}"
 require_file "${PATHMNIST_HOST}"
 require_file "${CA}"
 require_file "${HUB_CRT}"
@@ -214,7 +186,7 @@ find "${REPO_ROOT}" -path '*/runs/*/model.pt' -type f -print -quit \
   | grep -q . \
   || fail "No persisted model.pt found."
 
-pass "Holder keys, model, PathMNIST and TLS material present"
+pass "Model, PathMNIST and TLS material present"
 
 # ------------------------------------------------------------
 # 4. OpenTofu ownership and Docker object identity
@@ -235,6 +207,7 @@ STATE_LIST="$(tofu state list 2>/dev/null)" \
 REQUIRED_STATE=(
   docker_network.fc
   docker_network.agent_edge
+  docker_network.issuer_internal
   docker_volume.issuer_registry_hospitala
   docker_volume.issuer_registry_hospitalb
   docker_volume.hal_identity
@@ -245,7 +218,7 @@ for address in "${REQUIRED_STATE[@]}"; do
     || fail "OpenTofu state does not own required resource: ${address}"
 done
 
-for network in fc agent-edge; do
+for network in fc agent-edge issuer-internal; do
   docker network inspect "${network}" >/dev/null 2>&1 \
     || fail "Required Docker network is missing: ${network}"
 done
@@ -257,14 +230,19 @@ done
 
 TOFU_FC_ID="$(tofu_state_id docker_network.fc)"
 TOFU_AGENT_ID="$(tofu_state_id docker_network.agent_edge)"
+TOFU_ISSUER_ID="$(tofu_state_id docker_network.issuer_internal)"
 DOCKER_FC_ID="$(docker network inspect -f '{{.Id}}' fc)"
 DOCKER_AGENT_ID="$(docker network inspect -f '{{.Id}}' agent-edge)"
+DOCKER_ISSUER_ID="$(docker network inspect -f '{{.Id}}' issuer-internal)"
 
 [[ -n "${TOFU_FC_ID}" && "${TOFU_FC_ID}" == "${DOCKER_FC_ID}" ]] \
   || fail "OpenTofu and Docker disagree on network fc."
 
 [[ -n "${TOFU_AGENT_ID}" && "${TOFU_AGENT_ID}" == "${DOCKER_AGENT_ID}" ]] \
   || fail "OpenTofu and Docker disagree on network agent-edge."
+
+[[ -n "${TOFU_ISSUER_ID}" && "${TOFU_ISSUER_ID}" == "${DOCKER_ISSUER_ID}" ]] \
+  || fail "OpenTofu and Docker disagree on network issuer-internal."
 
 for spec in \
   'docker_volume.issuer_registry_hospitala:issuer-registry-hospitala' \
@@ -283,6 +261,7 @@ pass "OpenTofu state and Docker networks/volumes are coherent"
 # Record persistent object identity before any container removal.
 FC_ID_BEFORE="${DOCKER_FC_ID}"
 AGENT_ID_BEFORE="${DOCKER_AGENT_ID}"
+ISSUER_ID_BEFORE="${DOCKER_ISSUER_ID}"
 ISSUER_A_CREATED_BEFORE="$(docker volume inspect -f '{{.CreatedAt}}' issuer-registry-hospitala)"
 ISSUER_B_CREATED_BEFORE="$(docker volume inspect -f '{{.CreatedAt}}' issuer-registry-hospitalb)"
 HAL_CREATED_BEFORE="$(docker volume inspect -f '{{.CreatedAt}}' hal-identity)"
@@ -300,17 +279,15 @@ docker image inspect "${ISSUER_IMAGE}" >/dev/null 2>&1 \
 docker image inspect "${HAL_IMAGE}" >/dev/null 2>&1 \
   || fail "Required existing Hal image is missing: ${HAL_IMAGE}"
 
-check_member_identity \
+check_member_registration \
   issuer-registry-hospitala \
   org__HospitalA.members.json \
-  Audrey \
-  "${KEY_DIR}/Audrey.privhex"
+  Audrey
 
-check_member_identity \
+check_member_registration \
   issuer-registry-hospitalb \
   org__HospitalB.members.json \
-  Bob \
-  "${KEY_DIR}/Bob.privhex"
+  Bob
 
 docker run --rm \
   -v hal-identity:/var/lib/hal/identity:ro \
@@ -356,6 +333,9 @@ tofu apply -auto-approve
 
 [[ "$(docker network inspect -f '{{.Id}}' agent-edge)" == "${AGENT_ID_BEFORE}" ]] \
   || fail "Network agent-edge was unexpectedly replaced during OpenTofu apply."
+
+[[ "$(docker network inspect -f '{{.Id}}' issuer-internal)" == "${ISSUER_ID_BEFORE}" ]] \
+  || fail "Network issuer-internal was unexpectedly replaced during OpenTofu apply."
 
 [[ "$(docker volume inspect -f '{{.CreatedAt}}' issuer-registry-hospitala)" == "${ISSUER_A_CREATED_BEFORE}" ]] \
   || fail "Hospital A issuer registry volume was unexpectedly replaced."
@@ -405,13 +385,6 @@ pass "PathMNIST dataset staged in flower-server"
 
 echo
 echo "[9/9] Running demo preflight..."
-
-for holder in Audrey Bob Charlie; do
-  docker exec holder-signer \
-    test -s "/vault/holder_keys/${holder}.privhex" \
-    || fail "${holder} key is not visible inside holder-signer."
-done
-pass "Holder keys visible inside holder-signer"
 
 docker exec flower-server \
   sh -c 'find /vault/runs -name model.pt -type f -print -quit | grep -q .' \
