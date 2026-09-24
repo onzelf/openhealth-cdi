@@ -16,7 +16,7 @@ import flwr as fl
 import requests
 import torch
 
-from pathmnist.common import (
+from workloads.active import (
     ACTIVE_CLASSES,
     CANCER_SAMPLES_PER_AB_HOSPITAL,
     DEVICE,
