@@ -23,6 +23,7 @@ RUN python -m pip install --upgrade pip \
        --index-url https://download.pytorch.org/whl/cu121
 
 COPY pathmnist /app/pathmnist
+COPY workloads /app/workloads
 COPY flower_client/client.py /app/client.py
 
  
