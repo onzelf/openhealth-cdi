@@ -45,7 +45,7 @@ from flwr.server.strategy import FedAvg
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 
-from pathmnist.common import (
+from workloads.active import (
     ACTIVE_CLASSES,
     CLASS_NAMES,
     DEVICE,
@@ -122,6 +122,19 @@ bound_envelope_lock = threading.Lock()
 active_artifact_run_id: Optional[str] = None
 artifact_run_lock = threading.Lock()
 
+# One recall column per cancer class (class_7 and class_8 for PathMNIST).
+CANCER_CLASS_RECALL_KEYS = [
+    f"class_{label}_recall" for label in STORY_CANCER_CLASSES
+]
+
+
+def cancer_class_recalls(per_class_recall: List[float]) -> Dict[str, float]:
+    return {
+        f"class_{label}_recall": per_class_recall[label]
+        for label in STORY_CANCER_CLASSES
+    }
+
+
 training_state: Dict[str, Any] = {
     "status": "waiting",
     "phase": None,
@@ -137,8 +150,7 @@ training_state: Dict[str, Any] = {
     "non_cancer_recall": None,
     "cancer_recall": None,
     "cancer_f1": None,
-    "class_7_recall": None,
-    "class_8_recall": None,
+    **{key: None for key in CANCER_CLASS_RECALL_KEYS},
     "error": None,
 }
 training_state_lock = threading.Lock()
@@ -1056,8 +1068,7 @@ def ensure_metrics_header() -> None:
                 "non_cancer_recall",
                 "cancer_recall",
                 "cancer_f1",
-                "class_7_recall",
-                "class_8_recall",
+                *CANCER_CLASS_RECALL_KEYS,
             ]
         )
 
@@ -1498,8 +1509,7 @@ def main() -> None:
                     story["non_cancer_recall"],
                     story["cancer_recall"],
                     story["cancer_f1"],
-                    per_class_recall[7],
-                    per_class_recall[8],
+                    *cancer_class_recalls(per_class_recall).values(),
                 ]
             )
 
@@ -1526,8 +1536,7 @@ def main() -> None:
             non_cancer_recall=story["non_cancer_recall"],
             cancer_recall=story["cancer_recall"],
             cancer_f1=story["cancer_f1"],
-            class_7_recall=per_class_recall[7],
-            class_8_recall=per_class_recall[8],
+            **cancer_class_recalls(per_class_recall),
         )
         write_event(
             "round_central_evaluation_completed",
@@ -1536,8 +1545,7 @@ def main() -> None:
             accuracy=accuracy,
             macro_recall=macro_recall,
             **story,
-            class_7_recall=per_class_recall[7],
-            class_8_recall=per_class_recall[8],
+            **cancer_class_recalls(per_class_recall),
         )
 
         print(
@@ -1556,8 +1564,7 @@ def main() -> None:
             "non_cancer_recall": story["non_cancer_recall"],
             "cancer_recall": story["cancer_recall"],
             "cancer_f1": story["cancer_f1"],
-            "class_7_recall": per_class_recall[7],
-            "class_8_recall": per_class_recall[8],
+            **cancer_class_recalls(per_class_recall),
         }
 
     strategy = EvidenceFedAvg(

@@ -26,6 +26,7 @@ RUN python -m pip install --upgrade pip \
        --index-url https://download.pytorch.org/whl/cpu
 
 COPY pathmnist /app/pathmnist
+COPY workloads /app/workloads
 COPY flower_server/server.py /app/server.py
 
 ENV HUB_URL=http://fc-hub:8080

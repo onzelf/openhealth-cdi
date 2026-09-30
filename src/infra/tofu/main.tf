@@ -90,6 +90,12 @@ variable "pathmnist_partition_seed" {
   default     = 20260728
 }
 
+variable "workload" {
+  description = "Training workload for the Flower server and clients (see vfp-core/backend/workloads)"
+  type        = string
+  default     = "pathmnist"
+}
+
 variable "org_a_id" {
   type    = string
   default = "org://HospitalA"
@@ -117,6 +123,9 @@ variable "bench" {
 
 locals {
   repo_root = abspath("${path.module}/../..")
+
+  # Only passed when not the default, so existing containers are left alone.
+  workload_env = var.workload == "pathmnist" ? [] : ["WORKLOAD=${var.workload}"]
 }
 
 # -----------------------------
@@ -657,7 +666,7 @@ resource "docker_container" "flower_server" {
   #  ip       = "127.0.0.1"
   #}
 
-  env = [
+  env = concat([
     "REDIS_URL=redis://redis:6379",
     "HUB_URL=http://fc-hub:8080",
     "RUN_ID=${var.run_id}",
@@ -677,7 +686,7 @@ resource "docker_container" "flower_server" {
 
     # NEW requirement: simulated enclave storage root
     "VAULT_ROOT=/vault",
-  ]
+  ], local.workload_env)
 
   # Simulated enclave/vault storage: host verifier/vault -> container /vault
   volumes {
@@ -715,7 +724,7 @@ resource "docker_container" "flower_client_a" {
     name = docker_network.fc.name
   }
 
-  env = [
+  env = concat([
     "HOSPITAL=A",
     "ORG_ID=${var.org_a_id}",
     "RUN_ID=${var.run_id}",
@@ -730,7 +739,7 @@ resource "docker_container" "flower_client_a" {
     "PATHMNIST_PARTITION_SEED=${var.pathmnist_partition_seed}",
     "MEDMNIST_ROOT=/tmp/medmnist",
     "DEVICE=${lower(var.compute_backend)}",
-  ]
+  ], local.workload_env)
 
   depends_on = [docker_container.flower_server]
   must_run   = true
@@ -747,7 +756,7 @@ resource "docker_container" "flower_client_b" {
     name = docker_network.fc.name
   }
 
-  env = [
+  env = concat([
     "HOSPITAL=B",
     "ORG_ID=${var.org_b_id}",
     "RUN_ID=${var.run_id}",
@@ -762,7 +771,7 @@ resource "docker_container" "flower_client_b" {
     "PATHMNIST_PARTITION_SEED=${var.pathmnist_partition_seed}",
     "MEDMNIST_ROOT=/tmp/medmnist",
     "DEVICE=${lower(var.compute_backend)}",
-  ]
+  ], local.workload_env)
 
   depends_on = [docker_container.flower_server]
   must_run   = true
@@ -782,7 +791,7 @@ resource "docker_container" "flower_client_c" {
     name = docker_network.fc.name
   }
 
-  env = [
+  env = concat([
     "HOSPITAL=C",
     "ORG_ID=${var.org_c_id}",
     "RUN_ID=${var.run_id}",
@@ -797,7 +806,7 @@ resource "docker_container" "flower_client_c" {
     "PATHMNIST_PARTITION_SEED=${var.pathmnist_partition_seed}",
     "MEDMNIST_ROOT=/tmp/medmnist",
     "DEVICE=${lower(var.compute_backend)}",
-  ]
+  ], local.workload_env)
 
   depends_on = [docker_container.flower_server]
   must_run   = true
