@@ -8,6 +8,7 @@ DEFAULT_WORKLOAD = "pathmnist"
 # workload name -> module that implements it
 WORKLOADS = {
     "pathmnist": "workloads.pathmnist_workload",
+    "breast_cancer": "workloads.breast_cancer_workload",  # experiment, tabular
 }
 
 # Everything flower_client/client.py and flower_server/server.py import.
