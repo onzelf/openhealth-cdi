@@ -685,7 +685,6 @@ resource "docker_container" "flower_server" {
   #}
 
   env = concat([
-    "REDIS_URL=redis://redis:6379",
     "HUB_URL=http://fc-hub:8080",
     "RUN_ID=${var.run_id}",
     "BACKEND_URL=http://flower-server:8081",
