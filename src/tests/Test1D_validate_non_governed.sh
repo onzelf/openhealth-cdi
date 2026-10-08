@@ -8,6 +8,14 @@ set -euo pipefail
 RUN_ID="${1:-local-pathmnist-ab-001}"
 RUN_DIR="/vault/runs/${RUN_ID}"
 MODEL_PATH="${RUN_DIR}/model.pt"
+# Where the Flower server lives. Defaults are L0 (a container on this host).
+# L1-A (Flower on ECS):
+#   FLOWER_URL=http://flower-server.openhealth.internal:8081
+#   FLOWER_EXEC="docker run --rm -i -v <vault-dir>:/vault -e FLOWER_URL fcac/flower-server:local"
+FLOWER_URL="${FLOWER_URL:-http://flower-server:8081}"
+FLOWER_EXEC="${FLOWER_EXEC:-docker exec -i flower-server}"
+flower_is_local() { [[ "${FLOWER_EXEC}" == docker\ exec* ]]; }
+
 
 echo "Usage: $0 [run_id]"
 echo "Input arguments: run_id=${RUN_ID}" 
@@ -16,10 +24,12 @@ echo
 pass() { printf "\033[32m✓\033[0m %s\n" "$*"; }
 fail() { printf "\033[31m✗\033[0m %s\n" "$*"; exit 1; }
 
-docker ps -a --format '{{.Names}}' | grep -qx flower-server \
-  || fail "Missing flower-server container"
+if flower_is_local; then
+  docker ps -a --format '{{.Names}}' | grep -qx flower-server \
+    || fail "Missing flower-server container"
+fi
 
-docker exec flower-server test -s "${MODEL_PATH}" \
+${FLOWER_EXEC} test -s "${MODEL_PATH}" \
   || fail "Missing or empty model artefact: ${MODEL_PATH}"
 
 echo
@@ -28,7 +38,7 @@ echo "Run: ${RUN_ID}"
 echo "Model: ${MODEL_PATH}"
 echo
 
-docker exec -i flower-server python - "${MODEL_PATH}" <<'PY'
+${FLOWER_EXEC} python - "${MODEL_PATH}" <<'PY'
 import json
 import sys
 

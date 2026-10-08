@@ -116,6 +116,21 @@ variable "issuer_mtls_port" {
   default = 9443
 }
 
+# L1-A: where the Flower execution plane runs. "docker" is L0 (on this host);
+# "ecs" leaves the Flower containers out and lets the ECS tasks reach the hub.
+variable "flower_placement" {
+  default = "docker"
+  validation {
+    condition     = contains(["docker", "ecs"], var.flower_placement)
+    error_message = "flower_placement must be docker or ecs."
+  }
+}
+
+variable "flower_backend_url" {
+  description = "The hub's FLOWER_BACKEND_URL (in L1-A: http://flower-server.openhealth.internal:8081)"
+  default     = "http://flower-server:8081"
+}
+
 variable "bench" {
   type    = bool
   default = false
@@ -126,6 +141,8 @@ locals {
 
   # Only passed when not the default, so existing containers are left alone.
   workload_env = var.workload == "pathmnist" ? [] : ["WORKLOAD=${var.workload}"]
+
+  flower_on_host = var.flower_placement == "docker"
 }
 
 # -----------------------------
@@ -538,7 +555,7 @@ resource "docker_container" "hub" {
   ports {
     internal = 8080
     external = 8080
-    ip       = "127.0.0.1"
+    ip       = local.flower_on_host ? "127.0.0.1" : "0.0.0.0" # ECS reaches it; the security group decides who
   }
 
   env = [
@@ -548,7 +565,7 @@ resource "docker_container" "hub" {
     "MIN_CLIENTS=2",
     "LOCAL_EPOCHS=${var.local_epochs}",
     "LEARNING_RATE=${var.learning_rate}",
-    "FLOWER_BACKEND_URL=http://flower-server:8081",
+    "FLOWER_BACKEND_URL=${var.flower_backend_url}",
     #"VERIFY_TLS=0",
     "HUB_CERT_CRT=/run/certs/hub.crt",
     "HUB_CERT_KEY=/run/certs/hub.key",
@@ -654,6 +671,7 @@ resource "docker_image" "flower_server" {
 }
 
 resource "docker_container" "flower_server" {
+  count = local.flower_on_host ? 1 : 0
   name  = "flower-server"
   image = docker_image.flower_server.name
 
@@ -667,7 +685,6 @@ resource "docker_container" "flower_server" {
   #}
 
   env = concat([
-    "REDIS_URL=redis://redis:6379",
     "HUB_URL=http://fc-hub:8080",
     "RUN_ID=${var.run_id}",
     "BACKEND_URL=http://flower-server:8081",
@@ -716,6 +733,7 @@ resource "docker_image" "flower_client" {
 
 # Flower Client - Hospital A
 resource "docker_container" "flower_client_a" {
+  count = local.flower_on_host ? 1 : 0
   name  = "flower-client-a"
   image = docker_image.flower_client.name
   gpus  = lower(var.compute_backend) == "cuda" ? "all" : null
@@ -748,6 +766,7 @@ resource "docker_container" "flower_client_a" {
 
 # Flower Client - Hospital B
 resource "docker_container" "flower_client_b" {
+  count = local.flower_on_host ? 1 : 0
   name  = "flower-client-b"
   image = docker_image.flower_client.name
   gpus  = lower(var.compute_backend) == "cuda" ? "all" : null
@@ -783,6 +802,7 @@ resource "docker_container" "flower_client_b" {
 # Flower Client - Hospital C
 # Hospital C is the data source. Charlie remains the sponsored guest principal.
 resource "docker_container" "flower_client_c" {
+  count = local.flower_on_host ? 1 : 0
   name  = "flower-client-c"
   image = docker_image.flower_client.name
   gpus  = lower(var.compute_backend) == "cuda" ? "all" : null
@@ -822,19 +842,41 @@ output "hub_container" {
 }
 
 output "client_a_container" {
-  value = docker_container.flower_client_a.name
+  value = one(docker_container.flower_client_a[*].name)
 }
 
 output "client_b_container" {
-  value = docker_container.flower_client_b.name
+  value = one(docker_container.flower_client_b[*].name)
 }
 
 output "client_c_container" {
-  value = docker_container.flower_client_c.name
+  value = one(docker_container.flower_client_c[*].name)
 }
 
 
 output "mtls_base_url" {
   value       = "https://127.0.0.1:${var.mtls_port}"
   description = "Local verifier mTLS endpoint"
+}
+
+
+# L1-A: the Flower containers gained a count; keep their state addresses.
+moved {
+  from = docker_container.flower_server
+  to   = docker_container.flower_server[0]
+}
+
+moved {
+  from = docker_container.flower_client_a
+  to   = docker_container.flower_client_a[0]
+}
+
+moved {
+  from = docker_container.flower_client_b
+  to   = docker_container.flower_client_b[0]
+}
+
+moved {
+  from = docker_container.flower_client_c
+  to   = docker_container.flower_client_c[0]
 }

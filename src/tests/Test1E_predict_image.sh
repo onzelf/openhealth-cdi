@@ -7,11 +7,19 @@ ENVELOPE_ID="${1:-}"
   echo "Usage: $0 <active-envelope-id>" >&2
   exit 1
 }
+# Where the Flower server lives. Defaults are L0 (a container on this host).
+# L1-A (Flower on ECS):
+#   FLOWER_URL=http://flower-server.openhealth.internal:8081
+#   FLOWER_EXEC="docker run --rm -i -v <vault-dir>:/vault -e FLOWER_URL fcac/flower-server:local"
+FLOWER_URL="${FLOWER_URL:-http://flower-server:8081}"
+FLOWER_EXEC="${FLOWER_EXEC:-docker exec -i flower-server}"
+flower_is_local() { [[ "${FLOWER_EXEC}" == docker\ exec* ]]; }
 
 
-docker exec -i \
-  -e ENVELOPE_ID="${ENVELOPE_ID}" \
-  flower-server python3 - <<'PY'
+
+${FLOWER_EXEC} \
+  env ENVELOPE_ID="${ENVELOPE_ID}" \
+  python3 - <<'PY'
 import base64
 import io
 import json
@@ -40,7 +48,7 @@ SAMPLE_INDEX = int(np.flatnonzero(labels == TARGET_LABEL)[0])
 
 RUN_ID = "local-pathmnist-ab-001"
 #SAMPLE_INDEX = 35
-URL = "http://127.0.0.1:8081/predict_image"
+URL = os.environ.get("FLOWER_URL", "http://127.0.0.1:8081") + "/predict_image"
 
 envelope_id = os.environ["ENVELOPE_ID"]
 
