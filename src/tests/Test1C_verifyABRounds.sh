@@ -15,6 +15,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 COMPUTE_FILE="${REPO_ROOT}/src/infra/tofu/compute.auto.tfvars"
 RUN_DIR="/vault/runs/${RUN_ID}"
+# Where the Flower server lives. Defaults are L0 (a container on this host).
+# L1-A (Flower on ECS):
+#   FLOWER_URL=http://flower-server.openhealth.internal:8081
+#   FLOWER_EXEC="docker run --rm -i -v <vault-dir>:/vault -e FLOWER_URL fcac/flower-server:local"
+FLOWER_URL="${FLOWER_URL:-http://flower-server:8081}"
+FLOWER_EXEC="${FLOWER_EXEC:-docker exec -i flower-server}"
+flower_is_local() { [[ "${FLOWER_EXEC}" == docker\ exec* ]]; }
+
 
 echo "Usage: $0 [run_id] [expected_rounds]"
 echo "Input arguments: run_id=${RUN_ID} expected_rounds=${EXPECTED_ROUNDS}"
@@ -24,8 +32,10 @@ bold() { printf "\033[1m%s\033[0m\n" "$*"; }
 pass() { printf "\033[32m✓\033[0m %s\n" "$*"; }
 fail() { printf "\033[31m✗\033[0m %s\n" "$*"; exit 1; }
 
-docker ps -a --format '{{.Names}}' | grep -qx flower-server \
-  || fail "Missing flower-server container"
+if flower_is_local; then
+  docker ps -a --format '{{.Names}}' | grep -qx flower-server \
+    || fail "Missing flower-server container"
+fi
 
 [[ -s "${COMPUTE_FILE}" ]] \
   || fail "Missing compute selection: ${COMPUTE_FILE}"
@@ -39,22 +49,26 @@ COMPUTE_BACKEND="$(
 [[ "${COMPUTE_BACKEND}" == "cpu" || "${COMPUTE_BACKEND}" == "cuda" ]] \
   || fail "Invalid compute backend: ${COMPUTE_BACKEND}"
 
-for client in flower-client-a flower-client-b; do
-  client_log="$(docker logs "$client" 2>&1 || true)"
-  runtime_marker="${COMPUTE_BACKEND^^} ready:"
+if flower_is_local; then
+  for client in flower-client-a flower-client-b; do
+    client_log="$(docker logs "$client" 2>&1 || true)"
+    runtime_marker="${COMPUTE_BACKEND^^} ready:"
 
-  grep -F "${runtime_marker}" >/dev/null <<< "$client_log" \
-    || fail "$client did not report ${COMPUTE_BACKEND} runtime ready"
+    grep -F "${runtime_marker}" >/dev/null <<< "$client_log" \
+      || fail "$client did not report ${COMPUTE_BACKEND} runtime ready"
 
-  grep -F "torch=" >/dev/null <<< "$client_log" \
-    || fail "$client did not report PyTorch runtime"
+    grep -F "torch=" >/dev/null <<< "$client_log" \
+      || fail "$client did not report PyTorch runtime"
 
-  grep -F "device=${COMPUTE_BACKEND}" >/dev/null <<< "$client_log" \
-    || fail "$client did not load partition on ${COMPUTE_BACKEND}"
+    grep -F "device=${COMPUTE_BACKEND}" >/dev/null <<< "$client_log" \
+      || fail "$client did not load partition on ${COMPUTE_BACKEND}"
 
-  pass "$client reported ${COMPUTE_BACKEND} runtime"
-done
-pass "Hospital A and B clients trained on ${COMPUTE_BACKEND}"
+    pass "$client reported ${COMPUTE_BACKEND} runtime"
+  done
+  pass "Hospital A and B clients trained on ${COMPUTE_BACKEND}"
+else
+  pass "Flower clients run remotely (${FLOWER_URL}); their runtime is read from their own logs"
+fi
 
 for file in \
   model.pt \
@@ -65,13 +79,13 @@ for file in \
   class_metrics.csv \
   final_model_metadata.json
 do
-  docker exec flower-server test -s "${RUN_DIR}/${file}" \
+  ${FLOWER_EXEC} test -s "${RUN_DIR}/${file}" \
     || fail "Missing or empty ${RUN_DIR}/${file}"
 done
 pass "AB_BASE artefacts exist"
 
 rows="$(
-  docker exec -i flower-server python - "${RUN_DIR}/metrics.csv" <<'PY'
+  ${FLOWER_EXEC} python - "${RUN_DIR}/metrics.csv" <<'PY'
 import csv
 import sys
 
@@ -85,7 +99,7 @@ EXPECTED_ROUNDS__=$((EXPECTED_ROUNDS + 1))
   || fail "Expected ${EXPECTED_ROUNDS__} central metric rows, found ${rows}"
 pass "Central metrics include round 0 baseline plus ${EXPECTED_ROUNDS} trained rounds"
 
-docker exec -i flower-server python - \
+${FLOWER_EXEC} python - \
   "${RUN_DIR}/metrics.csv" \
   "${RUN_DIR}/class_metrics.csv" \
   "${RUN_DIR}/participants.json" <<'PY'
@@ -134,11 +148,12 @@ PY
 pass "Participants and unavailable label 1 verified"
 
 status="$(
-  docker exec -i fc-hub python - <<'PY2'
+  docker exec -i fc-hub python - "${FLOWER_URL}" <<'PY2'
 import json
+import sys
 from urllib.request import urlopen
 
-with urlopen("http://flower-server:8081/status", timeout=5) as r:
+with urlopen(sys.argv[1] + "/status", timeout=5) as r:
     print(r.read().decode())
 PY2
 )"

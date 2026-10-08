@@ -10,6 +10,14 @@ set -u
 
 EID="${1:-}"
 HOST_IP="${2:-${HOST_IP:-}}"
+# Where the Flower server lives. Defaults are L0 (a container on this host).
+# L1-A (Flower on ECS):
+#   FLOWER_URL=http://flower-server.openhealth.internal:8081
+#   FLOWER_EXEC="docker run --rm -i -v <vault-dir>:/vault -e FLOWER_URL fcac/flower-server:local"
+FLOWER_URL="${FLOWER_URL:-http://flower-server:8081}"
+FLOWER_EXEC="${FLOWER_EXEC:-docker exec -i flower-server}"
+flower_is_local() { [[ "${FLOWER_EXEC}" == docker\ exec* ]]; }
+
 
 [[ -n "${EID}" ]] || {
   echo "Usage: $0 <active-envelope-id> <host-ip>" >&2
@@ -73,7 +81,11 @@ for c in \
   flower-server flower-client-a flower-client-b \
   hal
 do
-  container_running "$c"
+  if [[ "$c" == flower-* ]] && ! flower_is_local; then
+    pass "container ${c} runs remotely (${FLOWER_URL})"
+  else
+    container_running "$c"
+  fi
 done
 
 section "2. Hub boundary"
@@ -98,12 +110,12 @@ BACKENDS="$(curl -fsS --max-time 5 http://127.0.0.1:8080/backend/list 2>/dev/nul
 if [[ -z "$BACKENDS" ]]; then
   fail "Hub backend registry unavailable"
 else
-  if jq -e '
+  if jq -e --arg url "$FLOWER_URL" '
     [.backends[]?
       | select(
           .backend_id == "flower-local"
           and .backend_type == "flower_server"
-          and .url == "http://flower-server:8081"
+          and .url == $url
         )
     ] | length == 1
   ' <<<"$BACKENDS" >/dev/null
@@ -116,14 +128,14 @@ fi
 
 section "4. Flower readiness and envelope binding"
 FLOWER_HEALTH="$(
-  docker exec -i fc-hub python - "$EID" 2>/dev/null <<'PY' || true
+  docker exec -i fc-hub python - "$EID" "$FLOWER_URL" 2>/dev/null <<'PY' || true
 import json
 import sys
 import requests
 
 eid = sys.argv[1]
 try:
-    r = requests.get("http://flower-server:8081/health", timeout=5)
+    r = requests.get(sys.argv[2] + "/health", timeout=5)
     print(json.dumps({
         "http_status": r.status_code,
         "body": r.json() if "application/json" in r.headers.get("content-type", "") else r.text,
