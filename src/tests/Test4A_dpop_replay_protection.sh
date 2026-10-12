@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Where the Flower server lives. Defaults are L0 (a container on this host).
+# L1-A (Flower on ECS):
+#   FLOWER_URL=http://flower-server.openhealth.internal:8081
+#   FLOWER_EXEC="docker run --rm -i -v <vault-dir>:/vault -e FLOWER_URL fcac/flower-server:local"
+FLOWER_URL="${FLOWER_URL:-http://flower-server:8081}"
+FLOWER_EXEC="${FLOWER_EXEC:-docker exec -i flower-server}"
+flower_is_local() { [[ "${FLOWER_EXEC}" == docker\ exec* ]]; }
+
 
 # Test4A — DPoP replay protection
 #
@@ -55,6 +63,7 @@ for command in jq python3 curl docker; do
 done
 
 for container in fc-hub flower-server issuer-hospitala verifier-app; do
+  [[ "${container}" == flower-server ]] && ! flower_is_local && continue
   docker ps --format '{{.Names}}' | grep -qx "${container}" \
     || fail "Container is not running: ${container}"
 done
@@ -66,12 +75,12 @@ done
 [[ -s "${MAKE_DPOP}" ]] || fail "Missing ${MAKE_DPOP}"
 
 ARTIFACT_RUN_ID="$(
-  docker exec flower-server \
+  ${FLOWER_EXEC} \
     cat "/vault/${ENVELOPE_ID}/run.json" \
     | jq -er '.run_id'
 )" || fail "Unable to resolve current model for envelope ${ENVELOPE_ID}"
 
-docker exec flower-server \
+${FLOWER_EXEC} \
   test -s "/vault/runs/${ARTIFACT_RUN_ID}/model.pt" \
   || fail "Missing current model artifact ${ARTIFACT_RUN_ID}"
 

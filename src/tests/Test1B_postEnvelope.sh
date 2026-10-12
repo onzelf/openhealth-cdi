@@ -18,6 +18,14 @@ set -euo pipefail
 ENVELOPE_ID="${1:-}"
 RUN_ID="${2:-local-pathmnist-ab-001}"
 TIMEOUT_S="${3:-1800}"
+# Where the Flower server lives. Defaults are L0 (a container on this host).
+# L1-A (Flower on ECS):
+#   FLOWER_URL=http://flower-server.openhealth.internal:8081
+#   FLOWER_EXEC="docker run --rm -i -v <vault-dir>:/vault -e FLOWER_URL fcac/flower-server:local"
+FLOWER_URL="${FLOWER_URL:-http://flower-server:8081}"
+FLOWER_EXEC="${FLOWER_EXEC:-docker exec -i flower-server}"
+flower_is_local() { [[ "${FLOWER_EXEC}" == docker\ exec* ]]; }
+
 
 if [[ -z "${ENVELOPE_ID}" ]]; then
   echo "Usage: $0 <envelope_id> [run_id] [timeout_seconds]"
@@ -107,8 +115,12 @@ hub_start() {
 }
 
 flower_status() {
-  container_http flower-server GET \
-    "http://127.0.0.1:8081/status"
+  if flower_is_local; then
+    container_http flower-server GET \
+      "http://127.0.0.1:8081/status"
+  else
+    container_http fc-hub GET "${FLOWER_URL}/status"
+  fi
 }
 
 wait_until_ready() {
@@ -185,7 +197,7 @@ wait_training_done() {
             warn "Ignoring stale done state for ${model_run_id}"
           else
             manifest="$(
-              docker exec flower-server \
+              ${FLOWER_EXEC} \
                 cat "/vault/${ENVELOPE_ID}/run.json" 2>/dev/null || true
             )"
             if jq . >/dev/null 2>&1 <<<"${manifest}"; then
@@ -224,10 +236,14 @@ echo "Run ID:      ${RUN_ID}"
 hr
 bold "Step 1: Container preflight"
 need_running_container fc-hub
-need_running_container flower-server
-need_running_container flower-client-a
-need_running_container flower-client-b
-pass "Hub, server, and A/B clients are running"
+if flower_is_local; then
+  need_running_container flower-server
+  need_running_container flower-client-a
+  need_running_container flower-client-b
+  pass "Hub, server, and A/B clients are running"
+else
+  pass "Hub is running; Flower runs remotely (${FLOWER_URL})"
+fi
 
 hr
 bold "Step 2: Reinitialise the existing run lifecycle"
@@ -301,7 +317,7 @@ hr
 bold "Step 6: Verify envelope-bound run evidence"
 EVIDENCE_PATH="/vault/${ENVELOPE_ID}/run.json"
 EVIDENCE_JSON="$(
-  docker exec flower-server cat "${EVIDENCE_PATH}" 2>/dev/null || true
+  ${FLOWER_EXEC} cat "${EVIDENCE_PATH}" 2>/dev/null || true
 )"
 require_json "Envelope run manifest" "${EVIDENCE_JSON}" ||
   fail "Missing or invalid ${EVIDENCE_PATH}"

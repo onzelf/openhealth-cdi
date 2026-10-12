@@ -1,0 +1,5 @@
+vpc_id                      = "vpc-xxxxxxxx"
+subnet_ids                  = ["subnet-aaaaaaaa", "subnet-bbbbbbbb"]
+governance_host_instance_id = "i-xxxxxxxxxxxxxxxxx"
+flower_server_image         = "<account>.dkr.ecr.eu-west-2.amazonaws.com/fcac/flower-server:local"
+flower_client_image         = "<account>.dkr.ecr.eu-west-2.amazonaws.com/openhealth/flower-client:local"
