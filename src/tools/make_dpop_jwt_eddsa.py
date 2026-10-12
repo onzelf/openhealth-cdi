@@ -4,7 +4,7 @@ make_dpop_jwt_eddsa.py
 Canonical-ish DPoP proof as a compact JWS (JWT) signed with Ed25519 (EdDSA).
 
 Usage:
-  python3 make_dpop_jwt_eddsa.py <privhex> <pubb64> <nonce> <jti> <method> <htu_full_url>
+  python3 make_dpop_jwt_eddsa.py <privhex> <pubb64> <nonce> <jti> <method> <htu_full_url> <envelope_id> [request_hash]
 
 Outputs:
   compact JWS string: header.payload.signature
@@ -20,8 +20,8 @@ def b64u_json(obj) -> str:
     return b64u(json.dumps(obj, separators=(",", ":"), sort_keys=True).encode("utf-8"))
 
 def main():
-    if len(sys.argv) != 8:
-        print("Usage: python3 make_dpop_jwt_eddsa.py <privhex> <pubb64> <nonce> <jti> <htm> <htu> <envelope_id>")
+    if len(sys.argv) not in (8, 9):
+        print("Usage: python3 make_dpop_jwt_eddsa.py <privhex> <pubb64> <nonce> <jti> <htm> <htu> <envelope_id> [request_hash]")
         sys.exit(1)
 
     priv_hex = sys.argv[1]
@@ -31,6 +31,7 @@ def main():
     method   = sys.argv[5].upper()
     htu      = sys.argv[6]      # full URL, e.g. http://127.0.0.1:9100/probe
     envelope_id = sys.argv[7]
+    request_hash = sys.argv[8] if len(sys.argv) == 9 else ""
 
     # DPoP JWT header with embedded JWK (OKP Ed25519)
     header = {
@@ -47,6 +48,8 @@ def main():
         "nonce": nonce,
         "envelope_id": envelope_id
     }
+    if request_hash:
+        payload["request_hash"] = request_hash
 
     h_b64 = b64u_json(header)
     p_b64 = b64u_json(payload)

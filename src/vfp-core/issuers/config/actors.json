@@ -37,10 +37,10 @@
       "actor_type": "agent",
       "status": "active",
       "issuer_organization": "org://HospitalA",
-      "dpop_signer_url": "http://hal:8088",
       "modes": [
         "mode1b"
-      ]
+      ],
+      "authority_endpoint_url": "http://hal:8088"
     }
   ]
 }

@@ -109,14 +109,15 @@ AUDREY_JKT="$(jq -er '.jkt' <<<"${AUDREY_IDENTITY}")"
 AUDREY_PRIV_HEX="$(tr -d '\r\n' <"${AUDREY_PRIVATE}")"
 
 audrey_sign_dpop() {
-  python3 "${MAKE_DPOP}" \
-    "${AUDREY_PRIV_HEX}" \
-    "${AUDREY_PUB_B64}" \
-    "$1" \
-    "$2" \
-    POST \
-    "${DPOP_HTU}" \
-    "${ENVELOPE_ID}"
+  local nonce="$1" jti="$2" request_hash="${3:-}"
+  local args=(
+    "${AUDREY_PRIV_HEX}" "${AUDREY_PUB_B64}"
+    "${nonce}" "${jti}" POST "${DPOP_HTU}" "${ENVELOPE_ID}"
+  )
+  if [[ -n "${request_hash}" ]]; then
+    args+=("${request_hash}")
+  fi
+  python3 "${MAKE_DPOP}" "${args[@]}"
 }
 audrey_sign_mint_proof() {
   python3 "${MAKE_DPOP}" \
@@ -153,10 +154,49 @@ mint_ect() {
   local subject="$1" out="$2" response
 
   if [[ "${subject}" == "Hal" ]]; then
-    response="$(curl -sS \
-      -H 'content-type: application/json' \
-      -d "$(jq -nc --arg e "${ENVELOPE_ID}" '{envelope_id:$e}')" \
-      "http://127.0.0.1:8080/administration/holders/Hal/mint-ect")"
+    # Hal obtains its own ECT and presents exact bounded-inference authority.
+    # The Hub only transports this request; it does not sign or retain the ECT.
+    local presentation
+    presentation="$(
+      docker exec -i fc-hub python - \
+        "${ENVELOPE_ID}" "${RUN_ID}" "${TISSUE}" <<'PY_HAL'
+import json
+import sys
+import urllib.request
+
+envelope_id, run_id, tissue = sys.argv[1:4]
+payload = {
+    "principal": "Hal",
+    "envelope_id": envelope_id,
+    "run_id": run_id,
+    "resource": "pathmnist-colon-pathology",
+    "action": "bounded_inference",
+    "purpose": "bounded_model_inference",
+    "requested_tissues": [tissue],
+}
+request = urllib.request.Request(
+    "http://hal:8088/authority/present",
+    data=json.dumps(payload).encode("utf-8"),
+    headers={"content-type": "application/json"},
+    method="POST",
+)
+with urllib.request.urlopen(request, timeout=15) as result:
+    print(result.read().decode("utf-8"))
+PY_HAL
+    )" || fail "Hal-owned authority presentation failed"
+    printf '%s' "${presentation}" | jq -e \
+      --arg e "${ENVELOPE_ID}" '
+      .principal == "Hal" and .envelope_id == $e
+      and (.authorization | type == "string")
+      and (.authorization | startswith("ECT "))
+      and (.dpop | type == "string")
+      and (.dpop | length > 0)
+      and (.request.action == "bounded_inference")
+    ' >/dev/null || {
+      printf '%s\n' "${presentation}" | jq . >&2 || true
+      fail "Hal authority presentation contract mismatch"
+    }
+    response="$(jq -c '{ect:(.authorization | sub("^ECT "; ""))}' <<<"${presentation}")"
   else
     local nonce jti holder_dpop
     nonce="mint-$(python3 -c 'import secrets; print(secrets.token_urlsafe(12))')"
@@ -207,14 +247,44 @@ admission_case() {
   local case_no="$1" label="$2" signer="$3" subject="$4" ect="$5"
   local resource="$6" action="$7" purpose="$8" tissue="$9"
   local derivative="${10}" expected="${11}" expected_reason="${12}"
-  local nonce jti dpop body response allow reason decision_id
+  local nonce jti dpop body response allow reason decision_id request_hash
 
   nonce="nonce-$(python3 -c 'import secrets; print(secrets.token_urlsafe(12))')"
   jti="jti-$(python3 -c 'import secrets; print(secrets.token_urlsafe(12))')"
+
+  # A5 requires query_model proof to bind the *exact* governed request.
+  # Without this, the row-1 DENY would be a proof-format rejection rather
+  # than the Table 7 capability-scope decision it is meant to demonstrate.
+  request_hash=""
+  if [[ "${action}" == "query_model" ]]; then
+    request_hash="$(python3 - \
+      "${ENVELOPE_ID}" "${RUN_ID}" \
+      "${resource}" "${action}" "${purpose}" "${tissue}" <<'PY_HASH'
+import hashlib
+import json
+import sys
+
+envelope_id, run_id, resource, action, purpose, tissue = sys.argv[1:7]
+request = {
+    "envelope_id": envelope_id,
+    "run_id": run_id,
+    "resource": resource,
+    "action": action,
+    "purpose": purpose,
+    "requested_tissues": [tissue],
+}
+canonical = json.dumps(
+    request, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+).encode("utf-8")
+print("sha256:" + hashlib.sha256(canonical).hexdigest())
+PY_HASH
+    )" || fail "Could not bind Table 7 query request"
+  fi
+
   if [[ "${signer}" == "hal" ]]; then
     dpop="$(hal_sign_dpop "${nonce}" "${jti}")"
   else
-    dpop="$(audrey_sign_dpop "${nonce}" "${jti}")"
+    dpop="$(audrey_sign_dpop "${nonce}" "${jti}" "${request_hash}")"
   fi
 
   body="$(jq -nc \

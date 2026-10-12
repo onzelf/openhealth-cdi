@@ -1,6 +1,6 @@
 FROM python:3.10-slim
 
-RUN pip install --no-cache-dir fastapi uvicorn[standard] requests cryptography
+RUN pip install --no-cache-dir fastapi uvicorn[standard] requests cryptography PyJWT
 
 WORKDIR /app
 COPY issuer.py /app/issuer.py

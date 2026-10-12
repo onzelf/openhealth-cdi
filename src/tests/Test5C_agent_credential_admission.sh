@@ -110,12 +110,59 @@ fi
 pass "Hospital A binds Hal to the Hal-owned JKT"
 
 section "3. Hal bounded-agent ECT"
-MINT="$(curl -sS \
-  -H 'content-type: application/json' \
-  -d "$(jq -nc --arg e "${ENVELOPE_ID}" '{envelope_id:$e}')" \
-  "http://127.0.0.1:8080/administration/holders/Hal/mint-ect")"
-ECT="$(printf '%s' "${MINT}" | jq -r '.ect // empty')"
-[[ -n "${ECT}" ]] || { printf '%s\n' "${MINT}" | jq . >&2; fail "Hal ECT mint failed"; }
+
+# Hal constitutes its own authority. The Hub only transports the request to
+# Hal's authority endpoint; it does not mint, sign, or retain Hal credentials.
+PRESENTATION="$(
+  docker exec -i fc-hub python - \
+    "${ENVELOPE_ID}" \
+    "${RUN_ID}" <<'PY'
+import json
+import sys
+import urllib.request
+
+envelope_id, run_id = sys.argv[1:3]
+
+payload = {
+    "principal": "Hal",
+    "envelope_id": envelope_id,
+    "run_id": run_id,
+    "resource": "pathmnist-colon-pathology",
+    "action": "bounded_inference",
+    "purpose": "bounded_model_inference",
+    "requested_tissues": ["colorectal_adenocarcinoma_epithelium"],
+}
+
+req = urllib.request.Request(
+    "http://hal:8088/authority/present",
+    data=json.dumps(payload).encode("utf-8"),
+    headers={"content-type": "application/json"},
+    method="POST",
+)
+
+with urllib.request.urlopen(req, timeout=15) as response:
+    print(response.read().decode("utf-8"))
+PY
+)" || fail "Hal authority presentation failed"
+
+printf '%s' "${PRESENTATION}" | jq -e \
+  '.principal=="Hal"
+   and (.authorization | type=="string")
+   and (.authorization | startswith("ECT "))
+   and (.dpop | type=="string")
+   and (.request.action=="bounded_inference")' \
+  >/dev/null || {
+    printf '%s\n' "${PRESENTATION}" | jq . >&2 || true
+    fail "Hal authority presentation contract mismatch"
+  }
+
+ECT="$(printf '%s' "${PRESENTATION}" | jq -r \
+  '.authorization | sub("^ECT "; "")')"
+
+[[ -n "${ECT}" && "${ECT}" == *.*.* ]] || {
+  printf '%s\n' "${PRESENTATION}" | jq . >&2 || true
+  fail "Hal authority presentation returned no compact ECT"
+}
 decode_ect "${ECT}" >"${TMP}/claims.json"
 jq -e --arg e "${ENVELOPE_ID}" --arg jkt "${HAL_JKT}" '
   .sub=="Hal" and .actor_type=="agent" and .org_iss=="org://HospitalA"

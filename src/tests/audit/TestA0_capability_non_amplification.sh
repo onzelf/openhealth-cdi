@@ -1,0 +1,473 @@
+#!/usr/bin/env bash
+# TestA0_capability_non_amplification.sh
+#
+# Question
+#   Can a participant obtain execution of an action/capability that was
+#   not offered/admitted?
+#
+# Expected result
+#   No.
+#
+# Positive control
+#   Audrey is admitted for query_model(mucus) -> ALLOW
+#
+# Negative case
+#   Audrey requests submit_update(mucus), which is a valid federation
+#   operation but is absent from Audrey's admitted capability set
+#   -> DENY capability_violation
+#
+# Usage
+#   ./TestA0_capability_non_amplification.sh <active-envelope-id>
+
+set -Eeuo pipefail
+
+# Audit exit contract
+#   0  attack executed and blocked
+#   1  vulnerability confirmed
+#   2  inconclusive: attack was not adjudicated
+#  70  harness or local execution error
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SRC_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+ENVELOPE_ID="${1:-}"
+[[ -n "${ENVELOPE_ID}" ]] || {
+    printf 'Usage: %s <active-envelope-id>\n' "$0" >&2
+    exit 70
+}
+
+SUBJECT="${SUBJECT:-Audrey}"
+RUN_ID="${RUN_ID:-test-a0-capability-non-amplification}"
+
+ISSUER_HOST="${ISSUER_HOST:-issuer-hospitala.local}"
+ISSUER_PORT="${ISSUER_PORT:-9443}"
+ISSUER_IP="${ISSUER_IP:-127.0.0.1}"
+ISSUER_URL="https://${ISSUER_HOST}:${ISSUER_PORT}"
+
+VERIFIER_URL="${VERIFIER_URL:-https://verifier.local:8443}"
+DPOP_HTU="${DPOP_HTU:-https://verifier.local/admission/check}"
+MINT_PROOF_HTU="${MINT_PROOF_HTU:-urn:openhealth:issuer:mint}"
+
+POLICY_FILE="${SRC_DIR}/vfp-governance/verifier/state/policy.json"
+DECISIONS_DIR="${SRC_DIR}/vfp-governance/verifier/state/events/decisions"
+
+CA="${SRC_DIR}/vfp-governance/verifier/certs/ca.crt"
+CLIENT_CRT="${SRC_DIR}/vfp-governance/verifier/certs/HospitalA-admin.crt"
+CLIENT_KEY="${SRC_DIR}/vfp-governance/verifier/certs/HospitalA-admin.key"
+HUB_CRT="${SRC_DIR}/vfp-governance/verifier/certs/hub.crt"
+HUB_KEY="${SRC_DIR}/vfp-governance/verifier/certs/hub.key"
+
+HOLDER_PRIVATE="${HOLDER_PRIVATE:-${SRC_DIR}/../secrets/holder_keys/${SUBJECT}.privhex}"
+GEN_MEMBER_KEYS="${SRC_DIR}/tools/gen_member_keys.py"
+MAKE_DPOP="${SRC_DIR}/tools/make_dpop_jwt_eddsa.py"
+
+EVIDENCE_PUBLIC_KEY="${SRC_DIR}/vfp-governance/verifier/certs/fcac-evidence.pub"
+EVIDENCE_VERIFIER="${SRC_DIR}/tools/verify_fcac_evidence.py"
+EVIDENCE_KEY_KID="${EVIDENCE_KEY_KID:-fcac-evidence-key-1}"
+
+pass() {
+    printf '\033[32m✓\033[0m %s\n' "$*"
+}
+
+blocked() {
+    printf '\033[32m✓\033[0m ATTACK BLOCKED: %s\n' "$*"
+    exit 0
+}
+
+vulnerable() {
+    printf '\033[31m✗\033[0m VULNERABILITY CONFIRMED: %s\n' "$*" >&2
+    exit 1
+}
+
+inconclusive() {
+    printf '\033[33m?\033[0m INCONCLUSIVE: %s\n' "$*" >&2
+    exit 2
+}
+
+error() {
+    printf '\033[31m!\033[0m HARNESS ERROR: %s\n' "$*" >&2
+    exit 70
+}
+
+unexpected_error() {
+    local rc="$?"
+    printf '\033[31m!\033[0m HARNESS ERROR: unexpected command failure (rc=%s)\n' "${rc}" >&2
+    exit 70
+}
+
+trap unexpected_error ERR
+
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "${TMP_DIR}"' EXIT
+
+section() {
+    printf '\n\033[1m== %s ==\033[0m\n' "$*"
+}
+
+require_file() {
+    [[ -s "$1" ]] || error "Missing or empty file: $1"
+}
+
+for cmd in curl jq python3; do
+    command -v "${cmd}" >/dev/null 2>&1 ||
+        error "Missing command: ${cmd}"
+done
+
+for file in \
+    "${POLICY_FILE}" \
+    "${CA}" \
+    "${CLIENT_CRT}" \
+    "${CLIENT_KEY}" \
+    "${HUB_CRT}" \
+    "${HUB_KEY}" \
+    "${HOLDER_PRIVATE}" \
+    "${GEN_MEMBER_KEYS}" \
+    "${MAKE_DPOP}" \
+    "${EVIDENCE_PUBLIC_KEY}" \
+    "${EVIDENCE_VERIFIER}"; do
+    require_file "${file}"
+done
+
+
+section "1. Verify the requested negative action is a real policy action"
+
+jq -e '
+    [.ops[] | select(
+        .resource == "pathmnist-colon-pathology"
+        and .action == "submit_update"
+        and .purpose == "federated_training"
+    )] | length > 0
+' "${POLICY_FILE}" >/dev/null ||
+    inconclusive "submit_update is not defined by the current policy"
+
+pass "submit_update is a valid federation action"
+
+
+# Audrey proves holder custody before the issuer mints her ECT.
+HOLDER_IDENTITY="$(
+    python3 "${GEN_MEMBER_KEYS}" \
+        --derive \
+        --private-key "${HOLDER_PRIVATE}" \
+        --format json
+)" || error "Unable to derive Audrey holder identity"
+
+HOLDER_PUB_B64="$(jq -er '.pub_b64' <<<"${HOLDER_IDENTITY}")" ||
+    error "Unable to read Audrey holder public key"
+HOLDER_JKT="$(jq -er '.jkt' <<<"${HOLDER_IDENTITY}")" ||
+    error "Unable to read Audrey holder thumbprint"
+HOLDER_PRIV_HEX="$(tr -d '\r\n' <"${HOLDER_PRIVATE}")"
+
+
+section "2. Mint Audrey's issuer-owned ECT"
+
+CURL_ISSUER=(
+    -sS
+    --cacert "${CA}"
+    --cert "${CLIENT_CRT}"
+    --key "${CLIENT_KEY}"
+)
+
+if [[ -n "${ISSUER_IP}" ]]; then
+    CURL_ISSUER+=(
+        --resolve "${ISSUER_HOST}:${ISSUER_PORT}:${ISSUER_IP}"
+    )
+fi
+
+MINT_FILE="${TMP_DIR}/mint.json"
+MINT_NONCE="mint-nonce-$(date +%s%N)"
+MINT_JTI="mint-jti-$(date +%s%N)"
+
+MINT_DPOP="$(
+    python3 "${MAKE_DPOP}" \
+        "${HOLDER_PRIV_HEX}" \
+        "${HOLDER_PUB_B64}" \
+        "${MINT_NONCE}" \
+        "${MINT_JTI}" \
+        POST \
+        "${MINT_PROOF_HTU}" \
+        "${ENVELOPE_ID}"
+)" || error "Unable to create Audrey holder mint proof"
+
+MINT_STATUS="$(
+    curl "${CURL_ISSUER[@]}" \
+        -o "${MINT_FILE}" \
+        -w '%{http_code}' \
+        -X POST \
+        "${ISSUER_URL}/mint" \
+        -H 'content-type: application/json' \
+        -d "$(
+            jq -nc \
+                --arg sub "${SUBJECT}" \
+                --arg envelope "${ENVELOPE_ID}" \
+                --arg holder_dpop "${MINT_DPOP}" \
+                '{sub:$sub,envelope_id:$envelope,holder_dpop:$holder_dpop}'
+        )"
+)"
+
+if [[ "${MINT_STATUS}" != "200" ]]; then
+    cat "${MINT_FILE}" >&2 || true
+    inconclusive "Issuer mint returned HTTP ${MINT_STATUS}"
+fi
+
+ECT="$(jq -r '.ect // empty' "${MINT_FILE}")"
+[[ -n "${ECT}" ]] || inconclusive "Issuer did not return an ECT"
+
+CLAIMS_FILE="${TMP_DIR}/claims.json"
+
+if ! python3 - "${ECT}" "${CLAIMS_FILE}" <<'PY'
+import base64
+import json
+import sys
+
+token, output = sys.argv[1], sys.argv[2]
+
+parts = token.split(".")
+if len(parts) != 3:
+    raise SystemExit("ECT is not compact JWS")
+
+payload = parts[1] + "=" * (-len(parts[1]) % 4)
+claims = json.loads(
+    base64.urlsafe_b64decode(payload).decode("utf-8")
+)
+
+with open(output, "w", encoding="utf-8") as f:
+    json.dump(claims, f, indent=2, sort_keys=True)
+PY
+then
+    inconclusive "Unable to decode issuer ECT claims"
+fi
+
+[[ -s "${CLAIMS_FILE}" ]] || inconclusive "Unable to decode issuer ECT claims"
+
+jq -e '
+    [.cap[]? | select(
+        .resource == "pathmnist-colon-pathology"
+        and .action == "query_model"
+        and .purpose == "approved_model_query"
+    )] | length > 0
+' "${CLAIMS_FILE}" >/dev/null ||
+    inconclusive "Audrey ECT does not contain the positive-control query capability"
+
+jq -e '
+    [.cap[]? | select(.action == "submit_update")] | length == 0
+' "${CLAIMS_FILE}" >/dev/null ||
+    inconclusive "Audrey ECT unexpectedly contains submit_update authority"
+
+pass "ECT offers query_model but does not offer submit_update"
+
+
+section "3. Verify holder binding"
+
+ECT_JKT="$(jq -r '.cnf.jkt // empty' "${CLAIMS_FILE}")"
+
+[[ "${ECT_JKT}" == "${HOLDER_JKT}" ]] ||
+    inconclusive "ECT holder binding does not match Audrey's key"
+
+pass "ECT and DPoP holder identity agree"
+
+
+CURL_HUB=(
+    -sS
+    --cacert "${CA}"
+    --cert "${HUB_CRT}"
+    --key "${HUB_KEY}"
+)
+
+
+run_case() {
+    local label="$1"
+    local action="$2"
+    local purpose="$3"
+    local expected_allow="$4"
+    local expected_reason="$5"
+
+    local nonce
+    local jti
+    local dpop
+    local request_hash
+    local request_body
+    local response_file
+    local status
+    local actual_allow
+    local actual_reason
+    local decision_id
+    local decision_file
+
+    nonce="nonce-$(date +%s%N)"
+    jti="jti-$(date +%s%N)"
+    response_file="${TMP_DIR}/${label}.json"
+
+    request_hash=""
+    if [[ "${action}" == "query_model" ]]; then
+        request_hash="$(
+            python3 - \
+                "${ENVELOPE_ID}" \
+                "${RUN_ID}" \
+                "${action}" \
+                "${purpose}" <<'PY'
+import hashlib
+import json
+import sys
+
+envelope_id, run_id, action, purpose = sys.argv[1:]
+governed_request = {
+    "envelope_id": envelope_id,
+    "run_id": run_id,
+    "resource": "pathmnist-colon-pathology",
+    "action": action,
+    "purpose": purpose,
+    "requested_tissues": ["mucus"],
+}
+canonical = json.dumps(
+    governed_request,
+    sort_keys=True,
+    separators=(",", ":"),
+    ensure_ascii=False,
+).encode("utf-8")
+print("sha256:" + hashlib.sha256(canonical).hexdigest())
+PY
+        )" || error "${label} could not compute request_hash"
+    fi
+
+    dpop="$(
+        python3 "${MAKE_DPOP}" \
+            "${HOLDER_PRIV_HEX}" \
+            "${HOLDER_PUB_B64}" \
+            "${nonce}" \
+            "${jti}" \
+            POST \
+            "${DPOP_HTU}" \
+            "${ENVELOPE_ID}" \
+            "${request_hash}"
+    )" || error "${label} could not generate DPoP proof"
+
+    request_body="$(
+        jq -nc \
+            --arg envelope "${ENVELOPE_ID}" \
+            --arg run "${RUN_ID}" \
+            --arg action "${action}" \
+            --arg purpose "${purpose}" \
+            --arg jti "${jti}" \
+            '{
+                envelope_id: $envelope,
+                run_id: $run,
+                resource: "pathmnist-colon-pathology",
+                action: $action,
+                purpose: $purpose,
+                requested_tissues: ["mucus"],
+                jti: $jti
+            }'
+    )" || error "${label} could not construct request body"
+
+    status="$(
+        curl "${CURL_HUB[@]}" \
+            -o "${response_file}" \
+            -w '%{http_code}' \
+            -X POST \
+            "${VERIFIER_URL}/admission/check" \
+            -H "Authorization: ECT ${ECT}" \
+            -H "DPoP: ${dpop}" \
+            -H "X-DPoP-Nonce: ${nonce}" \
+            -H 'content-type: application/json' \
+            -d "${request_body}"
+    )" || error "${label} admission request transport failed"
+
+    [[ "${status}" == "200" ]] || {
+        cat "${response_file}" >&2 || true
+        inconclusive "${label} returned HTTP ${status}"
+    }
+
+    actual_allow="$(
+        jq -r '
+            if has("allow") and (.allow | type) == "boolean"
+            then (.allow | tostring)
+            else ""
+            end
+        ' "${response_file}"
+    )" || inconclusive "${label} returned malformed JSON"
+
+    [[ "${actual_allow}" == "true" || "${actual_allow}" == "false" ]] ||
+        inconclusive "${label} returned no valid boolean allow field"
+    actual_reason="$(jq -r '.reason // ""' "${response_file}")" ||
+        inconclusive "${label} returned malformed JSON"
+
+    if [[ "${actual_allow}" != "${expected_allow}" ]]; then
+        jq . "${response_file}" >&2 || true
+        if [[ "${expected_allow}" == "false" && "${actual_allow}" == "true" ]]; then
+            vulnerable "${label} admitted the unoffered ${action} capability"
+        fi
+        inconclusive "${label} expected allow=${expected_allow}, got ${actual_allow}"
+    fi
+
+    if [[ -n "${expected_reason}" ]]; then
+        [[ "${actual_reason}" == "${expected_reason}" ]] || {
+            jq . "${response_file}" >&2 || true
+            inconclusive "${label} expected reason=${expected_reason}, got ${actual_reason}"
+        }
+    fi
+
+    decision_id="$(jq -r '.decision_id // empty' "${response_file}")" ||
+        inconclusive "${label} returned malformed JSON"
+    [[ -n "${decision_id}" ]] ||
+        inconclusive "${label} returned no decision_id"
+
+    decision_file="${DECISIONS_DIR}/${decision_id}.json"
+    [[ -s "${decision_file}" ]] || inconclusive "${label} decision evidence file is missing"
+
+    python3 "${EVIDENCE_VERIFIER}" \
+        --public-key "${EVIDENCE_PUBLIC_KEY}" \
+        --artifact "${decision_file}" \
+        --expected-type fcac_admission_decision \
+        --expected-kid "${EVIDENCE_KEY_KID}" \
+        >/dev/null ||
+        inconclusive "${label} decision evidence failed verification"
+
+    jq -e \
+        --arg action "${action}" \
+        --arg expected "$(
+            [[ "${expected_allow}" == "true" ]] &&
+                printf ALLOW ||
+                printf DENY
+        )" \
+        '
+        .requested_action == $action
+        and .allow_or_deny == $expected
+        ' "${decision_file}" >/dev/null ||
+        inconclusive "${label} decision evidence does not describe the tested relation"
+
+    if [[ "${expected_allow}" == "false" ]]; then
+        jq -e '
+            .decision_reason == "capability_violation"
+            and .requester_binding_result == "verified"
+        ' "${decision_file}" >/dev/null ||
+            inconclusive "DENY was not attributable to capability_violation with verified requester binding"
+    fi
+}
+
+
+section "4. Positive control"
+
+run_case \
+    "offered-query" \
+    "query_model" \
+    "approved_model_query" \
+    "true" \
+    ""
+
+pass "Offered query_model capability is admitted"
+
+
+section "5. Attempt an unoffered action"
+
+run_case \
+    "unoffered-submit-update" \
+    "submit_update" \
+    "federated_training" \
+    "false" \
+    "capability_violation"
+
+pass "Unoffered submit_update capability is denied"
+
+
+printf '\n'
+blocked "admitted authority cannot be amplified to an unoffered action"

@@ -54,6 +54,7 @@ EVIDENCE_KEY_KID="${EVIDENCE_KEY_KID:-fcac-evidence-key-1}"
 DECISIONS_DIR="${SRC_DIR}/vfp-governance/verifier/state/events/decisions"
 AUDREY_PRIVATE="${SRC_DIR}/../secrets/holder_keys/Audrey.privhex"
 BOB_PRIVATE="${SRC_DIR}/../secrets/holder_keys/Bob.privhex"
+CHARLIE_PRIVATE="${SRC_DIR}/../secrets/holder_keys/Charlie.privhex"
 GEN_MEMBER_KEYS="${SRC_DIR}/tools/gen_member_keys.py"
 MAKE_DPOP="${SRC_DIR}/tools/make_dpop_jwt_eddsa.py"
 TMP="$(mktemp -d)"
@@ -68,7 +69,7 @@ for cmd in curl jq python3 docker; do
 done
 for f in "${CA}" "${A_CRT}" "${A_KEY}" "${B_CRT}" "${B_KEY}" \
   "${HUB_CRT}" "${HUB_KEY}" "${EVIDENCE_PUBLIC_KEY}" "${EVIDENCE_VERIFIER}" \
-  "${AUDREY_PRIVATE}" "${BOB_PRIVATE}" "${GEN_MEMBER_KEYS}" "${MAKE_DPOP}"; do
+  "${AUDREY_PRIVATE}" "${BOB_PRIVATE}" "${CHARLIE_PRIVATE}" "${GEN_MEMBER_KEYS}" "${MAKE_DPOP}"; do
   [[ -s "${f}" ]] || fail "Missing file: ${f}"
 done
 
@@ -140,6 +141,16 @@ BOB_PUB_B64="$(jq -er '.pub_b64' <<<"${BOB_IDENTITY}")"
 BOB_JKT="$(jq -er '.jkt' <<<"${BOB_IDENTITY}")"
 BOB_PRIV_HEX="$(tr -d '\r\n' <"${BOB_PRIVATE}")"
 
+CHARLIE_IDENTITY="$(
+  python3 "${GEN_MEMBER_KEYS}" \
+    --derive \
+    --private-key "${CHARLIE_PRIVATE}" \
+    --format json
+)"
+CHARLIE_PUB_B64="$(jq -er '.pub_b64' <<<"${CHARLIE_IDENTITY}")"
+CHARLIE_JKT="$(jq -er '.jkt' <<<"${CHARLIE_IDENTITY}")"
+CHARLIE_PRIV_HEX="$(tr -d '\r\n' <"${CHARLIE_PRIVATE}")"
+
 audrey_sign_dpop() {
   python3 "${MAKE_DPOP}" \
     "${AUDREY_PRIV_HEX}" \
@@ -171,6 +182,198 @@ bob_sign_mint_proof() {
     POST \
     "${MINT_PROOF_HTU}" \
     "${ENVELOPE_ID}"
+}
+
+charlie_sign_mint_proof() {
+  python3 "${MAKE_DPOP}" \
+    "${CHARLIE_PRIV_HEX}" \
+    "${CHARLIE_PUB_B64}" \
+    "$1" \
+    "$2" \
+    POST \
+    "${MINT_PROOF_HTU}" \
+    "${ENVELOPE_ID}"
+}
+
+requester_query_dpop() {
+  local subject="$1" tissue="$2" nonce="$3" jti="$4"
+  local priv_hex pub_b64
+  case "${subject}" in
+    Audrey)
+      priv_hex="${AUDREY_PRIV_HEX}"
+      pub_b64="${AUDREY_PUB_B64}"
+      ;;
+    Bob)
+      priv_hex="${BOB_PRIV_HEX}"
+      pub_b64="${BOB_PUB_B64}"
+      ;;
+    Charlie)
+      priv_hex="${CHARLIE_PRIV_HEX}"
+      pub_b64="${CHARLIE_PUB_B64}"
+      ;;
+    *)
+      fail "Unsupported Test5E requester: ${subject}"
+      ;;
+  esac
+
+  python3 - \
+    "${priv_hex}" "${pub_b64}" "${nonce}" "${jti}" \
+    "${DPOP_HTU}" "${ENVELOPE_ID}" "${RUN_ID}" "${tissue}" <<'PY2'
+import base64
+import hashlib
+import json
+import sys
+import time
+from nacl import signing
+
+priv_hex, pub_b64, nonce, jti, htu, eid, run_id, tissue = sys.argv[1:9]
+
+governed_request = {
+    "envelope_id": eid,
+    "run_id": run_id,
+    "resource": "pathmnist-colon-pathology",
+    "action": "query_model",
+    "purpose": "approved_model_query",
+    "requested_tissues": [tissue],
+}
+canonical = json.dumps(
+    governed_request,
+    sort_keys=True,
+    separators=(",", ":"),
+    ensure_ascii=False,
+).encode("utf-8")
+request_hash = "sha256:" + hashlib.sha256(canonical).hexdigest()
+
+def encode(obj):
+    raw = json.dumps(obj, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+header = {
+    "typ": "dpop+jwt",
+    "alg": "EdDSA",
+    "jwk": {"kty": "OKP", "crv": "Ed25519", "x": pub_b64},
+}
+claims = {
+    "htu": htu,
+    "htm": "POST",
+    "iat": int(time.time()),
+    "jti": jti,
+    "nonce": nonce,
+    "envelope_id": eid,
+    "request_hash": request_hash,
+}
+head = encode(header)
+body = encode(claims)
+signing_input = f"{head}.{body}".encode("ascii")
+signature = signing.SigningKey(
+    bytes.fromhex(priv_hex)
+).sign(signing_input).signature
+encoded_signature = base64.urlsafe_b64encode(
+    signature
+).decode("ascii").rstrip("=")
+print(f"{head}.{body}.{encoded_signature}")
+PY2
+}
+
+requester_consume_dpop() {
+  local requester="$1" nonce="$2" jti="$3" governed_value_id="$4"
+  local priv_hex pub_b64
+
+  case "${requester}" in
+    Audrey)
+      priv_hex="${AUDREY_PRIV_HEX}"
+      pub_b64="${AUDREY_PUB_B64}"
+      ;;
+    Bob)
+      priv_hex="${BOB_PRIV_HEX}"
+      pub_b64="${BOB_PUB_B64}"
+      ;;
+    Charlie)
+      priv_hex="${CHARLIE_PRIV_HEX}"
+      pub_b64="${CHARLIE_PUB_B64}"
+      ;;
+    *)
+      fail "Unsupported derivative consumer: ${requester}"
+      ;;
+  esac
+
+  python3 - \
+    "${priv_hex}" "${pub_b64}" \
+    "${nonce}" "${jti}" \
+    "${DPOP_HTU}" "${ENVELOPE_ID}" \
+    "${governed_value_id}" <<'PY2'
+import base64
+import json
+import sys
+import time
+from nacl import signing
+
+priv_hex, pub_b64, nonce, jti, htu, envelope_id, value_id = sys.argv[1:9]
+
+def enc(obj):
+    raw = json.dumps(
+        obj, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+header = {
+    "typ": "dpop+jwt",
+    "alg": "EdDSA",
+    "jwk": {"kty": "OKP", "crv": "Ed25519", "x": pub_b64},
+}
+claims = {
+    "htu": htu,
+    "htm": "POST",
+    "iat": int(time.time()),
+    "jti": jti,
+    "nonce": nonce,
+    "envelope_id": envelope_id,
+    "governed_value_id": value_id,
+}
+h, p = enc(header), enc(claims)
+signed = f"{h}.{p}".encode("ascii")
+sig = signing.SigningKey(
+    bytes.fromhex(priv_hex)
+).sign(signed).signature
+encoded_sig = base64.urlsafe_b64encode(sig).decode("ascii").rstrip("=")
+print(f"{h}.{p}.{encoded_sig}")
+PY2
+}
+
+consume_pending() {
+  local requester="$1" ect="$2" pending_id="$3" governed_value_id="$4"
+  local response_file="$5"
+  local nonce jti dpop body
+
+  nonce="consume-nonce-$(python3 -c 'import secrets; print(secrets.token_urlsafe(12))')"
+  jti="consume-jti-$(python3 -c 'import secrets; print(secrets.token_urlsafe(12))')"
+
+  dpop="$(requester_consume_dpop "${requester}" "${nonce}" "${jti}" "${governed_value_id}")" ||
+    fail "Could not sign ${requester} derivative-consumption proof"
+
+  body="$(jq -nc \
+    --arg requester "${requester}" \
+    --arg e "${ENVELOPE_ID}" \
+    --arg p "${pending_id}" \
+    --arg w "${governed_value_id}" \
+    --arg j "${jti}" '
+    {
+      requester:$requester,
+      envelope_id:$e,
+      pending_id:$p,
+      governed_value_id:$w,
+      jti:$j
+    }')"
+
+  curl -sS \
+    -o "${response_file}" \
+    -w '%{http_code}' \
+    -H 'content-type: application/json' \
+    -H "Authorization: ECT ${ect}" \
+    -H "DPoP: ${dpop}" \
+    -H "X-DPoP-Nonce: ${nonce}" \
+    -d "${body}" \
+    "${HUB_URL}/mode1b/agent/consume"
 }
 
 ensure_member() {
@@ -217,15 +420,53 @@ mint_ect() {
   local subject="$1" out="$2" response
 
   if [[ "${subject}" == "Hal" ]]; then
-    response="$(curl -sS \
-      -H 'content-type: application/json' \
-      -d "$(jq -nc --arg e "${ENVELOPE_ID}" '{envelope_id:$e}')" \
-      "${HUB_URL}/administration/holders/Hal/mint-ect")"
+    local presentation
+    presentation="$(
+      docker exec -i fc-hub python - \
+        "${ENVELOPE_ID}" "${RUN_ID}" "${CANCER_TISSUE}" <<'PY2'
+import json
+import sys
+import urllib.request
+
+envelope_id, run_id, tissue = sys.argv[1:4]
+payload = {
+    "principal": "Hal",
+    "envelope_id": envelope_id,
+    "run_id": run_id,
+    "resource": "pathmnist-colon-pathology",
+    "action": "bounded_inference",
+    "purpose": "bounded_model_inference",
+    "requested_tissues": [tissue],
+}
+request = urllib.request.Request(
+    "http://hal:8088/authority/present",
+    data=json.dumps(payload).encode("utf-8"),
+    headers={"content-type": "application/json"},
+    method="POST",
+)
+with urllib.request.urlopen(request, timeout=15) as result:
+    print(result.read().decode("utf-8"))
+PY2
+    )" || fail "Hal could not present its own authority"
+
+    printf '%s' "${presentation}" | jq -e '
+      .principal == "Hal"
+      and (.authorization | type == "string" and startswith("ECT "))
+      and (.dpop | type == "string" and length > 0)
+      and .request.action == "bounded_inference"
+    ' >/dev/null || fail "Hal authority presentation contract mismatch"
+
+    response="$(printf '%s' "${presentation}" |
+      jq -c '{ect: (.authorization | sub("^ECT "; ""))}')"
   else
     local nonce jti holder_dpop
     nonce="mint-$(python3 -c 'import secrets; print(secrets.token_urlsafe(12))')"
     jti="mint-$(python3 -c 'import secrets; print(secrets.token_urlsafe(12))')"
-    holder_dpop="$(audrey_sign_mint_proof "${nonce}" "${jti}")"
+    case "${subject}" in
+      Audrey) holder_dpop="$(audrey_sign_mint_proof "${nonce}" "${jti}")" ;;
+      Charlie) holder_dpop="$(charlie_sign_mint_proof "${nonce}" "${jti}")" ;;
+      *) fail "Unsupported Hospital A human holder: ${subject}" ;;
+    esac
 
     response="$(issuer_curl \
       -H 'content-type: application/json' \
@@ -349,7 +590,9 @@ exact_w_admission() {
 
   nonce="nonce-exactw-$(python3 -c 'import secrets; print(secrets.token_urlsafe(12))')"
   jti="jti-exactw-$(python3 -c 'import secrets; print(secrets.token_urlsafe(12))')"
-  dpop="$(audrey_sign_dpop "${nonce}" "${jti}")"
+  dpop="$(
+    requester_consume_dpop "Audrey" "${nonce}" "${jti}" "${governed_value_id}"
+  )" || fail "Could not sign Audrey's exact-W control proof"
 
   body="$(jq -nc \
     --arg e "${ENVELOPE_ID}" \
@@ -440,6 +683,7 @@ HAL_PUB="$(printf '%s' "${HAL_JWK}" | jq -r '.x // empty')"
 
 ensure_member "Hal" "hal-mode1b" "${HAL_PUB}" "${HAL_JKT}"
 ensure_member "Audrey" "audrey-mode1b" "${AUDREY_PUB_B64}" "${AUDREY_JKT}"
+ensure_member "Charlie" "charlie-mode1a" "${CHARLIE_PUB_B64}" "${CHARLIE_JKT}"
 ensure_bob_member
 pass "Hal, Audrey and Bob holder identities match issuer enrollment"
 
@@ -447,13 +691,23 @@ section "2. Envelope-bound credentials"
 
 mint_ect "Hal" "${TMP}/hal.ect"
 mint_ect "Audrey" "${TMP}/audrey.ect"
+mint_ect "Charlie" "${TMP}/charlie.ect"
 mint_bob_ect
 HAL_ECT="$(cat "${TMP}/hal.ect")"
 AUDREY_ECT="$(cat "${TMP}/audrey.ect")"
+CHARLIE_ECT="$(cat "${TMP}/charlie.ect")"
 BOB_ECT="$(cat "${TMP}/bob.ect")"
 decode_ect "${HAL_ECT}" >"${TMP}/hal-claims.json"
 decode_ect "${AUDREY_ECT}" >"${TMP}/audrey-claims.json"
 decode_ect "${BOB_ECT}" >"${TMP}/bob-claims.json"
+decode_ect "${CHARLIE_ECT}" >"${TMP}/charlie-claims.json"
+jq -e --arg e "${ENVELOPE_ID}" --arg jkt "${CHARLIE_JKT}" '
+  .sub == "Charlie"
+  and .envelope_id == $e
+  and .cnf.jkt == $jkt
+  and ([.cap[]?.action] | index("consume_derivative") == null)
+' "${TMP}/charlie-claims.json" >/dev/null ||
+  fail "Charlie ECT does not establish the release-denial control"
 
 jq -e --arg e "${ENVELOPE_ID}" --arg jkt "${HAL_JKT}" '
   .sub=="Hal" and .actor_type=="agent" and .envelope_id==$e and .cnf.jkt==$jkt
@@ -524,26 +778,84 @@ run_context_case() {
   local expected_representation="$6"
 
   local response response_file governed_value_id
+  local ect nonce jti dpop
+
+  case "${requester}" in
+    Audrey) ect="${AUDREY_ECT}" ;;
+    Bob) ect="${BOB_ECT}" ;;
+    *) fail "Unsupported contextual requester: ${requester}" ;;
+  esac
+
+  nonce="mode1b-nonce-$(python3 -c 'import secrets; print(secrets.token_urlsafe(12))')"
+  jti="mode1b-jti-$(python3 -c 'import secrets; print(secrets.token_urlsafe(12))')"
+  dpop="$(requester_query_dpop "${requester}" "${tissue}" "${nonce}" "${jti}")" ||
+    fail "Could not sign ${requester} query proof"
+
   response="$(
     curl -sS \
       -H 'content-type: application/json' \
+      -H "Authorization: ECT ${ect}" \
+      -H "DPoP: ${dpop}" \
+      -H "X-DPoP-Nonce: ${nonce}" \
       -d "$(jq -nc \
         --arg requester "${requester}" \
         --arg e "${ENVELOPE_ID}" \
         --arg r "${RUN_ID}" \
         --arg t "${tissue}" \
+        --arg j "${jti}" \
         '{
           requester:$requester,
           envelope_id:$e,
           run_id:$r,
           requested_tissue:$t,
-          topk:3
+          topk:3,
+          jti:$j
         }')" \
       "${HUB_URL}/mode1b/agent/request"
   )"
 
   response_file="${TMP}/mode1b-case-${case_no}.json"
   printf '%s\n' "${response}" >"${response_file}"
+
+  if [[ "${expected_source}" == "DENY" ]]; then
+    jq -e --arg requester "${requester}" '
+      .requester == $requester
+      and .source_admission.allow == false
+      and .unbind_admission.allow == true
+      and .authorization_state == "PENDING_CONSUMER_AUTHORIZATION"
+      and .executed == true
+      and .released == false
+      and .representation == "derivative"
+      and (.pending_id | type == "string" and length > 0)
+      and (.governed_value_id | startswith("sha256:"))
+      and (.prediction == null)
+      and (.release_admission == null)
+    ' <<<"${response}" >/dev/null || {
+      printf '%s\n' "${response}" | jq . >&2 || true
+      fail "Gate 5E case ${case_no}: pending W was not held back before consumer authorization"
+    }
+
+    local pending_id pending_value_id consume_file consume_status
+    pending_id="$(jq -r '.pending_id' <<<"${response}")"
+    pending_value_id="$(jq -r '.governed_value_id' <<<"${response}")"
+    consume_file="${TMP}/mode1b-consume-${case_no}.json"
+
+    consume_status="$(
+      consume_pending \
+        "${requester}" "${ect}" "${pending_id}" "${pending_value_id}" \
+        "${consume_file}"
+    )" || fail "Gate 5E case ${case_no}: consumer transport failed"
+
+    if [[ "${consume_status}" != "200" ]]; then
+      printf 'Gate 5E case %s: /consume HTTP %s\n' \
+        "${case_no}" "${consume_status}" >&2
+      jq . "${consume_file}" >&2 2>/dev/null || cat "${consume_file}" >&2
+      fail "Gate 5E case ${case_no}: holder consumption request failed"
+    fi
+
+    response="$(cat "${consume_file}")"
+    printf '%s\n' "${response}" >"${response_file}"
+  fi
 
   local source_allow source_decision hal_decision
   source_allow="$(jq -r '.source_admission.allow' <<<"${response}")"
@@ -594,6 +906,7 @@ run_context_case() {
     [[ "${source_allow}" == "false" ]] ||
       { printf '%s\n' "${response}" | jq . >&2; fail "Gate 5E case ${case_no}: source expected DENY"; }
 
+
     jq -e \
       --arg action "${expected_action}" \
       --arg representation "${expected_representation}" \
@@ -601,6 +914,8 @@ run_context_case() {
         .agent_decision.action == $action
         and .agent_decision.fallback == false
         and .unbind_admission.allow == true
+        and .authorization_state == "RELEASED"
+        and .released == true
         and .release_admission.allow == true
         and .release_admission.governed_value_binding_result == "verified"
         and .release_admission.governed_value_id == .governed_value_id
@@ -701,22 +1016,64 @@ run_context_case \
 
 section "4. Derivative release negative control"
 
+CHARLIE_NONCE="mode1b-nonce-$(python3 -c 'import secrets; print(secrets.token_urlsafe(12))')"
+CHARLIE_JTI="mode1b-jti-$(python3 -c 'import secrets; print(secrets.token_urlsafe(12))')"
+CHARLIE_DPOP="$(
+  requester_query_dpop "Charlie" "${CANCER_TISSUE}" "${CHARLIE_NONCE}" "${CHARLIE_JTI}"
+)" || fail "Could not sign Charlie negative-control proof"
+
 CHARLIE_RESPONSE="$(
   curl -sS \
     -H 'content-type: application/json' \
+    -H "Authorization: ECT ${CHARLIE_ECT}" \
+    -H "DPoP: ${CHARLIE_DPOP}" \
+    -H "X-DPoP-Nonce: ${CHARLIE_NONCE}" \
     -d "$(jq -nc \
       --arg e "${ENVELOPE_ID}" \
       --arg r "${RUN_ID}" \
       --arg t "${CANCER_TISSUE}" \
+      --arg j "${CHARLIE_JTI}" \
       '{
         requester:"Charlie",
         envelope_id:$e,
         run_id:$r,
         requested_tissue:$t,
-        topk:3
+        topk:3,
+        jti:$j
       }')" \
     "${HUB_URL}/mode1b/agent/request"
 )"
+
+jq -e '
+  .source_admission.allow == false
+  and .unbind_admission.allow == true
+  and .authorization_state == "PENDING_CONSUMER_AUTHORIZATION"
+  and .released == false
+  and (.prediction == null)
+  and (.release_admission == null)
+  and (.pending_id | type == "string" and length > 0)
+  and (.governed_value_id | startswith("sha256:"))
+' <<<"${CHARLIE_RESPONSE}" >/dev/null || {
+  printf '%s\n' "${CHARLIE_RESPONSE}" | jq . >&2 || true
+  fail "Gate 5E negative control: Charlie pending W was not withheld"
+}
+
+CHARLIE_CONSUME_FILE="${TMP}/charlie-consume.json"
+CHARLIE_CONSUME_STATUS="$(
+  consume_pending \
+    "Charlie" "${CHARLIE_ECT}" \
+    "$(jq -r '.pending_id' <<<"${CHARLIE_RESPONSE}")" \
+    "$(jq -r '.governed_value_id' <<<"${CHARLIE_RESPONSE}")" \
+    "${CHARLIE_CONSUME_FILE}"
+)" || fail "Gate 5E negative control: Charlie consumer transport failed"
+
+if [[ "${CHARLIE_CONSUME_STATUS}" != "200" ]]; then
+  printf 'Charlie /consume HTTP %s\n' "${CHARLIE_CONSUME_STATUS}" >&2
+  jq . "${CHARLIE_CONSUME_FILE}" >&2 2>/dev/null ||
+    cat "${CHARLIE_CONSUME_FILE}" >&2
+  fail "Gate 5E negative control: no signed derivative-consumption verdict"
+fi
+CHARLIE_RESPONSE="$(cat "${CHARLIE_CONSUME_FILE}")"
 
 jq -e '
   .source_admission.allow == false
@@ -726,6 +1083,8 @@ jq -e '
   and .unbind_admission.allow == true
   and .release_admission.allow == false
   and .release_admission.reason == "capability_violation"
+  and .authorization_state == "DENIED"
+  and .released == false
   and .executed == false
   and (.prediction == null)
   and (.hal_inference.prediction == null)

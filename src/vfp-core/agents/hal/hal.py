@@ -29,6 +29,10 @@ MINT_PROOF_HTU = os.getenv(
     "MINT_PROOF_HTU",
     "urn:openhealth:issuer:mint",
 )
+HUB_URL = os.getenv(
+    "HUB_URL",
+    "http://fc-hub:8080",
+).rstrip("/")
 
 OPENAI_ENV_FILE = Path(
     os.getenv("OPENAI_ENV_FILE", "/run/secrets/openai.env")
@@ -46,6 +50,12 @@ ALLOWED_REASONING_ACTIONS = {
 PRIVATE_KEY_PATH = IDENTITY_DIR / "holder.key"
 PUBLIC_JWK_PATH = IDENTITY_DIR / "holder.jwk"
 JKT_PATH = IDENTITY_DIR / "holder.jkt"
+ECT_STATE_PATH = IDENTITY_DIR / "holder_ect.json"
+
+HAL_AUTHORITY_OPERATIONS = {
+    ("pathmnist-colon-pathology", "bounded_inference", "bounded_model_inference"),
+    ("pathmnist-colon-pathology", "unbind", "policy_authorized_derivation"),
+}
 
 
 def b64url(data: bytes) -> str:
@@ -153,17 +163,200 @@ def sign_dpop(private_key: Ed25519PrivateKey, payload: dict) -> str:
         "alg": "EdDSA",
         "jwk": jwk,
     })
-    claims = encode_json({
+    claims_payload = {
         "htu": htu,
         "htm": "POST",
         "iat": int(time.time()),
         "jti": jti,
         "nonce": nonce,
         "envelope_id": envelope_id,
-    })
+    }
+    request_hash = str(payload.get("request_hash") or "").strip()
+    if request_hash:
+        claims_payload["request_hash"] = request_hash
+    claims = encode_json(claims_payload)
     signing_input = f"{header}.{claims}".encode("ascii")
     signature = b64url(private_key.sign(signing_input))
     return f"{header}.{claims}.{signature}"
+
+
+def decode_compact_claims(token: str) -> dict:
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            raise ValueError("not_compact_jws")
+        encoded = parts[1] + "=" * (-len(parts[1]) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(encoded).decode("utf-8"))
+    except Exception as exc:
+        raise ValueError("invalid_ect") from exc
+    if not isinstance(claims, dict):
+        raise ValueError("invalid_ect")
+    return claims
+
+
+def load_cached_ect(envelope_id: str) -> str:
+    if not ECT_STATE_PATH.is_file():
+        return ""
+    try:
+        state = json.loads(ECT_STATE_PATH.read_text(encoding="utf-8"))
+        ect = str(state.get("ect") or "").strip()
+        claims = decode_compact_claims(ect)
+        if str(claims.get("sub") or "") != "Hal":
+            return ""
+        if str(claims.get("envelope_id") or "") != envelope_id:
+            return ""
+        if int(claims.get("exp") or 0) <= int(time.time()) + 5:
+            return ""
+        return ect
+    except Exception:
+        return ""
+
+
+def store_ect(ect: str) -> None:
+    claims = decode_compact_claims(ect)
+    state = {
+        "principal": "Hal",
+        "envelope_id": claims.get("envelope_id"),
+        "exp": claims.get("exp"),
+        "ect": ect,
+    }
+    tmp = ECT_STATE_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, ECT_STATE_PATH)
+    os.chmod(ECT_STATE_PATH, 0o600)
+
+
+def ensure_holder_ect(
+    private_key: Ed25519PrivateKey,
+    envelope_id: str,
+) -> str:
+    cached = load_cached_ect(envelope_id)
+    if cached:
+        return cached
+
+    mint_proof = sign_dpop(
+        private_key,
+        {
+            "htu": MINT_PROOF_HTU,
+            "htm": "POST",
+            "jti": "mint-" + b64url(os.urandom(18)),
+            "nonce": "mint-" + b64url(os.urandom(18)),
+            "envelope_id": envelope_id,
+        },
+    )
+
+    request = urllib.request.Request(
+        HUB_URL + "/administration/holders/Hal/mint-ect",
+        data=json.dumps({
+            "envelope_id": envelope_id,
+            "holder_dpop": mint_proof,
+        }).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            payload = json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"hal_ect_mint_http_{exc.code}:{detail[:300]}"
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError("hal_ect_mint_relay_unreachable") from exc
+
+    ect = str(payload.get("ect") or "").strip()
+    if not ect:
+        raise RuntimeError("hal_ect_mint_missing_ect")
+    claims = decode_compact_claims(ect)
+    if str(claims.get("sub") or "") != "Hal":
+        raise RuntimeError("hal_ect_subject_mismatch")
+    if str(claims.get("envelope_id") or "") != envelope_id:
+        raise RuntimeError("hal_ect_envelope_mismatch")
+    if int(claims.get("exp") or 0) <= int(time.time()):
+        raise RuntimeError("hal_ect_already_expired")
+    store_ect(ect)
+    return ect
+
+
+def governed_request_hash(request_payload: dict) -> str:
+    canonical = json.dumps(
+        request_payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(canonical).hexdigest()
+
+
+def make_authority_presentation(
+    private_key: Ed25519PrivateKey,
+    payload: dict,
+) -> dict:
+    if str(payload.get("principal") or "").strip() != "Hal":
+        raise ValueError("principal_mismatch")
+
+    envelope_id = str(payload.get("envelope_id") or "").strip()
+    run_id = str(payload.get("run_id") or "").strip()
+    resource = str(payload.get("resource") or "").strip()
+    action = str(payload.get("action") or "").strip()
+    purpose = str(payload.get("purpose") or "").strip()
+    requested_tissues = payload.get("requested_tissues")
+
+    if not envelope_id or not run_id:
+        raise ValueError("authority_context_required")
+    if (resource, action, purpose) not in HAL_AUTHORITY_OPERATIONS:
+        raise ValueError("authority_operation_not_supported")
+    if (
+        not isinstance(requested_tissues, list)
+        or len(requested_tissues) != 1
+        or not str(requested_tissues[0]).strip()
+    ):
+        raise ValueError("single_requested_tissue_required")
+
+    exact_request = {
+        "envelope_id": envelope_id,
+        "run_id": run_id,
+        "resource": resource,
+        "action": action,
+        "purpose": purpose,
+        "requested_tissues": [str(requested_tissues[0])],
+    }
+    for name in (
+        "derivative_representation",
+        "governed_value_id",
+        "governed_value",
+    ):
+        if name in payload and payload[name] is not None:
+            exact_request[name] = payload[name]
+
+    ect = ensure_holder_ect(private_key, envelope_id)
+    request_hash = governed_request_hash(exact_request)
+    nonce = "nonce-" + b64url(os.urandom(18))
+    jti = "jti-" + b64url(os.urandom(18))
+    dpop = sign_dpop(
+        private_key,
+        {
+            "htu": DPOP_HTU,
+            "htm": "POST",
+            "jti": jti,
+            "nonce": nonce,
+            "envelope_id": envelope_id,
+            "request_hash": request_hash,
+        },
+    )
+
+    return {
+        "principal": "Hal",
+        "envelope_id": envelope_id,
+        "authorization": f"ECT {ect}",
+        "dpop": dpop,
+        "nonce": nonce,
+        "jti": jti,
+        "request_hash": request_hash,
+        "request": exact_request,
+    }
 
 
 def load_openai_api_key() -> str:
@@ -416,20 +609,22 @@ def make_handler(private_key: Ed25519PrivateKey):
                 self.send_json(200, derivative)
                 return
 
-            if self.path != "/dpop/sign":
-                self.send_json(404, {"detail": "not_found"})
+            if self.path == "/authority/present":
+                try:
+                    presentation = make_authority_presentation(
+                        private_key,
+                        payload,
+                    )
+                except ValueError as exc:
+                    self.send_json(400, {"detail": str(exc)})
+                    return
+                except RuntimeError as exc:
+                    self.send_json(502, {"detail": str(exc)})
+                    return
+                self.send_json(200, presentation)
                 return
 
-            try:
-                dpop = sign_dpop(private_key, payload)
-            except ValueError as exc:
-                self.send_json(400, {"detail": str(exc)})
-                return
-
-            self.send_json(200, {
-                "dpop": dpop,
-                "jkt": JKT_PATH.read_text(encoding="utf-8").strip(),
-            })           
+            self.send_json(404, {"detail": "not_found"})           
 
     return Handler
 
@@ -443,7 +638,7 @@ def main() -> None:
         flush=True,
     )
     print(
-        f"Hal holder signer ready on agent-edge port {PORT}",
+        f"Hal authority endpoint ready on agent-edge port {PORT}",
         flush=True,
     )
 

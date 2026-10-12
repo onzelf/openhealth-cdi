@@ -11,6 +11,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 from contextvars import ContextVar
 
+from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
 
@@ -80,11 +81,20 @@ DPOP_REPLAY_TTL_SECONDS = DPOP_MAX_AGE_SECONDS + DPOP_CLOCK_SKEW_SECONDS
 # Enforce nginx mTLS headers for /verify-start by default (matches your previous behavior)
 REQUIRE_MTLS_HEADERS = os.environ.get("REQUIRE_MTLS_HEADERS", "true").lower() in ("1", "true", "yes")
 
-# Issuer constants (keep consistent with your test harness)
+# ECT issuer verification. Private ECT signing keys live only in issuers.
 ISS = os.environ.get("ISS", "http://127.0.0.1:9100")
 AUD_FALLBACK = os.environ.get("AUD", "svc:fl-gateway:eu")
-ORG_KEY_KID = os.environ.get("ORG_KEY_KID", "HospitalA-key")
-ORG_KEY_FILE = os.environ.get("ORG_KEY_FILE", str(FCAC_CERTS_DIR / "HospitalA-admin.key"))  # PEM EC/RSA
+
+ECT_ISSUER_KEY_SPECS = {
+    "HospitalA-admin": {
+        "org": "org://HospitalA",
+        "path": FCAC_CERTS_DIR / "HospitalA-admin.crt",
+    },
+    "HospitalB-admin": {
+        "org": "org://HospitalB",
+        "path": FCAC_CERTS_DIR / "HospitalB-admin.crt",
+    },
+}
 
 EVIDENCE_PRIVATE_KEY_FILE = Path(os.environ.get(
     "EVIDENCE_PRIVATE_KEY_FILE",
@@ -352,21 +362,86 @@ def cap_matches_request(cap: Dict[str, Any], req: Dict[str, Any]) -> bool:
     return matched
 
 
+def query_request_hash(body: Any) -> str:
+    governed_request = {
+        "envelope_id": body.envelope_id,
+        "run_id": body.run_id,
+        "resource": body.resource,
+        "action": body.action,
+        "purpose": body.purpose,
+        "requested_tissues": body.requested_tissues,
+    }
+    canonical = json.dumps(
+        governed_request,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(canonical).hexdigest()
+
+
 # =============================================================================
-# Org signing key loading (issuer_lite_eddsa semantics)
+# Issuer ECT public-key registry
 # =============================================================================
 
-def load_org_key_and_alg():
-    pem = Path(ORG_KEY_FILE).read_bytes()
-    key = serialization.load_pem_private_key(pem, password=None)
-    if isinstance(key, ec.EllipticCurvePrivateKey):
+def _public_key_alg(key: Any) -> str:
+    if isinstance(key, ec.EllipticCurvePublicKey):
         curve = key.curve.name.lower()
-        alg = "ES256" if "p-256" in curve or "secp256r1" in curve else "ES384" if "384" in curve else "ES512"
-    elif isinstance(key, rsa.RSAPrivateKey):
-        alg = "RS256"
-    else:
-        raise RuntimeError("Unsupported org private key type (need EC or RSA PEM)")
-    return pem, key.public_key(), alg
+        if "p-256" in curve or "secp256r1" in curve:
+            return "ES256"
+        if "384" in curve:
+            return "ES384"
+        if "521" in curve:
+            return "ES512"
+    if isinstance(key, rsa.RSAPublicKey):
+        return "RS256"
+    raise RuntimeError("unsupported_ect_issuer_public_key")
+
+
+def load_ect_issuer_keys() -> Dict[str, Dict[str, Any]]:
+    registry: Dict[str, Dict[str, Any]] = {}
+    for kid, spec in ECT_ISSUER_KEY_SPECS.items():
+        path = Path(spec["path"])
+        if not path.is_file():
+            raise RuntimeError(
+                f"ect_issuer_certificate_missing:{kid}:{path}"
+            )
+        cert = x509.load_pem_x509_certificate(path.read_bytes())
+        key = cert.public_key()
+        registry[kid] = {
+            "kid": kid,
+            "org": str(spec["org"]),
+            "key": key,
+            "alg": _public_key_alg(key),
+        }
+    return registry
+
+
+def verify_ect_signature(ect_jws: str) -> Dict[str, Any]:
+    header = jwt.get_unverified_header(ect_jws)
+    kid = str(header.get("kid") or "")
+    entry = _ect_issuer_keys.get(kid)
+    if entry is None:
+        raise ValueError(f"unknown_ect_issuer_kid:{kid}")
+    if header.get("alg") != entry["alg"]:
+        raise ValueError("ect_issuer_alg_mismatch")
+
+    ect = jwt.decode(
+        ect_jws,
+        entry["key"],
+        algorithms=[entry["alg"]],
+        options={
+            "require": [
+                "iss", "nbf", "exp", "policy", "cnf", "cap",
+                "cap_profiles", "envelope_id", "sub", "actor_type",
+                "org_iss",
+            ],
+            "verify_aud": False,
+        },
+    )
+    if str(ect.get("org_iss") or "") != entry["org"]:
+        raise ValueError("ect_issuer_org_key_mismatch")
+    return ect
 
 
 # =============================================================================
@@ -384,10 +459,8 @@ class MintReq(BaseModel):
     exp: str
 
 class MintResp(BaseModel):
-    ect_jws: str
+    claims: Dict[str, Any]
     policy_hash: str
-    alg: str
-    kid: str
 
 class ProbeReq(BaseModel):
     envelope_id: str = Field(..., min_length=1)
@@ -420,7 +493,7 @@ app = FastAPI(title="FCaC Gatekeeper (Envelope + Admission)")
 
 _policy = load_policy()
 _policy_hash = compute_policy_hash(_policy)
-_org_priv_pem, _org_pub, _alg = load_org_key_and_alg()
+_ect_issuer_keys = load_ect_issuer_keys()
 _aud = _policy.get("caveats", {}).get("audience", AUD_FALLBACK)
 
 
@@ -781,7 +854,6 @@ def health():
         "ok": True,
         "policy_path": str(POLICY_PATH),
         "policy_hash": _policy_hash,
-        "alg": _alg,
         "iss": ISS,
         "aud": _aud,
     }
@@ -990,9 +1062,9 @@ def mint_ect(request: Request, req: MintReq):
     if sponsors:
         payload["sponsors"] = sponsors
 
-    headers = {"alg": _alg, "kid": ORG_KEY_KID, "typ": "JWT"}
-    ect_jws = jwt.encode(payload, _org_priv_pem, algorithm=_alg, headers=headers)
-    return MintResp(ect_jws=ect_jws, policy_hash=_policy_hash, alg=_alg, kid=ORG_KEY_KID)
+    # The Gatekeeper validates and constructs the exact claims.
+    # The calling organizational issuer signs them with its own ECT key.
+    return MintResp(claims=payload, policy_hash=_policy_hash)
 
 # -----------------------------------------------
 # POST /admission/check
@@ -1209,18 +1281,7 @@ async def _probe_impl(
 
     t = _ns()
     try:
-        ect = jwt.decode(
-            ect_jws,
-            _org_pub,
-            algorithms=["ES256", "ES384", "ES512", "RS256"],
-            options={
-                "require": [
-                    "iss", "nbf", "exp", "policy", "cnf", "cap",
-                    "cap_profiles", "envelope_id", "sub", "actor_type", "org_iss",
-                ],
-                "verify_aud": False,
-            },
-        )
+        ect = verify_ect_signature(ect_jws)
     except Exception as e:
         token_ms = _ms(_ns() - t)
         if BENCH: _bench_add({"token_verify_ms": token_ms, "full_check_ms": _ms(_ns()-t0),
@@ -1337,6 +1398,7 @@ async def _probe_impl(
         proof_governed_value_id = str(
             pl.get("governed_value_id", "")
         )
+        proof_request_hash = str(pl.get("request_hash", ""))
 
         if "iat" not in pl:
             return _bench_return(token_ms, t, t0, False, "dpop_iat_missing")
@@ -1372,6 +1434,18 @@ async def _probe_impl(
                 token_ms, t, t0, False,
                 "dpop_envelope_mismatch"
             )
+
+        if body.action == "query_model":
+            if not proof_request_hash:
+                return _bench_return(
+                    token_ms, t, t0, False,
+                    "dpop_request_hash_missing",
+                )
+            if proof_request_hash != query_request_hash(body):
+                return _bench_return(
+                    token_ms, t, t0, False,
+                    "dpop_request_hash_mismatch",
+                )
 
         if (dpop_nonce or "") != nonce_claim:
             return _bench_return(token_ms, t, t0, False, "dpop_nonce_mismatch")

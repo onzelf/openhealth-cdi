@@ -6,7 +6,10 @@ import hmac
 from typing import Dict, Optional
 
 import requests
+import jwt
 from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -40,6 +43,45 @@ MINT_PROOF_MAX_AGE_SECONDS = int(
 MINT_PROOF_CLOCK_SKEW_SECONDS = int(
     os.getenv("MINT_PROOF_CLOCK_SKEW_SECONDS", "30")
 )
+
+
+def _load_admin_signing_key():
+    path = pathlib.Path(ADMIN_KEY)
+    if not path.is_file():
+        raise RuntimeError(f"admin_signing_key_missing:{path}")
+
+    pem = path.read_bytes()
+    key = serialization.load_pem_private_key(pem, password=None)
+
+    if isinstance(key, rsa.RSAPrivateKey):
+        alg = "RS256"
+    elif isinstance(key, ec.EllipticCurvePrivateKey):
+        curve = key.curve.name.lower()
+        if "p-256" in curve or "secp256r1" in curve:
+            alg = "ES256"
+        elif "384" in curve:
+            alg = "ES384"
+        elif "521" in curve:
+            alg = "ES512"
+        else:
+            raise RuntimeError("unsupported_admin_signing_curve")
+    else:
+        raise RuntimeError("unsupported_admin_signing_key")
+
+    if ORG == "org://HospitalA":
+        kid = "HospitalA-admin"
+    elif ORG == "org://HospitalB":
+        kid = "HospitalB-admin"
+    else:
+        raise RuntimeError(f"unsupported_admin_issuer:{ORG}")
+
+    return pem, alg, kid
+
+
+_ADMIN_SIGNING_PEM, _ADMIN_SIGNING_ALG, _ADMIN_SIGNING_KID = (
+    _load_admin_signing_key()
+)
+
 
 def _org_slug(org: str) -> str:
     return org.replace("://", "__").replace("/", "_").replace(":", "_")
@@ -413,12 +455,31 @@ def mint(req: MintReq):
             raise HTTPException(r.status_code, r.text)
 
         out = r.json()
-        ect = out.get("ect_jws")
-        if not ect:
-            raise HTTPException(502, f"mint_failed:no_ect_jws:{out}")
+        claims = out.get("claims")
+        if not isinstance(claims, dict):
+            raise HTTPException(502, f"mint_failed:no_validated_claims:{out}")
 
+        # The Gatekeeper authenticated this issuer by mTLS when constructing
+        # the claims. Refuse to sign if the returned identity changed.
+        if str(claims.get("org_iss") or "") != ORG:
+            raise HTTPException(502, "mint_failed:org_claim_mismatch")
+        if str(claims.get("sub") or "") != str(m["sub"]):
+            raise HTTPException(502, "mint_failed:subject_claim_mismatch")
+        if str(claims.get("envelope_id") or "") != req.envelope_id:
+            raise HTTPException(502, "mint_failed:envelope_claim_mismatch")
+
+        ect = jwt.encode(
+            claims,
+            _ADMIN_SIGNING_PEM,
+            algorithm=_ADMIN_SIGNING_ALG,
+            headers={
+                "alg": _ADMIN_SIGNING_ALG,
+                "kid": _ADMIN_SIGNING_KID,
+                "typ": "JWT",
+            },
+        )
         if ect.count(".") < 2:
-            raise HTTPException(502, f"mint_failed:not_compact_jws:{out}")
+            raise HTTPException(502, "mint_failed:not_compact_jws")
 
         return {"ect": ect}
 

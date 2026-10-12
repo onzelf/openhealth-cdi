@@ -54,6 +54,12 @@ function bytesToBase64Url(bytes) {
     .replace(/=+$/g, "");
 }
 
+function bytesToHex(bytes) {
+  return Array.from(bytes)
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 function utf8Base64Url(value) {
   return bytesToBase64Url(new TextEncoder().encode(value));
 }
@@ -69,6 +75,16 @@ function canonicalJson(value) {
     return `{${entries.join(",")}}`;
   }
   return JSON.stringify(value);
+}
+
+async function governedRequestHash(governedRequest) {
+  const digest = new Uint8Array(
+    await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(canonicalJson(governedRequest))
+    )
+  );
+  return `sha256:${bytesToHex(digest)}`;
 }
 
 async function publicIdentity(publicKey) {
@@ -161,6 +177,7 @@ export async function signHolderDpop(
     nonce,
     envelopeId,
     governedValueId = null,
+    governedRequest = null,
   }
 ) {
   const identity = await getHolderIdentity(principal);
@@ -185,6 +202,9 @@ export async function signHolderDpop(
     envelope_id: envelopeId,
     ...(governedValueId
       ? { governed_value_id: governedValueId }
+      : {}),
+    ...(governedRequest
+      ? { request_hash: await governedRequestHash(governedRequest) }
       : {}),
   };
   const encodedHeader = utf8Base64Url(canonicalJson(header));

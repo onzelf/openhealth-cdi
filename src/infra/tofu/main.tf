@@ -197,8 +197,26 @@ resource "docker_container" "verifier_app" {
   }
 
   volumes {
-    host_path      = "${local.repo_root}/vfp-governance/verifier/certs"
-    container_path = "/app/verifier/certs"
+    host_path      = "${local.repo_root}/vfp-governance/verifier/certs/HospitalA-admin.crt"
+    container_path = "/app/verifier/certs/HospitalA-admin.crt"
+    read_only      = true
+  }
+
+  volumes {
+    host_path      = "${local.repo_root}/vfp-governance/verifier/certs/HospitalB-admin.crt"
+    container_path = "/app/verifier/certs/HospitalB-admin.crt"
+    read_only      = true
+  }
+
+  volumes {
+    host_path      = "${local.repo_root}/vfp-governance/verifier/certs/fcac-evidence.key"
+    container_path = "/app/verifier/certs/fcac-evidence.key"
+    read_only      = true
+  }
+
+  volumes {
+    host_path      = "${local.repo_root}/vfp-governance/verifier/certs/fcac-evidence.pub"
+    container_path = "/app/verifier/certs/fcac-evidence.pub"
     read_only      = true
   }
 

@@ -2144,12 +2144,21 @@ export default function App() {
 
         const jti = proofToken("jti");
         const nonce = proofToken("nonce");
+        const governedRequest = {
+          envelope_id: envelopeId,
+          run_id: RUN_ID,
+          resource: "pathmnist-colon-pathology",
+          action: "query_model",
+          purpose: "approved_model_query",
+          requested_tissues: [userTissue],
+        };
         const dpop = await signHolderDpop(holderPrincipal, {
           htu: DPOP_HTU,
           htm: "POST",
           jti,
           nonce,
           envelopeId,
+          governedRequest,
         });
         requestBody.jti = jti;
         evidenceHeaders = {

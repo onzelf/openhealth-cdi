@@ -300,7 +300,6 @@ redis_client: Optional[redis.Redis] = None
 envelope_listener_task: Optional[asyncio.Task[Any]] = None
 pending_binding_task: Optional[asyncio.Task[Any]] = None
 envelope_binding_lock = asyncio.Lock()
-holder_runtime_credentials: Dict[Tuple[str, str], Dict[str, Any]] = {}
 pending_mode1b_derivatives: Dict[str, Dict[str, Any]] = {}
 mode1a_guest_admissions: Dict[str, Dict[str, Any]] = {}
 
@@ -462,13 +461,6 @@ def request_prediction_admission(
     return admission
 
 
-def principal_runtime_key(
-    envelope_id: str,
-    principal: str,
-) -> Tuple[str, str]:
-    return envelope_id, principal
-
-
 def compact_ect_preview(token: str) -> str:
     if not token:
         return ""
@@ -570,44 +562,113 @@ def mint_principal_ect(
     return str(ect)
 
 
-def sign_principal_dpop(
+
+def request_principal_authority_presentation(
+    *,
     principal: str,
     envelope_id: str,
-    nonce: str,
-    jti: str,
-    signer_url: str,
-    htu: str = DPOP_HTU,
-) -> str:
-    target_signer = str(signer_url or "").strip().rstrip("/")
-    if not target_signer:
-        raise HTTPException(409, "agent_signer_not_configured")
+    run_id: str,
+    tissue: str,
+    action: str,
+    purpose: str,
+    resource: str = "pathmnist-colon-pathology",
+    derivative_representation: Optional[str] = None,
+    governed_value_id: Optional[str] = None,
+    governed_value: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    context = ACTOR_CONTEXTS.get(principal)
+    if context is None:
+        raise HTTPException(400, f"unknown_principal:{principal}")
+    if not actor_is_operational(context):
+        raise HTTPException(409, f"actor_not_operational:{principal}")
+
+    endpoint = str(
+        context.get("authority_endpoint_url") or ""
+    ).strip().rstrip("/")
+    if not endpoint:
+        raise HTTPException(
+            409,
+            f"authority_endpoint_not_configured:{principal}",
+        )
+
+    exact_request: Dict[str, Any] = {
+        "envelope_id": envelope_id,
+        "run_id": run_id,
+        "resource": resource,
+        "action": action,
+        "purpose": purpose,
+        "requested_tissues": [tissue],
+    }
+    if derivative_representation:
+        exact_request["derivative_representation"] = derivative_representation
+    if governed_value_id:
+        exact_request["governed_value_id"] = governed_value_id
+    if governed_value is not None:
+        exact_request["governed_value"] = governed_value
 
     try:
         response = requests.post(
-            target_signer + "/dpop/sign",
-            json={
-                "sub": principal,
-                "htu": htu,
-                "htm": "POST",
-                "jti": jti,
-                "nonce": nonce,
-                "envelope_id": envelope_id,
-            },
+            endpoint + "/authority/present",
+            json={"principal": principal, **exact_request},
             timeout=15,
         )
     except Exception as exc:
-        raise HTTPException(502, f"signer_error:{exc}") from exc
+        raise HTTPException(
+            502,
+            f"authority_endpoint_error:{principal}:{exc}",
+        ) from exc
 
     if not response.ok:
         raise HTTPException(
             response.status_code,
-            f"dpop_sign_failed:{response.text}",
+            f"authority_presentation_failed:{principal}:{response.text}",
         )
-    dpop = response.json().get("dpop")
-    if not dpop:
-        raise HTTPException(502, "dpop_sign_failed:missing_dpop")
-    return str(dpop)
 
+    try:
+        presentation = response.json()
+    except ValueError as exc:
+        raise HTTPException(
+            502,
+            f"authority_presentation_non_json:{principal}",
+        ) from exc
+
+    if str(presentation.get("principal") or "") != principal:
+        raise HTTPException(502, "authority_presentation_principal_mismatch")
+    if str(presentation.get("envelope_id") or "") != envelope_id:
+        raise HTTPException(502, "authority_presentation_envelope_mismatch")
+    if presentation.get("request") != exact_request:
+        raise HTTPException(502, "authority_presentation_request_mismatch")
+
+    authorization = str(presentation.get("authorization") or "").strip()
+    dpop = str(presentation.get("dpop") or "").strip()
+    nonce = str(presentation.get("nonce") or "").strip()
+    jti = str(presentation.get("jti") or "").strip()
+
+    if not authorization.startswith("ECT "):
+        raise HTTPException(502, "authority_presentation_missing_ect")
+    if not dpop or not nonce or not jti:
+        raise HTTPException(502, "authority_presentation_incomplete")
+
+    ect = authorization.split(" ", 1)[1].strip()
+    claims = decode_ect_claims(ect)
+    if str(claims.get("sub") or "") != principal:
+        raise HTTPException(502, "authority_presentation_subject_mismatch")
+    if str(claims.get("envelope_id") or "") != envelope_id:
+        raise HTTPException(
+            502,
+            "authority_presentation_ect_envelope_mismatch",
+        )
+
+    return {
+        "principal": principal,
+        "envelope_id": envelope_id,
+        "authorization": authorization,
+        "dpop": dpop,
+        "nonce": nonce,
+        "jti": jti,
+        "request": exact_request,
+        "request_hash": presentation.get("request_hash"),
+    }
 
 def parse_orgs() -> Dict[str, Dict[str, Any]]:
     try:
@@ -1237,26 +1298,11 @@ def administration_boundary() -> Dict[str, Any]:
         )
 
     holders_payload = []
-    now = int(time.time())
     for principal, context in ACTOR_CONTEXTS.items():
         operational = actor_is_operational(context)
-        credential_key = principal_runtime_key(str(selected_id or ""), principal)
-        credential = (
-            holder_runtime_credentials.get(credential_key)
-            if operational
-            else None
-        )
-        expires_at = credential.get("expires_at") if credential else None
-        ect_status = "missing" if operational else "unavailable"
+        expires_at = None
+        ect_status = "external" if operational else "unavailable"
         ect_preview = ""
-        if credential:
-            expired = bool(expires_at and int(expires_at) <= now)
-            credential["expired"] = expired
-            if expired:
-                ect_status = "expired"
-            else:
-                ect_status = "ready"
-                ect_preview = compact_ect_preview(credential.get("ect", ""))
         enrollment = (
             issuer_member_lookup(context["issuer_url"], principal)
             if operational
@@ -1342,7 +1388,7 @@ def administration_mint_holder_ect(
     principal: str,
     req: HolderEctMintRequest,
 ) -> Dict[str, Any]:
-    """Mint and store a short-lived ECT for a holder for the selected envelope."""
+    """Relay a holder-authenticated mint request without retaining the ECT."""
     principal_context = ACTOR_CONTEXTS.get(principal)
     if principal_context is None:
         raise HTTPException(400, f"unknown_principal:{principal}")
@@ -1382,21 +1428,7 @@ def administration_mint_holder_ect(
 
     holder_dpop = str(req.holder_dpop or "").strip()
     if not holder_dpop:
-        if principal_context.get("actor_type") != "agent":
-            raise HTTPException(400, "holder_mint_proof_required")
-        signer_url = str(
-            principal_context.get("dpop_signer_url") or ""
-        ).strip()
-        if not signer_url:
-            raise HTTPException(409, "holder_signer_not_configured")
-        holder_dpop = sign_principal_dpop(
-            principal,
-            selected_id,
-            "mint-" + secrets.token_urlsafe(18),
-            "mint-" + secrets.token_urlsafe(18),
-            signer_url=signer_url,
-            htu=MINT_PROOF_HTU,
-        )
+        raise HTTPException(400, "holder_mint_proof_required")
 
     ect = mint_principal_ect(
         principal,
@@ -1414,16 +1446,6 @@ def administration_mint_holder_ect(
     if expires_at <= int(time.time()):
         raise HTTPException(502, "minted_ect_already_expired")
 
-    if principal_context.get("actor_type") == "agent":
-        credential_key = principal_runtime_key(selected_id, principal)
-        holder_runtime_credentials[credential_key] = {
-            "principal": principal,
-            "envelope_id": selected_id,
-            "ect": ect,
-            "expires_at": expires_at,
-            "expired": False,
-        }
-
     return {
         "principal": principal,
         "envelope_id": selected_id,
@@ -1431,11 +1453,7 @@ def administration_mint_holder_ect(
         "ect_preview": compact_ect_preview(ect),
         "expires_at": expires_at,
         "ready": True,
-        "custody": (
-            "hub_runtime"
-            if principal_context.get("actor_type") == "agent"
-            else "holder"
-        ),
+        "custody": "holder",
     }
 
 
@@ -1847,95 +1865,11 @@ def ab_prediction_options() -> Dict[str, Any]:
 
 @app.post("/predictions/ab")
 def ab_prediction(req: ABPredictionRequest) -> Dict[str, Any]:
-    """Run the A+B dashboard query through issuer, DPoP and Gatekeeper."""
-
+    """Legacy prediction endpoint retained only as an explicit tombstone."""
     raise HTTPException(
         status_code=410,
         detail="legacy_endpoint_removed:use_/user/inference",
     )
-
-    if req.run_id != RUN_ID:
-        raise HTTPException(404, f"unknown_run:{req.run_id}")
-    if req.requested_tissue not in PATHMNIST_QUERY_TISSUES:
-        raise HTTPException(400, f"unknown_tissue:{req.requested_tissue}")
-
-    active_envelope_id = experiment_state.get("active_envelope_id")
-    if req.envelope_id != active_envelope_id:
-        raise HTTPException(409, "envelope_is_not_active")
-    if not experiment_state.get("backend_bound", False):
-        raise HTTPException(409, "backend_is_not_bound")
-
-    principal_context = AB_PRINCIPALS.get(req.principal)
-    if principal_context is None:
-        raise HTTPException(400, f"unknown_principal:{req.principal}")
-
-    nonce = "nonce-" + secrets.token_urlsafe(18)
-    jti = "jti-" + secrets.token_urlsafe(18)
-    ect = mint_principal_ect(
-        req.principal,
-        principal_context,
-        req.envelope_id,
-    )
-    dpop = sign_principal_dpop(
-        req.principal,
-        req.envelope_id,
-        nonce,
-        jti,
-    )
-    admission = request_prediction_admission(
-        envelope_id=req.envelope_id,
-        run_id=req.run_id,
-        requested_tissues=[req.requested_tissue],
-        jti=jti,
-        authorization=f"ECT {ect}",
-        dpop=dpop,
-        dpop_nonce=nonce,
-    )
-
-    response: Dict[str, Any] = {
-        "principal": {
-            "sub": req.principal,
-            "organisation": principal_context["organisation"],
-        },
-        "request": {
-            "envelope_id": req.envelope_id,
-            "run_id": req.run_id,
-            "requested_tissue": req.requested_tissue,
-            "jti": jti,
-        },
-        "admission": admission,
-        "executed": False,
-    }
-    if not admission.get("allow", False):
-        return response
-
-    try:
-        backend = requests.post(
-            FLOWER_BACKEND_URL + "/predict_image",
-            json={
-                "envelope_id": req.envelope_id,
-                "run_id": req.run_id,
-                "requested_tissue": req.requested_tissue,
-                "topk": req.topk,
-            },
-            timeout=30,
-        )
-        backend.raise_for_status()
-        prediction = backend.json()
-    except Exception as exc:
-        raise HTTPException(502, f"prediction_error:{exc}") from exc
-
-    append_event(
-        "image_prediction_executed",
-        run_id=req.run_id,
-        envelope_id=req.envelope_id,
-        principal=req.principal,
-        requested_tissues=[req.requested_tissue],
-        jti=jti,
-        image_sha256=prediction.get("image_sha256"),
-    )
-    response.update({"executed": True, "prediction": prediction})
-    return response
 
 
 @app.post("/mode1a/guest/contribution/admission")
@@ -2112,23 +2046,6 @@ def mode1a_guest_contribution_admission_status(
     }
 
 
-def runtime_credential(
-    principal: str,
-    envelope_id: str,
-) -> Dict[str, Any]:
-    key = principal_runtime_key(envelope_id, principal)
-    credential = holder_runtime_credentials.get(key)
-
-    if not credential:
-        raise HTTPException(409, f"ect_not_ready:{principal}")
-
-    expires_at = credential.get("expires_at")
-    if expires_at and int(expires_at) <= int(time.time()):
-        credential["expired"] = True
-        raise HTTPException(409, f"ect_expired:{principal}")
-
-    return credential
-
 
 def admit_principal_operation(
     *,
@@ -2144,37 +2061,27 @@ def admit_principal_operation(
     governed_value: Optional[Dict[str, Any]] = None,
     event_type: str,
 ) -> Dict[str, Any]:
-    context = ACTOR_CONTEXTS.get(principal)
-    if context is None:
-        raise HTTPException(400, f"unknown_principal:{principal}")
-    if context.get("actor_type") != "agent":
-        raise HTTPException(403, "agent_operation_required")
-
-    credential = runtime_credential(principal, envelope_id)
-
-    nonce = "nonce-" + secrets.token_urlsafe(18)
-    jti = "jti-" + secrets.token_urlsafe(18)
-
-    signer_url = str(context.get("dpop_signer_url") or "").strip()
-    if not signer_url:
-        raise HTTPException(409, "agent_signer_not_configured")
-
-    dpop = sign_principal_dpop(
-        principal,
-        envelope_id,
-        nonce,
-        jti,
-        signer_url=signer_url,
+    presentation = request_principal_authority_presentation(
+        principal=principal,
+        envelope_id=envelope_id,
+        run_id=run_id,
+        tissue=tissue,
+        action=action,
+        purpose=purpose,
+        resource=resource,
+        derivative_representation=derivative_representation,
+        governed_value_id=governed_value_id,
+        governed_value=governed_value,
     )
 
     return request_prediction_admission(
         envelope_id=envelope_id,
         run_id=run_id,
         requested_tissues=[tissue],
-        jti=jti,
-        authorization=f"ECT {credential['ect']}",
-        dpop=dpop,
-        dpop_nonce=nonce,
+        jti=str(presentation["jti"]),
+        authorization=str(presentation["authorization"]),
+        dpop=str(presentation["dpop"]),
+        dpop_nonce=str(presentation["nonce"]),
         action=action,
         purpose=purpose,
         resource=resource,
@@ -2183,7 +2090,6 @@ def admit_principal_operation(
         governed_value=governed_value,
         event_type=event_type,
     )
-
 
 def hal_decide(payload: Dict[str, Any]) -> Dict[str, Any]:
     try:
@@ -2239,37 +2145,23 @@ def mode1b_inference(req: UserInferenceRequest) -> Dict[str, Any]:
     if "mode1b" not in principal_context.get("modes", []):
         raise HTTPException(403, "mode1b_participant_required")
 
-    signer_url = str(principal_context.get("dpop_signer_url") or "").strip()
-    if not signer_url:
-        raise HTTPException(409, "holder_signer_not_configured")
-
-    credential_key = principal_runtime_key(selected_id, req.principal)
-    credential = holder_runtime_credentials.get(credential_key)
-    if not credential:
-        raise HTTPException(409, "ect_not_ready")
-
-    expires_at = credential.get("expires_at")
-    if expires_at and int(expires_at) <= int(time.time()):
-        credential["expired"] = True
-        raise HTTPException(409, "ect_expired")
-
-    nonce = "nonce-" + secrets.token_urlsafe(18)
-    jti = "jti-" + secrets.token_urlsafe(18)
-    dpop = sign_principal_dpop(
-        req.principal,
-        selected_id,
-        nonce,
-        jti,
-        signer_url=signer_url,
+    presentation = request_principal_authority_presentation(
+        principal=req.principal,
+        envelope_id=selected_id,
+        run_id=req.run_id,
+        tissue=req.requested_tissue,
+        action="bounded_inference",
+        purpose="bounded_model_inference",
     )
+    jti = str(presentation["jti"])
     admission = request_prediction_admission(
         envelope_id=selected_id,
         run_id=req.run_id,
         requested_tissues=[req.requested_tissue],
         jti=jti,
-        authorization=f"ECT {credential['ect']}",
-        dpop=dpop,
-        dpop_nonce=nonce,
+        authorization=str(presentation["authorization"]),
+        dpop=str(presentation["dpop"]),
+        dpop_nonce=str(presentation["nonce"]),
         action="bounded_inference",
         purpose="bounded_model_inference",
         event_type="mode1b_bounded_inference_admission",
@@ -2375,8 +2267,6 @@ def mode1b_agent_request(
             "presented_ect_subject_mismatch",
         )
 
-    runtime_credential("Hal", selected_id)
-
     source_admission = request_prediction_admission(
         envelope_id=selected_id,
         run_id=req.run_id,
@@ -2434,6 +2324,15 @@ def mode1b_agent_request(
     })
 
     action = str(decision.get("action") or "")
+
+    # The agent may select only an action explicitly offered by the Hub
+    # for this request.  Reject before any downstream execution.
+    if action not in available_actions:
+        raise HTTPException(
+            403,
+            "agent_selected_unoffered_action",
+        )
+
 
     if action == "refuse":
         return {
@@ -2619,24 +2518,9 @@ def mode1b_agent_request(
             },
         }
 
-    if action == "minimal_statistics":
-        return {
-            "requester": req.requester,
-            "source_admission": source_admission,
-            "agent_decision": decision,
-            "executed": True,
-            "representation": "minimal_statistics",
-            "statistics": {
-                "prediction_tissue":
-                    prediction.get("prediction_tissue"),
-                "class_recall":
-                    prediction.get("class_recall"),
-            },
-        }
-
     raise HTTPException(
         500,
-        "unsupported_agent_action",
+        "offered_agent_action_not_implemented",
     )
 
 

@@ -1,0 +1,2940 @@
+#!/usr/bin/env python3
+"""OpenHealth hub with FLICS envelope-driven coordination.
+
+OpenHealth remains authoritative for experiment lifecycle, evidence artefacts,
+client registration, and the React/Vite API contract.
+
+FLICS remains authoritative for Redis envelope events and backend binding.
+There is no pass-through governance mode and no fallback ALLOW path.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import csv
+import hashlib
+import json
+import os
+import secrets
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import redis.asyncio as redis
+import requests
+import uvicorn
+from fastapi import FastAPI, Header, HTTPException, Request
+from pydantic import BaseModel, ConfigDict, Field
+
+# ---------------------------------------------------------------------
+# Environment
+# ---------------------------------------------------------------------
+
+RUN_ID = os.getenv("RUN_ID", "local-pathmnist-ab-001")
+RUNS_DIR = Path(os.getenv("RUNS_DIR", "/vault/runs"))
+VAULT_ROOT = Path(os.getenv("VAULT_ROOT", "/vault"))
+
+DATASET = os.getenv("DATASET", "medmnist")
+DATASET_SUBSET = os.getenv("DATASET_SUBSET", "pathmnist")
+FLOWER_ROUNDS = int(os.getenv("FLOWER_ROUNDS", "10"))
+MIN_CLIENTS = int(os.getenv("MIN_CLIENTS", "2"))
+LOCAL_EPOCHS = int(os.getenv("LOCAL_EPOCHS", "1"))
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", "32"))
+LEARNING_RATE = float(os.getenv("LEARNING_RATE", "0.001"))
+
+# HTTP control endpoint expected after the Flower server is ported with the
+# FLICS /bind_envelope contract. This is not the Flower gRPC address.
+FLOWER_BACKEND_URL = os.getenv(
+    "FLOWER_BACKEND_URL",
+    "http://vfp-core-flower-server:8081",
+).rstrip("/")
+
+REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
+FCAC_ENVELOPE_CHANNEL = os.getenv(
+    "FCAC_ENVELOPE_CHANNEL",
+    "fcac:envelopes:created",
+)
+BIND_RETRY_SECONDS = float(os.getenv("BIND_RETRY_SECONDS", "2"))
+
+ORGS_JSON = os.getenv("ORGS_JSON", "{}")
+ACTOR_CATALOG_PATH = Path(
+    os.getenv("ACTOR_CATALOG_PATH", "/app/config/actors.json")
+)
+
+ISSUER_A_URL = os.getenv(
+    "ISSUER_A_URL",
+    "https://issuer-hospitala.local:8443",
+).rstrip("/")
+ISSUER_B_URL = os.getenv(
+    "ISSUER_B_URL",
+    "https://issuer-hospitalb.local:8443",
+).rstrip("/")
+DPOP_HTU = os.getenv(
+    "DPOP_HTU",
+    "https://verifier.local/admission/check",
+)
+MINT_PROOF_HTU = os.getenv(
+    "MINT_PROOF_HTU",
+    "urn:openhealth:issuer:mint",
+)
+MODE1B_PENDING_TTL_SECONDS = int(
+    os.getenv("MODE1B_PENDING_TTL_SECONDS", "300")
+)
+
+VERIFIER_URL = os.getenv(
+    "VERIFIER_URL",
+    "https://verifier.local:8443",
+).rstrip("/")
+CA_CRT = os.getenv("CA_CRT", "/run/certs/ca.crt")
+HUB_CERT_CRT = os.getenv("HUB_CERT_CRT", "/run/certs/hub.crt")
+HUB_CERT_KEY = os.getenv("HUB_CERT_KEY", "/run/certs/hub.key")
+
+KYO_ORGANISATIONS = {
+    "hospital-a": "org://HospitalA",
+    "hospital-b": "org://HospitalB",
+}
+PATHMNIST_QUERY_TISSUES = [
+    "adipose",
+    "debris",
+    "lymphocytes",
+    "mucus",
+    "smooth_muscle",
+    "normal_colon_mucosa",
+    "cancer_associated_stroma",
+    "colorectal_adenocarcinoma_epithelium",
+]
+
+ORGANISATION_LABELS = {
+    "org://HospitalA": "Hospital A",
+    "org://HospitalB": "Hospital B",
+    "org://HospitalC": "Hospital C",
+    "sponsor://HospitalA+HospitalB": "Hospital A + Hospital B",
+}
+
+ISSUER_URLS = {
+    "org://HospitalA": ISSUER_A_URL,
+    "org://HospitalB": ISSUER_B_URL,
+}
+
+
+
+def load_actor_catalog(path: Path) -> Dict[str, Dict[str, Any]]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RuntimeError(f"actor_catalog_unavailable:{path}:{exc}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("actor_catalog_invalid:root_must_be_object")
+
+    actors: Dict[str, Dict[str, Any]] = {}
+    for organisation, entries in payload.items():
+        if not isinstance(entries, list):
+            raise RuntimeError(
+                f"actor_catalog_invalid:{organisation}:actors_must_be_array"
+            )
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise RuntimeError(
+                    f"actor_catalog_invalid:{organisation}:actor_must_be_object"
+                )
+            principal = str(entry.get("principal", "")).strip()
+            if not principal:
+                raise RuntimeError(
+                    f"actor_catalog_invalid:{organisation}:missing_principal"
+                )
+            if principal in actors:
+                raise RuntimeError(
+                    f"actor_catalog_invalid:duplicate_principal:{principal}"
+                )
+            issuer_organization = str(
+                entry.get("issuer_organization") or organisation
+            )
+            actors[principal] = {
+                **entry,
+                "principal": principal,
+                "organization": str(organisation),
+                "organisation": ORGANISATION_LABELS.get(
+                    str(organisation),
+                    str(organisation),
+                ),
+                "issuer_organization": issuer_organization,
+                "issuer_url": ISSUER_URLS.get(issuer_organization),
+                "modes": list(entry.get("modes") or []),
+            }
+    return actors
+
+
+ACTOR_CONTEXTS = load_actor_catalog(ACTOR_CATALOG_PATH)
+
+
+def actor_is_operational(context: Dict[str, Any]) -> bool:
+    return bool(
+        context.get("status") == "active"
+        and context.get("issuer_url")
+    )
+
+
+# Generated from the actor catalogue so the legacy endpoint keeps its current
+# request and response semantics without retaining a second actor registry.
+AB_PRINCIPALS: Dict[str, Dict[str, Any]] = {
+    principal: dict(context)
+    for principal, context in ACTOR_CONTEXTS.items()
+    if "ab" in context.get("modes", [])
+    and actor_is_operational(context)
+}
+
+# ---------------------------------------------------------------------
+# App and models
+# ---------------------------------------------------------------------
+
+app = FastAPI(
+    title="OpenHealth VFP Hub",
+    description=(
+        "OpenHealth experiment orchestration with FLICS envelope-driven "
+        "admission governance."
+    ),
+    version="0.4.0",
+)
+
+
+class BackendRegistration(BaseModel):
+    backend_id: str = Field(..., examples=["flower-local"])
+    backend_type: str = Field(..., examples=["flower_server"])
+    url: str = Field(..., examples=["http://vfp-core-flower-server:8081"])
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ExperimentInitialiseRequest(BaseModel):
+    run_id: str = RUN_ID
+    dataset: str = DATASET
+    dataset_subset: str = DATASET_SUBSET
+    phase: str = "AB_BASE"
+    rounds: int = FLOWER_ROUNDS
+    min_clients: int = MIN_CLIENTS
+    local_epochs: int = LOCAL_EPOCHS
+
+
+class ClientRegistration(BaseModel):
+    run_id: str = RUN_ID
+    org_id: str
+    org_label: Optional[str] = None
+    data_partition: Optional[int] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class PredictionRequest(BaseModel):
+    envelope_id: str
+    run_id: str = RUN_ID
+    requested_tissues: List[str]
+    jti: str
+    topk: int = Field(default=3, ge=1, le=9)
+
+
+class ABPredictionRequest(BaseModel):
+    envelope_id: str
+    run_id: str = RUN_ID
+    principal: str
+    requested_tissue: str
+    topk: int = Field(default=3, ge=1, le=9)
+
+
+class KyoApprovalRequest(BaseModel):
+    bind_id: str
+    code: str
+
+
+class HolderEctMintRequest(BaseModel):
+    envelope_id: str
+    holder_dpop: Optional[str] = None
+
+
+class UserInferenceRequest(BaseModel):
+    principal: str
+    envelope_id: str
+    run_id: str = RUN_ID
+    requested_tissue: str
+    topk: int = Field(default=3, ge=1, le=9)
+    jti: Optional[str] = None
+
+class AgentMediatedInferenceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    requester: str
+    envelope_id: str
+    run_id: str = RUN_ID
+    requested_tissue: str
+    topk: int = Field(default=3, ge=1, le=9)
+    jti: Optional[str] = None
+
+
+class AgentDerivativeConsumeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    requester: str
+    envelope_id: str
+    pending_id: str
+    governed_value_id: str
+    jti: str
+
+# ---------------------------------------------------------------------
+# Runtime state
+# ---------------------------------------------------------------------
+
+backend_registry: Dict[str, Dict[str, Any]] = {}
+active_envelopes: Dict[str, Dict[str, Any]] = {}
+pending_envelopes: Dict[str, Dict[str, Any]] = {}
+
+experiment_state: Dict[str, Any] = {
+    "run_id": RUN_ID,
+    "status": "waiting",
+    "registered_clients": {},
+    "min_clients": MIN_CLIENTS,
+    "flower_server_ready": False,
+    "active_envelope_id": None,
+    "backend_bound": False,
+}
+
+redis_client: Optional[redis.Redis] = None
+envelope_listener_task: Optional[asyncio.Task[Any]] = None
+pending_binding_task: Optional[asyncio.Task[Any]] = None
+envelope_binding_lock = asyncio.Lock()
+holder_runtime_credentials: Dict[Tuple[str, str], Dict[str, Any]] = {}
+pending_mode1b_derivatives: Dict[str, Dict[str, Any]] = {}
+mode1a_guest_admissions: Dict[str, Dict[str, Any]] = {}
+
+
+# ---------------------------------------------------------------------
+# Generic helpers
+# ---------------------------------------------------------------------
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def model_dict(model: BaseModel) -> Dict[str, Any]:
+    if hasattr(model, "model_dump"):
+        return model.model_dump()  # type: ignore[attr-defined]
+    return model.dict()
+
+
+def run_dir(run_id: str = RUN_ID) -> Path:
+    path = RUNS_DIR / run_id
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def write_json(path: Path, payload: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def append_event(
+    event_type: str,
+    run_id: str = RUN_ID,
+    **kwargs: Any,
+) -> None:
+    event = {
+        "timestamp": utc_now(),
+        "run_id": run_id,
+        "component": "vfp-core/hub",
+        "event_type": event_type,
+        **kwargs,
+    }
+    with (run_dir(run_id) / "events.jsonl").open("a", encoding="utf-8") as f:
+        f.write(json.dumps(event) + "\n")
+
+
+def governed_value_content_id(governed_value: Dict[str, Any]) -> str:
+    """Return the content address of W, excluding its self-referential value_id."""
+    unsigned_value = dict(governed_value)
+    unsigned_value.pop("value_id", None)
+    canonical = json.dumps(
+        unsigned_value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(canonical).hexdigest()
+
+
+def verifier_request(
+    method: str,
+    path: str,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Call the verifier through the Hub's existing mTLS identity."""
+    try:
+        response = requests.request(
+            method,
+            VERIFIER_URL + path,
+            timeout=15,
+            verify=CA_CRT,
+            cert=(HUB_CERT_CRT, HUB_CERT_KEY),
+            **kwargs,
+        )
+    except Exception as exc:
+        raise HTTPException(502, f"verifier_unavailable:{exc}") from exc
+
+    if not response.ok:
+        try:
+            detail = response.json().get("detail", response.text)
+        except ValueError:
+            detail = response.text
+        raise HTTPException(response.status_code, str(detail))
+
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise HTTPException(502, "verifier_returned_non_json") from exc
+
+
+def request_prediction_admission(
+    *,
+    envelope_id: str,
+    run_id: str,
+    requested_tissues: List[str],
+    jti: str,
+    authorization: str,
+    dpop: str,
+    dpop_nonce: str,
+    action: str = "query_model",
+    purpose: str = "approved_model_query",
+    resource: str = "pathmnist-colon-pathology",
+    event_type: str = "prediction_admission",
+    derivative_representation: Optional[str] = None,
+    governed_value_id: Optional[str] = None,
+    governed_value: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    admission_request = {
+        "envelope_id": envelope_id,
+        "run_id": run_id,
+        "resource": resource,
+        "action": action,
+        "purpose": purpose,
+        "requested_tissues": requested_tissues,
+        "jti": jti,
+    }
+
+    if derivative_representation:
+        admission_request["derivative_representation"] = derivative_representation
+    if governed_value_id:
+        admission_request["governed_value_id"] = governed_value_id
+    if governed_value is not None:
+        admission_request["governed_value"] = governed_value
+
+    try:
+        verifier = requests.post(
+            os.getenv(
+                "VERIFIER_URL",
+                "https://verifier.local:8443",
+            ).rstrip("/") + "/admission/check",
+            headers={
+                "Authorization": authorization,
+                "DPoP": dpop,
+                "X-DPoP-Nonce": dpop_nonce,
+            },
+            json=admission_request,
+            timeout=15,
+            verify=os.getenv("CA_CRT", "/run/certs/ca.crt"),
+            cert=(
+                os.getenv("HUB_CERT_CRT", "/run/certs/hub.crt"),
+                os.getenv("HUB_CERT_KEY", "/run/certs/hub.key"),
+            ),
+        )
+        verifier.raise_for_status()
+        admission = verifier.json()
+    except Exception as exc:
+        raise HTTPException(502, f"verifier_error:{exc}") from exc
+
+    append_event(
+        event_type,
+        run_id=run_id,
+        envelope_id=envelope_id,
+        requested_tissues=requested_tissues,
+        jti=jti,
+        resource=resource,
+        action=action,
+        purpose=purpose,
+        **admission,
+    )
+    return admission
+
+
+def principal_runtime_key(
+    envelope_id: str,
+    principal: str,
+) -> Tuple[str, str]:
+    return envelope_id, principal
+
+
+def compact_ect_preview(token: str) -> str:
+    if not token:
+        return ""
+    token = str(token)
+    if len(token) <= 24:
+        return f"ECT={token}"
+    return f"ECT={token[:16]}…{token[-8:]}"
+
+
+def decode_ect_claims(token: str) -> Dict[str, Any]:
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            raise ValueError("not_compact_jws")
+        payload = parts[1]
+        payload += "=" * ((4 - len(payload) % 4) % 4)
+        claims = json.loads(
+            base64.urlsafe_b64decode(payload).decode("utf-8")
+        )
+        if not isinstance(claims, dict):
+            raise ValueError("payload_not_object")
+        return claims
+    except Exception as exc:
+        raise HTTPException(502, f"ect_decode_failed:{exc}") from exc
+
+
+def selected_envelope_binding_state(
+    backend_state: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    backend_state = backend_state or backend_reported_state()
+    bound_envelope_payload = backend_state.get("bound_envelope") or {}
+    selected_id = bound_envelope_payload.get("envelope_id")
+    if not selected_id:
+        return {
+            "selected_envelope_id": None,
+            "bound": False,
+            "backend_state": backend_state,
+        }
+    return {
+        "selected_envelope_id": selected_id,
+        "bound": bool(backend_state.get("available", False) and selected_id),
+        "backend_state": backend_state,
+    }
+
+
+def issuer_member_lookup(
+    issuer_url: str,
+    principal: str,
+) -> Optional[bool]:
+    try:
+        response = requests.get(
+            issuer_url.rstrip("/") + "/members",
+            timeout=10,
+            verify=CA_CRT,
+            cert=(HUB_CERT_CRT, HUB_CERT_KEY),
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception:
+        return None
+
+    members = payload.get("members") or []
+    return any(str(member.get("sub", "")) == principal for member in members)
+
+
+def mint_principal_ect(
+    principal: str,
+    principal_context: Dict[str, Any],
+    envelope_id: str,
+    holder_dpop: Optional[str] = None,
+) -> str:
+    holder_proof = str(holder_dpop or "").strip()
+    if not holder_proof:
+        raise HTTPException(400, "holder_mint_proof_required")
+
+    try:
+        response = requests.post(
+            principal_context["issuer_url"] + "/mint",
+            json={
+                "sub": principal,
+                "envelope_id": envelope_id,
+                "holder_dpop": holder_proof,
+            },
+            timeout=15,
+            verify=CA_CRT,
+            cert=(HUB_CERT_CRT, HUB_CERT_KEY),
+        )
+    except Exception as exc:
+        raise HTTPException(502, f"issuer_error:{exc}") from exc
+
+    if not response.ok:
+        raise HTTPException(
+            response.status_code,
+            f"issuer_mint_failed:{response.text}",
+        )
+    ect = response.json().get("ect")
+    if not ect:
+        raise HTTPException(502, "issuer_mint_failed:missing_ect")
+    return str(ect)
+
+
+def sign_principal_dpop(
+    principal: str,
+    envelope_id: str,
+    nonce: str,
+    jti: str,
+    signer_url: str,
+    htu: str = DPOP_HTU,
+) -> str:
+    target_signer = str(signer_url or "").strip().rstrip("/")
+    if not target_signer:
+        raise HTTPException(409, "agent_signer_not_configured")
+
+    try:
+        response = requests.post(
+            target_signer + "/dpop/sign",
+            json={
+                "sub": principal,
+                "htu": htu,
+                "htm": "POST",
+                "jti": jti,
+                "nonce": nonce,
+                "envelope_id": envelope_id,
+            },
+            timeout=15,
+        )
+    except Exception as exc:
+        raise HTTPException(502, f"signer_error:{exc}") from exc
+
+    if not response.ok:
+        raise HTTPException(
+            response.status_code,
+            f"dpop_sign_failed:{response.text}",
+        )
+    dpop = response.json().get("dpop")
+    if not dpop:
+        raise HTTPException(502, "dpop_sign_failed:missing_dpop")
+    return str(dpop)
+
+
+def parse_orgs() -> Dict[str, Dict[str, Any]]:
+    try:
+        payload = json.loads(ORGS_JSON)
+        return payload if isinstance(payload, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def write_participants(run_id: str = RUN_ID) -> None:
+    orgs = parse_orgs()
+    payload = {
+        "run_id": run_id,
+        "participants": [
+            {
+                "org_id": org_id,
+                "label": org.get("label"),
+                "partition": org.get("partition"),
+                "enabled": org.get("enabled", True),
+            }
+            for org_id, org in orgs.items()
+        ],
+    }
+    write_json(run_dir(run_id) / "participants.json", payload)
+
+
+def ensure_metrics_file(run_id: str = RUN_ID) -> None:
+    path = run_dir(run_id) / "metrics.csv"
+    if not path.exists():
+        write_metrics_header(run_id)
+
+
+def write_metrics_header(run_id: str = RUN_ID) -> None:
+    path = run_dir(run_id) / "metrics.csv"
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            [
+                "run_id",
+                "round",
+                "phase",
+                "client_count",
+                "failure_count",
+                "loss",
+                "accuracy",
+                "train_loss",
+                "train_accuracy",
+            ]
+        )
+
+
+def write_experiment_config(req: ExperimentInitialiseRequest) -> None:
+    config = {
+        "run_id": req.run_id,
+        "dataset": req.dataset,
+        "dataset_subset": req.dataset_subset,
+        "phase": req.phase.strip().upper(),
+        "aggregation_strategy": "FedAvg",
+        "rounds": req.rounds,
+        "min_clients": req.min_clients,
+        "local_epochs": req.local_epochs,
+        "batch_size": BATCH_SIZE,
+        "learning_rate": LEARNING_RATE,
+        "flower_backend_url": FLOWER_BACKEND_URL,
+        "governance": {
+            "model": "FCaC",
+            "envelope_channel": FCAC_ENVELOPE_CHANNEL,
+            "admission": "envelope-driven",
+            "pass_through": False,
+        },
+        "organisations": parse_orgs(),
+    }
+    write_json(run_dir(req.run_id) / "experiment_config.json", config)
+
+
+def write_reproduce_readme(req: ExperimentInitialiseRequest) -> None:
+    content = f"""# Reproduce run `{req.run_id}`
+
+## Experiment
+
+- Dataset: `{req.dataset}`
+- Dataset subset: `{req.dataset_subset}`
+- Aggregation strategy: `FedAvg`
+- Rounds: `{req.rounds}`
+- Local epochs: `{req.local_epochs}`
+- Minimum clients: `{req.min_clients}`
+
+## Governance
+
+- Model: FCaC
+- Admission: envelope-driven
+- Redis channel: `{FCAC_ENVELOPE_CHANNEL}`
+- Pass-through fallback: disabled
+
+The experiment can start only after a FLICS envelope has been created and
+successfully bound to the selected backend.
+"""
+    (run_dir(req.run_id) / "README_reproduce_this_run.md").write_text(
+        content,
+        encoding="utf-8",
+    )
+
+
+def initialise_default_run() -> None:
+    req = ExperimentInitialiseRequest()
+    write_experiment_config(req)
+    write_participants(req.run_id)
+    ensure_metrics_file(req.run_id)
+    write_reproduce_readme(req)
+    append_event(
+        "experiment_initialised",
+        run_id=req.run_id,
+        dataset=req.dataset,
+        dataset_subset=req.dataset_subset,
+        rounds=req.rounds,
+        min_clients=req.min_clients,
+        local_epochs=req.local_epochs,
+    )
+
+
+def backend_for_type(backend_type: str) -> Optional[Dict[str, Any]]:
+    direct = backend_registry.get(backend_type)
+    if direct is not None:
+        return direct
+
+    for backend in backend_registry.values():
+        if backend.get("backend_type") == backend_type:
+            return backend
+
+    return None
+
+
+def current_experiment_status(run_id: str = RUN_ID) -> Dict[str, Any]:
+    registered_clients = experiment_state.get("registered_clients", {})
+    registered_client_ids = sorted(registered_clients.keys())
+    registered_client_count = len(registered_client_ids)
+    min_clients = int(experiment_state.get("min_clients", MIN_CLIENTS))
+
+    active_envelope_id = experiment_state.get("active_envelope_id")
+    backend_registered = bool(backend_registry)
+    backend_bound = bool(experiment_state.get("backend_bound", False))
+    selected_summary = selected_run_summary() if active_envelope_id else None
+    execution_status = experiment_state.get("status", "waiting")
+    backend_state = (
+        backend_reported_state()
+        if execution_status == "running"
+        else {}
+    )
+    training = backend_state.get("training") or {}
+    model_run_id = (
+        active_training_run_id(backend_state)
+        if execution_status == "running"
+        else (selected_summary or {}).get("run_id")
+    )
+
+    can_start = (
+        experiment_state.get("status") == "waiting"
+        and experiment_state.get("flower_server_ready", False)
+        and active_envelope_id is not None
+        and backend_registered
+        and backend_bound
+        and registered_client_count >= min_clients
+    )
+
+    return {
+        "run_id": run_id,
+        "model_run_id": model_run_id,
+        "status": execution_status,
+        "training": training,
+        "flower_server_ready": experiment_state.get(
+            "flower_server_ready",
+            False,
+        ),
+        "registered_clients": registered_client_ids,
+        "registered_client_count": registered_client_count,
+        "min_clients": min_clients,
+        "active_envelope_id": active_envelope_id,
+        "backend_registered": backend_registered,
+        "backend_bound": backend_bound,
+        "can_start": can_start,
+        "governance": {
+            "model": "FCaC",
+            "pass_through": False,
+        },
+    }
+
+# ---------------------------------------------------------------------
+# Redis and envelope handling
+# ---------------------------------------------------------------------
+
+async def get_redis() -> redis.Redis:
+    global redis_client
+
+    if redis_client is None:
+        redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+
+    await redis_client.ping()
+    return redis_client
+
+
+async def subscribe_to_envelope_events() -> None:
+    """Listen continuously for FLICS envelope creation events."""
+    while True:
+        pubsub = None
+        try:
+            client = await get_redis()
+            pubsub = client.pubsub()
+            await pubsub.subscribe(FCAC_ENVELOPE_CHANNEL)
+            print(
+                f"[hub] subscribed to {FCAC_ENVELOPE_CHANNEL}",
+                flush=True,
+            )
+
+            while True:
+                message = await pubsub.get_message(
+                    ignore_subscribe_messages=True,
+                    timeout=1.0,
+                )
+                if message is None:
+                    await asyncio.sleep(0.05)
+                    continue
+
+                envelope = json.loads(message["data"])
+                await handle_envelope_created(envelope)
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            append_event(
+                "envelope_subscription_error",
+                error=str(exc),
+                retry_seconds=2,
+            )
+            await asyncio.sleep(2)
+        finally:
+            if pubsub is not None:
+                try:
+                    await pubsub.unsubscribe(FCAC_ENVELOPE_CHANNEL)
+                    await pubsub.aclose()
+                except Exception:
+                    pass
+
+
+async def bind_envelope_to_backend(
+    envelope: Dict[str, Any],
+    backend: Dict[str, Any],
+) -> bool:
+    """Record an envelope binding without changing experiment status."""
+    envelope_id = envelope.get("envelope_id")
+    envelope_key = str(envelope_id)
+
+    async with envelope_binding_lock:
+        if envelope_key not in pending_envelopes:
+            return experiment_state.get("active_envelope_id") == envelope_id
+
+        bind_payload = {
+            "envelope_id": envelope_id,
+            "policy_hash": envelope.get("policy_hash"),
+            "valid_until": envelope.get("valid_until"),
+            "participants": envelope.get("participants", []),
+        }
+
+        try:
+            response = await asyncio.to_thread(
+                requests.post,
+                f"{backend['url'].rstrip('/')}/bind_envelope",
+                json=bind_payload,
+                timeout=10,
+            )
+            response.raise_for_status()
+        except Exception as exc:
+            experiment_state["backend_bound"] = False
+            append_event(
+                "envelope_bind_failed",
+                envelope_id=envelope_id,
+                backend_id=backend.get("backend_id"),
+                backend_url=backend.get("url"),
+                error=str(exc),
+            )
+            return False
+
+        active_envelopes[envelope_id] = {
+            **envelope,
+            "backend_id": backend.get("backend_id"),
+            "bound_at": utc_now(),
+        }
+        experiment_state["active_envelope_id"] = envelope_id
+        experiment_state["backend_bound"] = True
+        pending_envelopes.pop(envelope_key, None)
+
+        append_event(
+            "envelope_bound",
+            envelope_id=envelope_id,
+            backend_id=backend.get("backend_id"),
+            backend_url=backend.get("url"),
+        )
+        return True
+
+
+async def retry_pending_envelope_bindings() -> None:
+    while True:
+        await asyncio.sleep(BIND_RETRY_SECONDS)
+
+        for envelope in list(pending_envelopes.values()):
+            backend = backend_for_type("flower_server")
+            if backend is not None:
+                await bind_envelope_to_backend(envelope, backend)
+
+
+async def handle_envelope_created(envelope: Dict[str, Any]) -> None:
+    """Queue a FLICS envelope and bind it once its backend is registered."""
+    envelope_id = envelope.get("envelope_id")
+    if not envelope_id:
+        append_event(
+            "envelope_rejected",
+            reason="missing_envelope_id",
+            envelope=envelope,
+        )
+        return
+
+    backend_type = "flower_server"
+    pending_envelopes[str(envelope_id)] = envelope
+
+    append_event(
+        "envelope_received",
+        envelope_id=envelope_id,
+        backend_type=backend_type,
+        policy_hash=envelope.get("policy_hash"),
+    )
+
+    backend = backend_for_type(backend_type)
+    if backend is None:
+        append_event(
+            "envelope_queued",
+            envelope_id=envelope_id,
+            backend_type=backend_type,
+            reason="backend_not_registered",
+        )
+        return
+
+    await bind_envelope_to_backend(envelope, backend)
+
+
+# ---------------------------------------------------------------------
+# Lifecycle
+# ---------------------------------------------------------------------
+
+@app.on_event("startup")
+async def on_startup() -> None:
+    global envelope_listener_task, pending_binding_task
+
+    run_dir(RUN_ID)
+    initialise_default_run()
+
+    # Surface Redis configuration errors during startup.
+    await get_redis()
+
+    envelope_listener_task = asyncio.create_task(
+        subscribe_to_envelope_events()
+    )
+    pending_binding_task = asyncio.create_task(
+        retry_pending_envelope_bindings()
+    )
+    append_event(
+        "hub_ready",
+        redis_url=REDIS_URL,
+        envelope_channel=FCAC_ENVELOPE_CHANNEL,
+    )
+
+
+@app.on_event("shutdown")
+async def on_shutdown() -> None:
+    global redis_client, envelope_listener_task, pending_binding_task
+
+    tasks = [envelope_listener_task, pending_binding_task]
+    for task in tasks:
+        if task is not None:
+            task.cancel()
+
+    for task in tasks:
+        if task is None:
+            continue
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    if redis_client is not None:
+        await redis_client.aclose()
+        redis_client = None
+
+
+# ---------------------------------------------------------------------
+# Health and backend registry
+# ---------------------------------------------------------------------
+
+@app.get("/health")
+async def health() -> Dict[str, Any]:
+    client = await get_redis()
+    redis_ok = bool(await client.ping())
+    return {
+        "status": "ok",
+        "component": "vfp-core/hub",
+        "run_id": RUN_ID,
+        "redis": redis_ok,
+        "governance": "FCaC",
+    }
+
+
+@app.get("/status")
+async def status() -> Dict[str, Any]:
+    client = await get_redis()
+    redis_ok = bool(await client.ping())
+    return {
+        "run_id": RUN_ID,
+        "dataset": DATASET,
+        "dataset_subset": DATASET_SUBSET,
+        "flower_rounds": FLOWER_ROUNDS,
+        "min_clients": MIN_CLIENTS,
+        "redis": redis_ok,
+        "registered_backends": list(backend_registry.values()),
+        "active_envelopes": sorted(active_envelopes.keys()),
+        "experiment": current_experiment_status(RUN_ID),
+    }
+
+
+@app.post("/backend/register")
+async def backend_register(req: Request) -> Dict[str, Any]:
+    """Accept both the FLICS and OpenHealth registration payloads."""
+    payload = await req.json()
+
+    backend_type = payload.get("backend_type") or payload.get("type")
+    backend_url = payload.get("url")
+    backend_id = payload.get("backend_id") or backend_type
+
+    if not backend_id or not backend_type or not backend_url:
+        raise HTTPException(
+            status_code=400,
+            detail="missing backend_id/backend_type/url",
+        )
+
+    backend = {
+        "backend_id": str(backend_id),
+        "backend_type": str(backend_type),
+        "url": str(backend_url).rstrip("/"),
+        "metadata": payload.get("metadata") or {},
+        "registered_at": utc_now(),
+    }
+    backend_registry[backend["backend_id"]] = backend
+    if backend["backend_type"] == "flower_server":
+        experiment_state["flower_server_ready"] = True
+    append_event("backend_registered", **backend)
+
+    active_envelope_id = experiment_state.get("active_envelope_id")
+    if active_envelope_id in active_envelopes:
+        pending_envelopes[str(active_envelope_id)] = active_envelopes[
+            active_envelope_id
+        ]
+
+    matching_envelopes = (
+        list(pending_envelopes.values())
+        if backend["backend_type"] == "flower_server"
+        else []
+    )
+    for envelope in matching_envelopes:
+        await bind_envelope_to_backend(envelope, backend)
+
+    return {
+        "status": "registered",
+        "backend": backend,
+    }
+
+
+@app.get("/backend/list")
+def backend_list() -> Dict[str, Any]:
+    return {
+        "backends": list(backend_registry.values()),
+    }
+
+
+# ---------------------------------------------------------------------
+# Administration: present verifier, backend, and vault state
+# ---------------------------------------------------------------------
+
+def backend_reported_state() -> Dict[str, Any]:
+    backend = backend_for_type("flower_server")
+    if backend is None:
+        return {
+            "available": False,
+            "bound_envelope": None,
+            "model_run_id": None,
+            "training": None,
+        }
+    try:
+        response = requests.get(
+            f"{backend['url'].rstrip('/')}/status",
+            timeout=5,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return {
+            "available": True,
+            "bound_envelope": payload.get("bound_envelope"),
+            "model_run_id": payload.get("model_run_id"),
+            "training": payload.get("training"),
+        }
+    except Exception as exc:
+        return {
+            "available": False,
+            "bound_envelope": None,
+            "model_run_id": None,
+            "training": None,
+            "error": str(exc),
+        }
+
+
+def envelope_model_evidence(envelope_id: str) -> Dict[str, Any]:
+    evidence_path = VAULT_ROOT / envelope_id / "run.json"
+    if not evidence_path.is_file():
+        return {"available": False, "evidence": None}
+    try:
+        evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"available": False, "evidence": str(evidence_path)}
+
+    model_path = (evidence.get("artifacts") or {}).get("model")
+    model_available = bool(model_path and Path(model_path).is_file())
+    return {
+        "available": model_available,
+        "evidence": str(evidence_path),
+        "run_id": evidence.get("run_id"),
+        "status": evidence.get("status"),
+        "rounds_completed": evidence.get("rounds_completed"),
+        "model": model_path,
+    }
+
+
+def selected_run_summary() -> Optional[Dict[str, Any]]:
+    envelope_id = experiment_state.get("active_envelope_id")
+    if not envelope_id:
+        return None
+    path = VAULT_ROOT / str(envelope_id) / "run.json"
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def selected_artifact_path(name: str) -> Optional[Path]:
+    summary = selected_run_summary()
+    if summary is None:
+        return None
+    value = (summary.get("artifacts") or {}).get(name)
+    return Path(value) if value else None
+
+
+def active_training_run_id(
+    backend_state: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    backend_state = backend_state or backend_reported_state()
+    training = backend_state.get("training") or {}
+    model_run_id = backend_state.get("model_run_id")
+    if (
+        training.get("status") not in {"admission_pending", "running"}
+        or not model_run_id
+    ):
+        return None
+    return str(model_run_id)
+
+
+def active_envelope_registry() -> List[Dict[str, Any]]:
+    verifier_status = verifier_request(
+        "GET",
+        "/status",
+        params={"state": "ACTIVE"},
+    )
+    now = time.time()
+    return [
+        {
+            **envelope,
+            "model": envelope_model_evidence(str(envelope["envelope_id"])),
+        }
+        for envelope in verifier_status.get("envelopes", [])
+        if not envelope.get("exp") or float(envelope["exp"]) > now
+    ]
+
+
+@app.get("/administration/boundary")
+def administration_boundary() -> Dict[str, Any]:
+    """Return the compact administration state the React boundary controls need."""
+    active_registry = active_envelope_registry()
+    backend_state = backend_reported_state()
+    binding_state = selected_envelope_binding_state(backend_state)
+    selected_id = binding_state.get("selected_envelope_id")
+    selected_envelope = next(
+        (
+            envelope
+            for envelope in active_registry
+            if envelope.get("envelope_id") == selected_id
+        ),
+        None,
+    )
+    selected_model_run_id = None
+    if selected_envelope is not None:
+        selected_model_run_id = selected_envelope.get("model", {}).get(
+            "run_id"
+        )
+    envelopes_payload = []
+    for envelope in active_registry:
+        envelope_id = str(envelope.get("envelope_id", ""))
+        model = envelope.get("model") or {}
+        envelopes_payload.append(
+            {
+                "envelope_id": envelope_id,
+                "participants": envelope.get("participants") or [],
+                "bound": bool(
+                    envelope_id == selected_id
+                    and binding_state.get("bound", False)
+                ),
+                "expiry": envelope.get("exp"),
+                "model_available": bool(model.get("available", False)),
+                "model_run_id": model.get("run_id"),
+            }
+        )
+
+    holders_payload = []
+    now = int(time.time())
+    for principal, context in ACTOR_CONTEXTS.items():
+        operational = actor_is_operational(context)
+        credential_key = principal_runtime_key(str(selected_id or ""), principal)
+        credential = (
+            holder_runtime_credentials.get(credential_key)
+            if operational
+            else None
+        )
+        expires_at = credential.get("expires_at") if credential else None
+        ect_status = "missing" if operational else "unavailable"
+        ect_preview = ""
+        if credential:
+            expired = bool(expires_at and int(expires_at) <= now)
+            credential["expired"] = expired
+            if expired:
+                ect_status = "expired"
+            else:
+                ect_status = "ready"
+                ect_preview = compact_ect_preview(credential.get("ect", ""))
+        enrollment = (
+            issuer_member_lookup(context["issuer_url"], principal)
+            if operational
+            else None
+        )
+        holders_payload.append(
+            {
+                "principal": principal,
+                "organization": context["organisation"],
+                "organization_id": context["organization"],
+                "actor_type": context.get("actor_type"),
+                "actor_status": context.get("status"),
+                "modes": context.get("modes", []),
+                "enrolled": enrollment,
+                "enrollment_status": (
+                    "planned"
+                    if not operational
+                    else
+                    "enrolled"
+                    if enrollment is True
+                    else "not_enrolled"
+                    if enrollment is False
+                    else "unavailable"
+                ),
+                "ect_status": ect_status,
+                "ect_preview": ect_preview,
+                "envelope_id": selected_id,
+                "expires_at": expires_at,
+                "model_run_id": selected_model_run_id,
+                "can_mint": bool(
+                    operational
+                    and enrollment is True
+                    and selected_id
+                    and binding_state.get("bound", False)
+                ),
+            }
+        )
+
+    return {
+        "selected_envelope_id": selected_id,
+        "envelopes": envelopes_payload,
+        "holders": holders_payload,
+        "inference_actors": [
+            {
+                "principal": principal,
+                "organization": context["organisation"],
+                "actor_type": context.get("actor_type"),
+                "modes": context.get("modes", []),
+            }
+            for principal, context in ACTOR_CONTEXTS.items()
+            if actor_is_operational(context)
+        ],
+        "can_train": current_experiment_status(RUN_ID).get("can_start", False),
+    }
+
+
+@app.get("/administration/envelopes")
+def administration_envelopes() -> Dict[str, Any]:
+    """Present authoritative envelope, backend, and model evidence."""
+    active_registry = active_envelope_registry()
+    backend_state = backend_reported_state()
+    bound_envelope = backend_state.get("bound_envelope") or {}
+    selected_id = bound_envelope.get("envelope_id")
+
+    return {
+        "active_envelopes": active_registry,
+        "selected_envelope_id": selected_id,
+        "selected_envelope": next(
+            (
+                envelope
+                for envelope in active_registry
+                if envelope.get("envelope_id") == selected_id
+            ),
+            None,
+        ),
+        "run_id": experiment_state.get("run_id", RUN_ID),
+        "backend": backend_state,
+    }
+
+
+@app.post("/administration/holders/{principal}/mint-ect")
+def administration_mint_holder_ect(
+    principal: str,
+    req: HolderEctMintRequest,
+) -> Dict[str, Any]:
+    """Mint and store a short-lived ECT for a holder for the selected envelope."""
+    principal_context = ACTOR_CONTEXTS.get(principal)
+    if principal_context is None:
+        raise HTTPException(400, f"unknown_principal:{principal}")
+    if not actor_is_operational(principal_context):
+        raise HTTPException(409, f"actor_not_operational:{principal}")
+
+    binding_state = selected_envelope_binding_state()
+    selected_id = binding_state.get("selected_envelope_id")
+    if not selected_id:
+        raise HTTPException(409, "no_envelope_selected")
+    if req.envelope_id != selected_id:
+        raise HTTPException(409, "envelope_mismatch")
+    if not binding_state.get("bound", False):
+        raise HTTPException(409, "envelope_not_bound")
+
+    enrollment = issuer_member_lookup(
+        principal_context["issuer_url"],
+        principal,
+    )
+    if enrollment is None:
+        raise HTTPException(502, "issuer_members_unavailable")
+    if enrollment is False:
+        raise HTTPException(409, f"holder_not_enrolled:{principal}")
+
+    active_envelope = next(
+        (
+            item
+            for item in active_envelope_registry()
+            if str(item.get("envelope_id")) == str(selected_id)
+        ),
+        None,
+    )
+    if active_envelope is None:
+        raise HTTPException(404, "active_envelope_not_found")
+    if active_envelope.get("exp") and float(active_envelope["exp"]) <= time.time():
+        raise HTTPException(409, "selected_envelope_expired")
+
+    holder_dpop = str(req.holder_dpop or "").strip()
+    if not holder_dpop:
+        if principal_context.get("actor_type") != "agent":
+            raise HTTPException(400, "holder_mint_proof_required")
+        signer_url = str(
+            principal_context.get("dpop_signer_url") or ""
+        ).strip()
+        if not signer_url:
+            raise HTTPException(409, "holder_signer_not_configured")
+        holder_dpop = sign_principal_dpop(
+            principal,
+            selected_id,
+            "mint-" + secrets.token_urlsafe(18),
+            "mint-" + secrets.token_urlsafe(18),
+            signer_url=signer_url,
+            htu=MINT_PROOF_HTU,
+        )
+
+    ect = mint_principal_ect(
+        principal,
+        principal_context,
+        selected_id,
+        holder_dpop,
+    )
+    claims = decode_ect_claims(ect)
+    if claims.get("envelope_id") != selected_id:
+        raise HTTPException(502, "minted_ect_envelope_mismatch")
+    try:
+        expires_at = int(claims["exp"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(502, "minted_ect_missing_expiry") from exc
+    if expires_at <= int(time.time()):
+        raise HTTPException(502, "minted_ect_already_expired")
+
+    if principal_context.get("actor_type") == "agent":
+        credential_key = principal_runtime_key(selected_id, principal)
+        holder_runtime_credentials[credential_key] = {
+            "principal": principal,
+            "envelope_id": selected_id,
+            "ect": ect,
+            "expires_at": expires_at,
+            "expired": False,
+        }
+
+    return {
+        "principal": principal,
+        "envelope_id": selected_id,
+        "ect": ect,
+        "ect_preview": compact_ect_preview(ect),
+        "expires_at": expires_at,
+        "ready": True,
+        "custody": (
+            "hub_runtime"
+            if principal_context.get("actor_type") == "agent"
+            else "holder"
+        ),
+    }
+
+
+@app.post("/administration/envelopes/{envelope_id}/select")
+async def administration_envelope_select(envelope_id: str) -> Dict[str, Any]:
+    """Bind the exact active envelope selected by the administrator."""
+    verifier_status = verifier_request("GET", "/status", params={"state": "ACTIVE"})
+    envelope = next(
+        (
+            item
+            for item in verifier_status.get("envelopes", [])
+            if item.get("envelope_id") == envelope_id
+        ),
+        None,
+    )
+    if envelope is None:
+        raise HTTPException(404, "active_envelope_not_found")
+    if envelope.get("exp") and float(envelope["exp"]) <= time.time():
+        raise HTTPException(409, "selected_envelope_expired")
+
+    backend = backend_for_type("flower_server")
+    if backend is None:
+        raise HTTPException(409, "flower_backend_not_registered")
+
+    binding = {
+        "envelope_id": envelope_id,
+        "policy_hash": envelope.get("policy_hash"),
+        "valid_until": envelope.get("exp"),
+        "participants": envelope.get("participants", []),
+    }
+    pending_envelopes[envelope_id] = binding
+    if not await bind_envelope_to_backend(binding, backend):
+        raise HTTPException(502, "selected_envelope_binding_failed")
+
+    return {
+        "selected_envelope_id": envelope_id,
+        "backend": backend_reported_state(),
+        "model": envelope_model_evidence(envelope_id),
+    }
+
+
+@app.post("/administration/kyo/binds")
+def administration_kyo_begin() -> Dict[str, Any]:
+    """Initiate the policy-owned A+B binding ceremony."""
+    result = verifier_request("POST", "/beta/bind/init", json={})
+    append_event(
+        "kyo_ceremony_started",
+        bind_id=result["bind_id"],
+        participants=list(KYO_ORGANISATIONS.values()),
+    )
+    return result
+
+
+@app.post("/administration/kyo/{organisation}/approve")
+def administration_kyo_approve(
+    organisation: str,
+    req: KyoApprovalRequest,
+) -> Dict[str, Any]:
+    """Claim one phone code, verify its organization, and approve the bind."""
+    expected_org = KYO_ORGANISATIONS.get(organisation)
+    if expected_org is None:
+        raise HTTPException(404, "unknown_kyo_organisation")
+    if not req.code.isdigit() or len(req.code) != 6:
+        raise HTTPException(400, "code_must_contain_exactly_six_digits")
+
+    claim = verifier_request(
+        "GET",
+        "/session/claim",
+        params={"code": req.code},
+    )
+    if claim.get("already_claimed"):
+        raise HTTPException(409, "kyo_code_already_claimed")
+    claimed_org = claim.get("org")
+    if claimed_org != expected_org:
+        append_event(
+            "kyo_organisation_mismatch",
+            bind_id=req.bind_id,
+            expected_org=expected_org,
+            claimed_org=claimed_org,
+        )
+        raise HTTPException(
+            409,
+            f"kyo_organisation_mismatch:expected={expected_org}:claimed={claimed_org}",
+        )
+
+    approval = verifier_request(
+        "POST",
+        "/beta/bind/approve",
+        json={
+            "bind_id": req.bind_id,
+            "session_id": claim["session_id"],
+        },
+    )
+    envelope_id = approval.get("envelope_id")
+    append_event(
+        "kyo_organisation_approved",
+        bind_id=req.bind_id,
+        organisation=expected_org,
+        admin_cn=claim.get("admin_cn"),
+        envelope_id=envelope_id,
+    )
+    return {
+        "bind_id": req.bind_id,
+        "organization": claimed_org,
+        "admin_cn": claim.get("admin_cn"),
+        "approval": approval,
+    }
+
+
+# ---------------------------------------------------------------------
+# OpenHealth experiment API retained for Flower and React/Vite
+# ---------------------------------------------------------------------
+
+@app.post("/experiments/initialise")
+def experiments_initialise(
+    req: ExperimentInitialiseRequest,
+) -> Dict[str, Any]:
+    phase = req.phase.strip().upper()
+    if phase not in {"AB_BASE", "MODE1A"}:
+        raise HTTPException(400, f"unsupported_training_phase:{phase}")
+    mode1a_guest_admissions.clear()
+
+    previous_run_id = experiment_state.get("run_id")
+    same_run = previous_run_id == req.run_id
+    preserved_envelope_id = (
+        experiment_state.get("active_envelope_id") if same_run else None
+    )
+    preserved_backend_bound = bool(
+        same_run
+        and preserved_envelope_id
+        and experiment_state.get("backend_bound", False)
+    )
+
+    write_experiment_config(req)
+    write_participants(req.run_id)
+    write_metrics_header(req.run_id)
+    write_reproduce_readme(req)
+
+    experiment_state.update(
+        {
+            "run_id": req.run_id,
+            "status": "waiting",
+            "min_clients": req.min_clients,
+            "flower_server_ready": (
+                backend_for_type("flower_server") is not None
+            ),
+            "active_envelope_id": preserved_envelope_id,
+            "backend_bound": preserved_backend_bound,
+        }
+    )
+
+    if previous_run_id != req.run_id:
+        experiment_state["registered_clients"] = {}
+
+    append_event(
+        "experiment_initialised",
+        run_id=req.run_id,
+        dataset=req.dataset,
+        dataset_subset=req.dataset_subset,
+        phase=phase,
+        rounds=req.rounds,
+        min_clients=req.min_clients,
+        local_epochs=req.local_epochs,
+        envelope_id=preserved_envelope_id,
+        envelope_binding_preserved=preserved_backend_bound,
+    )
+
+    return {
+        "status": "initialised",
+        "run_id": req.run_id,
+        "run_dir": str(run_dir(req.run_id)),
+        "active_envelope_id": preserved_envelope_id,
+        "backend_bound": preserved_backend_bound,
+    }
+
+
+@app.get("/experiments/{run_id}")
+def experiment_get(run_id: str) -> Dict[str, Any]:
+    folder = run_dir(run_id)
+    config_path = selected_artifact_path("experiment_config") or (
+        folder / "experiment_config.json"
+    )
+    participants_path = selected_artifact_path("participants") or (
+        folder / "participants.json"
+    )
+
+    if not config_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown run_id: {run_id}",
+        )
+
+    return {
+        "run_id": run_id,
+        "experiment_config": json.loads(
+            config_path.read_text(encoding="utf-8")
+        ),
+        "participants": (
+            json.loads(participants_path.read_text(encoding="utf-8"))
+            if participants_path.exists()
+            else None
+        ),
+    }
+
+
+@app.get("/experiments/{run_id}/events")
+def experiment_events(run_id: str, limit: int = 100) -> Dict[str, Any]:
+    path = selected_artifact_path("events") or (run_dir(run_id) / "events.jsonl")
+    if not path.exists():
+        return {"run_id": run_id, "events": []}
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    events = [
+        json.loads(line)
+        for line in lines[-limit:]
+        if line.strip()
+    ]
+    return {"run_id": run_id, "events": events}
+
+
+@app.get("/experiments/{run_id}/metrics")
+def experiment_metrics(run_id: str) -> Dict[str, Any]:
+    model_run_id: Optional[str]
+    if experiment_state.get("status") == "running":
+        model_run_id = active_training_run_id()
+        if model_run_id is None:
+            return {
+                "run_id": run_id,
+                "model_run_id": None,
+                "metrics": [],
+            }
+        path = RUNS_DIR / model_run_id / "metrics.csv"
+    else:
+        summary = selected_run_summary()
+        model_run_id = (
+            str(summary["run_id"])
+            if summary and summary.get("run_id")
+            else None
+        )
+        selected_metrics = selected_artifact_path("metrics")
+        if experiment_state.get("active_envelope_id"):
+            if selected_metrics is None:
+                return {
+                    "run_id": run_id,
+                    "model_run_id": model_run_id,
+                    "metrics": [],
+                }
+            path = selected_metrics
+        else:
+            path = selected_metrics or (run_dir(run_id) / "metrics.csv")
+
+    if not path.exists():
+        return {
+            "run_id": run_id,
+            "model_run_id": model_run_id,
+            "metrics": [],
+        }
+
+    with path.open("r", encoding="utf-8") as f:
+        rows: List[Dict[str, Any]] = list(csv.DictReader(f))
+
+    return {
+        "run_id": run_id,
+        "model_run_id": model_run_id,
+        "metrics": rows,
+    }
+
+
+@app.post("/clients/register")
+def clients_register(req: ClientRegistration) -> Dict[str, Any]:
+    if req.run_id != experiment_state.get("run_id"):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Client run_id {req.run_id!r} does not match active run "
+                f"{experiment_state.get('run_id')!r}"
+            ),
+        )
+
+    experiment_state["registered_clients"][req.org_id] = {
+        "org_id": req.org_id,
+        "org_label": req.org_label,
+        "data_partition": req.data_partition,
+        "metadata": req.metadata,
+        "registered_at": utc_now(),
+    }
+
+    append_event(
+        "client_registered",
+        run_id=req.run_id,
+        org_id=req.org_id,
+        org_label=req.org_label,
+        data_partition=req.data_partition,
+        metadata=req.metadata,
+    )
+
+    return {
+        "status": "registered",
+        "client": experiment_state["registered_clients"][req.org_id],
+        "experiment": current_experiment_status(req.run_id),
+    }
+
+
+@app.get("/experiments/{run_id}/status")
+def experiment_status(run_id: str) -> Dict[str, Any]:
+    if run_id != experiment_state.get("run_id"):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown run_id: {run_id}",
+        )
+    return current_experiment_status(run_id)
+
+
+@app.post("/experiments/{run_id}/start")
+def experiment_start(run_id: str) -> Dict[str, Any]:
+    status_payload = experiment_status(run_id)
+
+    if status_payload["status"] in {"running", "completed"}:
+        return {
+            "run_id": run_id,
+            "status": status_payload["status"],
+            "experiment": status_payload,
+        }
+
+    if not status_payload["flower_server_ready"]:
+        raise HTTPException(
+            status_code=409,
+            detail="Flower server is not ready",
+        )
+
+    if not status_payload["backend_bound"]:
+        raise HTTPException(
+            status_code=409,
+            detail="No active FLICS envelope is bound to the backend",
+        )
+
+    if (
+        status_payload["registered_client_count"]
+        < status_payload["min_clients"]
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Not enough registered clients: "
+                f"{status_payload['registered_client_count']} < "
+                f"{status_payload['min_clients']}"
+            ),
+        )
+
+    experiment_state["status"] = "running"
+    append_event(
+        "experiment_started",
+        run_id=run_id,
+        envelope_id=status_payload["active_envelope_id"],
+        registered_clients=status_payload["registered_clients"],
+    )
+
+    return {
+        "run_id": run_id,
+        "status": "running",
+        "message": "Experiment activated under the bound FLICS envelope",
+        "experiment": current_experiment_status(run_id),
+    }
+
+
+@app.post("/experiments/{run_id}/stop")
+def experiment_stop(run_id: str) -> Dict[str, Any]:
+    experiment_status(run_id)
+    experiment_state["status"] = "stopped"
+    append_event("experiment_stopped", run_id=run_id)
+
+    return {
+        "run_id": run_id,
+        "status": "stopped",
+        "message": "Experiment stopped",
+        "experiment": current_experiment_status(run_id),
+    }
+
+
+@app.post("/experiments/{run_id}/complete")
+def experiment_complete(run_id: str) -> Dict[str, Any]:
+    experiment_status(run_id)
+    experiment_state["status"] = "completed"
+    append_event("experiment_completed", run_id=run_id)
+
+    return {
+        "run_id": run_id,
+        "status": "completed",
+        "message": "Experiment completed",
+        "experiment": current_experiment_status(run_id),
+    }
+
+
+@app.get("/predictions/ab/options")
+def ab_prediction_options() -> Dict[str, Any]:
+    return {
+        "run_id": RUN_ID,
+        "active_envelope_id": experiment_state.get("active_envelope_id"),
+        "tissues": PATHMNIST_QUERY_TISSUES,
+        "principals": [
+            {
+                "sub": principal,
+                "organisation": context["organisation"],
+            }
+            for principal, context in AB_PRINCIPALS.items()
+        ],
+    }
+
+
+@app.post("/predictions/ab")
+def ab_prediction(req: ABPredictionRequest) -> Dict[str, Any]:
+    """Run the A+B dashboard query through issuer, DPoP and Gatekeeper."""
+
+    raise HTTPException(
+        status_code=410,
+        detail="legacy_endpoint_removed:use_/user/inference",
+    )
+
+    if req.run_id != RUN_ID:
+        raise HTTPException(404, f"unknown_run:{req.run_id}")
+    if req.requested_tissue not in PATHMNIST_QUERY_TISSUES:
+        raise HTTPException(400, f"unknown_tissue:{req.requested_tissue}")
+
+    active_envelope_id = experiment_state.get("active_envelope_id")
+    if req.envelope_id != active_envelope_id:
+        raise HTTPException(409, "envelope_is_not_active")
+    if not experiment_state.get("backend_bound", False):
+        raise HTTPException(409, "backend_is_not_bound")
+
+    principal_context = AB_PRINCIPALS.get(req.principal)
+    if principal_context is None:
+        raise HTTPException(400, f"unknown_principal:{req.principal}")
+
+    nonce = "nonce-" + secrets.token_urlsafe(18)
+    jti = "jti-" + secrets.token_urlsafe(18)
+    ect = mint_principal_ect(
+        req.principal,
+        principal_context,
+        req.envelope_id,
+    )
+    dpop = sign_principal_dpop(
+        req.principal,
+        req.envelope_id,
+        nonce,
+        jti,
+    )
+    admission = request_prediction_admission(
+        envelope_id=req.envelope_id,
+        run_id=req.run_id,
+        requested_tissues=[req.requested_tissue],
+        jti=jti,
+        authorization=f"ECT {ect}",
+        dpop=dpop,
+        dpop_nonce=nonce,
+    )
+
+    response: Dict[str, Any] = {
+        "principal": {
+            "sub": req.principal,
+            "organisation": principal_context["organisation"],
+        },
+        "request": {
+            "envelope_id": req.envelope_id,
+            "run_id": req.run_id,
+            "requested_tissue": req.requested_tissue,
+            "jti": jti,
+        },
+        "admission": admission,
+        "executed": False,
+    }
+    if not admission.get("allow", False):
+        return response
+
+    try:
+        backend = requests.post(
+            FLOWER_BACKEND_URL + "/predict_image",
+            json={
+                "envelope_id": req.envelope_id,
+                "run_id": req.run_id,
+                "requested_tissue": req.requested_tissue,
+                "topk": req.topk,
+            },
+            timeout=30,
+        )
+        backend.raise_for_status()
+        prediction = backend.json()
+    except Exception as exc:
+        raise HTTPException(502, f"prediction_error:{exc}") from exc
+
+    append_event(
+        "image_prediction_executed",
+        run_id=req.run_id,
+        envelope_id=req.envelope_id,
+        principal=req.principal,
+        requested_tissues=[req.requested_tissue],
+        jti=jti,
+        image_sha256=prediction.get("image_sha256"),
+    )
+    response.update({"executed": True, "prediction": prediction})
+    return response
+
+
+@app.post("/mode1a/guest/contribution/admission")
+async def mode1a_guest_contribution_admission(
+    request: Request,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    dpop_header: Optional[str] = Header(None, alias="DPoP"),
+    dpop_nonce: Optional[str] = Header(None, alias="X-DPoP-Nonce"),
+) -> Dict[str, Any]:
+    """Present an existing sponsored-guest ECT for contribution admission."""
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, f"invalid_request:{exc}") from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "body_must_be_object")
+
+    principal = str(payload.get("principal") or "").strip()
+    envelope_id = str(payload.get("envelope_id") or "").strip()
+    run_id_value = payload.get("run_id")
+    requested_tissues = payload.get("requested_tissues")
+    jti = str(payload.get("jti") or "").strip()
+
+    if not principal:
+        raise HTTPException(400, "missing_principal")
+    if not envelope_id:
+        raise HTTPException(400, "missing_envelope_id")
+    if run_id_value is None:
+        run_id: Optional[str] = None
+    elif not isinstance(run_id_value, str) or not run_id_value.strip():
+        raise HTTPException(400, "invalid_run_id")
+    else:
+        run_id = run_id_value.strip()
+    if not jti:
+        raise HTTPException(400, "missing_jti")
+    if (
+        not isinstance(requested_tissues, list)
+        or not requested_tissues
+        or not all(
+            isinstance(tissue, str) and tissue
+            for tissue in requested_tissues
+        )
+    ):
+        raise HTTPException(400, "invalid_requested_tissues")
+
+    unknown_tissues = sorted(
+        set(requested_tissues)
+        - set(PATHMNIST_QUERY_TISSUES + ["background"])
+    )
+    if unknown_tissues:
+        raise HTTPException(
+            400,
+            "unknown_tissues:" + ",".join(unknown_tissues),
+        )
+
+    binding_state = selected_envelope_binding_state()
+    selected_id = binding_state.get("selected_envelope_id")
+    if not selected_id:
+        raise HTTPException(409, "no_envelope_selected")
+    if envelope_id != selected_id:
+        raise HTTPException(409, "envelope_mismatch")
+    if not binding_state.get("bound", False):
+        raise HTTPException(409, "envelope_not_bound")
+    if run_id is not None:
+        backend_state = binding_state.get("backend_state") or {}
+        active_run_id = active_training_run_id(backend_state)
+        if active_run_id is None:
+            raise HTTPException(409, "training_run_not_ready")
+        if run_id != active_run_id:
+            raise HTTPException(
+                409,
+                (
+                    "training_run_mismatch:"
+                    f"requested={run_id}:active={active_run_id}"
+                ),
+            )
+
+    principal_context = ACTOR_CONTEXTS.get(principal)
+    if principal_context is None:
+        raise HTTPException(400, f"unknown_principal:{principal}")
+    if not actor_is_operational(principal_context):
+        raise HTTPException(409, f"actor_not_operational:{principal}")
+    if principal_context.get("actor_type") != "human":
+        raise HTTPException(403, "guest_contributor_must_be_human")
+    if principal_context.get("participation_grade") != "guest_contributor":
+        raise HTTPException(403, "guest_contributor_grade_required")
+    if "mode1a" not in principal_context.get("modes", []):
+        raise HTTPException(403, "mode1a_guest_required")
+
+    if not authorization or not authorization.startswith("ECT "):
+        raise HTTPException(401, "holder_ect_required")
+    if not dpop_header or not dpop_nonce:
+        raise HTTPException(401, "holder_proof_required")
+    ect = authorization.split(" ", 1)[1].strip()
+    claims = decode_ect_claims(ect)
+    if str(claims.get("sub") or "") != principal:
+        raise HTTPException(401, "presented_ect_subject_mismatch")
+
+    verifier_payload: Dict[str, Any] = {
+        "envelope_id": selected_id,
+        "requested_tissues": requested_tissues,
+        "jti": jti,
+    }
+    if run_id is not None:
+        verifier_payload["run_id"] = run_id
+
+    try:
+        verifier = requests.post(
+            VERIFIER_URL + "/admission/guest-contribution",
+            headers={
+                "Authorization": authorization,
+                "DPoP": dpop_header,
+                "X-DPoP-Nonce": dpop_nonce,
+            },
+            json=verifier_payload,
+            timeout=15,
+            verify=CA_CRT,
+            cert=(HUB_CERT_CRT, HUB_CERT_KEY),
+        )
+        verifier.raise_for_status()
+        admission = verifier.json()
+    except Exception as exc:
+        raise HTTPException(502, f"verifier_error:{exc}") from exc
+
+    if run_id is not None:
+        mode1a_guest_admissions[run_id] = {
+            "principal": principal,
+            "envelope_id": selected_id,
+            "run_id": run_id,
+            "requested_tissues": list(requested_tissues),
+            "admission": admission,
+            "recorded_at": time.time(),
+        }
+
+    return {
+        "principal": principal,
+        "guest_institution": principal_context.get("guest_institution"),
+        "request": {
+            "envelope_id": selected_id,
+            "run_id": run_id,
+            "requested_tissues": requested_tissues,
+            "jti": jti,
+        },
+        "admission": admission,
+        "executed": False,
+    }
+
+
+@app.get("/mode1a/guest/contribution/admission/status")
+def mode1a_guest_contribution_admission_status(
+    run_id: str,
+    envelope_id: str,
+    principal: str = "Charlie",
+) -> Dict[str, Any]:
+    record = mode1a_guest_admissions.get(run_id)
+    if record is None:
+        return {
+            "ready": False,
+            "principal": principal,
+            "envelope_id": envelope_id,
+            "run_id": run_id,
+            "admission": None,
+        }
+
+    if record.get("principal") != principal:
+        raise HTTPException(409, "guest_admission_principal_mismatch")
+    if record.get("envelope_id") != envelope_id:
+        raise HTTPException(409, "guest_admission_envelope_mismatch")
+
+    return {
+        "ready": True,
+        **record,
+    }
+
+
+def runtime_credential(
+    principal: str,
+    envelope_id: str,
+) -> Dict[str, Any]:
+    key = principal_runtime_key(envelope_id, principal)
+    credential = holder_runtime_credentials.get(key)
+
+    if not credential:
+        raise HTTPException(409, f"ect_not_ready:{principal}")
+
+    expires_at = credential.get("expires_at")
+    if expires_at and int(expires_at) <= int(time.time()):
+        credential["expired"] = True
+        raise HTTPException(409, f"ect_expired:{principal}")
+
+    return credential
+
+
+def admit_principal_operation(
+    *,
+    principal: str,
+    envelope_id: str,
+    run_id: str,
+    tissue: str,
+    action: str,
+    purpose: str,
+    resource: str = "pathmnist-colon-pathology",
+    derivative_representation: Optional[str] = None,
+    governed_value_id: Optional[str] = None,
+    governed_value: Optional[Dict[str, Any]] = None,
+    event_type: str,
+) -> Dict[str, Any]:
+    context = ACTOR_CONTEXTS.get(principal)
+    if context is None:
+        raise HTTPException(400, f"unknown_principal:{principal}")
+    if context.get("actor_type") != "agent":
+        raise HTTPException(403, "agent_operation_required")
+
+    credential = runtime_credential(principal, envelope_id)
+
+    nonce = "nonce-" + secrets.token_urlsafe(18)
+    jti = "jti-" + secrets.token_urlsafe(18)
+
+    signer_url = str(context.get("dpop_signer_url") or "").strip()
+    if not signer_url:
+        raise HTTPException(409, "agent_signer_not_configured")
+
+    dpop = sign_principal_dpop(
+        principal,
+        envelope_id,
+        nonce,
+        jti,
+        signer_url=signer_url,
+    )
+
+    return request_prediction_admission(
+        envelope_id=envelope_id,
+        run_id=run_id,
+        requested_tissues=[tissue],
+        jti=jti,
+        authorization=f"ECT {credential['ect']}",
+        dpop=dpop,
+        dpop_nonce=nonce,
+        action=action,
+        purpose=purpose,
+        resource=resource,
+        derivative_representation=derivative_representation,
+        governed_value_id=governed_value_id,
+        governed_value=governed_value,
+        event_type=event_type,
+    )
+
+
+def hal_decide(payload: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        response = requests.post(
+            "http://hal:8088/decide",
+            json=payload,
+            timeout=40,
+        )
+        response.raise_for_status()
+        return response.json()
+    except Exception as exc:
+        raise HTTPException(
+            502,
+            f"hal_reasoning_error:{exc}",
+        ) from exc
+
+
+def hal_blur(image_b64: str) -> Dict[str, Any]:
+    try:
+        response = requests.post(
+            "http://hal:8088/tools/blur",
+            json={"image_b64": image_b64},
+            timeout=20,
+        )
+        response.raise_for_status()
+        return response.json()
+    except Exception as exc:
+        raise HTTPException(
+            502,
+            f"hal_blur_error:{exc}",
+        ) from exc
+
+@app.post("/mode1b/inference")
+def mode1b_inference(req: UserInferenceRequest) -> Dict[str, Any]:
+    """Execute bounded inference only after Hal's own DPoP admission succeeds."""
+    if req.run_id != RUN_ID:
+        raise HTTPException(404, f"unknown_run:{req.run_id}")
+
+    binding_state = selected_envelope_binding_state()
+    selected_id = binding_state.get("selected_envelope_id")
+    if not selected_id:
+        raise HTTPException(409, "no_envelope_selected")
+    if req.envelope_id != selected_id:
+        raise HTTPException(409, "envelope_mismatch")
+    if not binding_state.get("bound", False):
+        raise HTTPException(409, "envelope_not_bound")
+
+    principal_context = ACTOR_CONTEXTS.get(req.principal)
+    if principal_context is None:
+        raise HTTPException(400, f"unknown_principal:{req.principal}")
+    if not actor_is_operational(principal_context):
+        raise HTTPException(409, f"actor_not_operational:{req.principal}")
+    if "mode1b" not in principal_context.get("modes", []):
+        raise HTTPException(403, "mode1b_participant_required")
+
+    signer_url = str(principal_context.get("dpop_signer_url") or "").strip()
+    if not signer_url:
+        raise HTTPException(409, "holder_signer_not_configured")
+
+    credential_key = principal_runtime_key(selected_id, req.principal)
+    credential = holder_runtime_credentials.get(credential_key)
+    if not credential:
+        raise HTTPException(409, "ect_not_ready")
+
+    expires_at = credential.get("expires_at")
+    if expires_at and int(expires_at) <= int(time.time()):
+        credential["expired"] = True
+        raise HTTPException(409, "ect_expired")
+
+    nonce = "nonce-" + secrets.token_urlsafe(18)
+    jti = "jti-" + secrets.token_urlsafe(18)
+    dpop = sign_principal_dpop(
+        req.principal,
+        selected_id,
+        nonce,
+        jti,
+        signer_url=signer_url,
+    )
+    admission = request_prediction_admission(
+        envelope_id=selected_id,
+        run_id=req.run_id,
+        requested_tissues=[req.requested_tissue],
+        jti=jti,
+        authorization=f"ECT {credential['ect']}",
+        dpop=dpop,
+        dpop_nonce=nonce,
+        action="bounded_inference",
+        purpose="bounded_model_inference",
+        event_type="mode1b_bounded_inference_admission",
+    )
+
+    model_evidence = envelope_model_evidence(selected_id)
+    response: Dict[str, Any] = {
+        "principal": req.principal,
+        "capability": "bounded_inference",
+        "request": {
+            "envelope_id": selected_id,
+            "run_id": req.run_id,
+            "requested_tissue": req.requested_tissue,
+            "jti": jti,
+        },
+        "admission": admission,
+        "executed": False,
+        "model_run_id": model_evidence.get("run_id"),
+    }
+    if not admission.get("allow", False):
+        return response
+
+    try:
+        backend = requests.post(
+            FLOWER_BACKEND_URL + "/predict_image",
+            json={
+                "envelope_id": selected_id,
+                "run_id": req.run_id,
+                "requested_tissue": req.requested_tissue,
+                "topk": req.topk,
+            },
+            timeout=30,
+        )
+        backend.raise_for_status()
+        prediction = backend.json()
+    except Exception as exc:
+        raise HTTPException(502, f"prediction_error:{exc}") from exc
+
+    append_event(
+        "mode1b_bounded_inference_executed",
+        run_id=req.run_id,
+        envelope_id=selected_id,
+        principal=req.principal,
+        requested_tissues=[req.requested_tissue],
+        jti=jti,
+        image_sha256=prediction.get("image_sha256"),
+    )
+    response.update(
+        {
+            "executed": True,
+            "model_run_id": (
+                prediction.get("run_id")
+                or model_evidence.get("run_id")
+            ),
+            "prediction": prediction,
+        }
+    )
+    return response
+
+@app.post("/mode1b/agent/request")
+def mode1b_agent_request(
+    req: AgentMediatedInferenceRequest,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    dpop_header: Optional[str] = Header(None, alias="DPoP"),
+    dpop_nonce: Optional[str] = Header(None, alias="X-DPoP-Nonce"),
+) -> Dict[str, Any]:
+    if req.run_id != RUN_ID:
+        raise HTTPException(404, f"unknown_run:{req.run_id}")
+
+    binding_state = selected_envelope_binding_state()
+    selected_id = binding_state.get("selected_envelope_id")
+
+    if not selected_id:
+        raise HTTPException(409, "no_envelope_selected")
+    if req.envelope_id != selected_id:
+        raise HTTPException(409, "envelope_mismatch")
+    if not binding_state.get("bound", False):
+        raise HTTPException(409, "envelope_not_bound")
+
+    requester_context = ACTOR_CONTEXTS.get(req.requester)
+    if requester_context is None:
+        raise HTTPException(
+            400,
+            f"unknown_principal:{req.requester}",
+        )
+    if not actor_is_operational(requester_context):
+        raise HTTPException(
+            409,
+            f"actor_not_operational:{req.requester}",
+        )
+    if requester_context.get("actor_type") != "human":
+        raise HTTPException(403, "human_requester_required")
+    if not authorization or not authorization.startswith("ECT "):
+        raise HTTPException(401, "holder_ect_required")
+    if not dpop_header or not dpop_nonce or not req.jti:
+        raise HTTPException(401, "holder_proof_required")
+
+    requester_ect = authorization.split(" ", 1)[1].strip()
+    requester_claims = decode_ect_claims(requester_ect)
+    if str(requester_claims.get("sub") or "") != req.requester:
+        raise HTTPException(
+            401,
+            "presented_ect_subject_mismatch",
+        )
+
+    runtime_credential("Hal", selected_id)
+
+    source_admission = request_prediction_admission(
+        envelope_id=selected_id,
+        run_id=req.run_id,
+        requested_tissues=[req.requested_tissue],
+        jti=req.jti,
+        authorization=authorization,
+        dpop=dpop_header,
+        dpop_nonce=dpop_nonce,
+        action="query_model",
+        purpose="approved_model_query",
+        event_type="mode1b_requester_source_admission",
+    )
+
+    source_authorized = bool(
+        source_admission.get("allow", False)
+    )
+    source_reason = str(source_admission.get("reason") or "")
+    source_requester_verified = (
+        source_authorized
+        or source_reason in {
+            "reserved_tissue",
+            "capability_violation",
+            "capability_scope_exceeded",
+        }
+    )
+    if not source_requester_verified:
+        return {
+            "requester": req.requester,
+            "source_admission": source_admission,
+            "executed": False,
+            "released": False,
+        }
+
+    available_actions = [
+        "blur_image",
+        "refuse",
+    ]
+
+    if source_authorized:
+        available_actions.insert(0, "no_transform")
+
+    decision = hal_decide({
+        "request_goal":
+            "Inspect the pathology image associated with the prediction",
+        "requester_context": {
+            "source_representation_authorized":
+                source_authorized,
+        },
+        "resource_context": {
+            "type": "pathology_image",
+            "contains_cancer_related_collateral": True,
+            "requested_tissue": req.requested_tissue,
+        },
+        "available_actions": available_actions,
+    })
+
+    action = str(decision.get("action") or "")
+
+    # The agent may select only an action explicitly offered by the Hub
+    # for this request.  Reject before any downstream execution.
+    if action not in available_actions:
+        raise HTTPException(
+            403,
+            "agent_selected_unoffered_action",
+        )
+
+
+    if action == "refuse":
+        return {
+            "requester": req.requester,
+            "source_admission": source_admission,
+            "agent_decision": decision,
+            "executed": False,
+        }
+
+    hal_inference = mode1b_inference(
+        UserInferenceRequest(
+            principal="Hal",
+            envelope_id=selected_id,
+            run_id=req.run_id,
+            requested_tissue=req.requested_tissue,
+            topk=req.topk,
+        )
+    )
+
+    if not hal_inference.get("executed"):
+        return {
+            "requester": req.requester,
+            "source_admission": source_admission,
+            "agent_decision": decision,
+            "hal_inference": hal_inference,
+            "executed": False,
+        }
+
+    prediction = dict(hal_inference["prediction"])
+
+    # Hal's inference result is internal execution state.  The composed
+    # response exposes its governance/evidence metadata but not the source
+    # prediction payload.  The permitted representation is returned
+    # separately below.
+    hal_inference_public = dict(hal_inference)
+    hal_inference_public.pop("prediction", None)
+
+    if action == "no_transform":
+        if not source_authorized:
+            raise HTTPException(
+                403,
+                "agent_selected_no_transform_without_source_authority",
+            )
+
+        return {
+            "requester": req.requester,
+            "source_admission": source_admission,
+            "agent_decision": decision,
+            "hal_inference": hal_inference_public,
+            "executed": True,
+            "representation": "source",
+            "prediction": prediction,
+        }
+
+    if action == "blur_image":
+        derivative_name = (
+            "blurred_image_with_qualitative_accuracy"
+        )
+
+        unbind_admission = admit_principal_operation(
+            principal="Hal",
+            envelope_id=selected_id,
+            run_id=req.run_id,
+            tissue=req.requested_tissue,
+            action="unbind",
+            purpose="policy_authorized_derivation",
+            derivative_representation=derivative_name,
+            event_type="mode1b_unbind_admission",
+        )
+
+        if not unbind_admission.get("allow", False):
+            return {
+                "requester": req.requester,
+                "source_admission": source_admission,
+                "agent_decision": decision,
+                "unbind_admission": unbind_admission,
+                "executed": False,
+                "released": False,
+            }
+
+        # Unbind executes the authorised lossy transformation V -> W.
+        # W is constructed positively and receives a stable content identity.
+        derivative = hal_blur(
+            prediction["sample_image"]["image_b64"]
+        )
+
+        try:
+            derivative_bytes = base64.b64decode(
+                str(derivative["image_b64"]),
+                validate=True,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                502,
+                "hal_derivative_image_invalid",
+            ) from exc
+
+        derivative_sha256 = hashlib.sha256(
+            derivative_bytes
+        ).hexdigest()
+        if derivative_sha256 != str(derivative.get("sha256") or ""):
+            raise HTTPException(
+                502,
+                "hal_derivative_digest_mismatch",
+            )
+
+        governed_value = {
+            "resource": "pathmnist-derived-representation",
+            "requested_tissue": prediction.get("requested_tissue"),
+            "actual_label": prediction.get("actual_label"),
+            "prediction_label": prediction.get("prediction_label"),
+            "prediction_tissue": prediction.get("prediction_tissue"),
+            "topk": prediction.get("topk", []),
+            "derivative_representation": derivative_name,
+            "derivative_sha256": derivative_sha256,
+            "derivative_image": {
+                "mime_type": derivative["mime_type"],
+                "image_b64": derivative["image_b64"],
+                "width": derivative["width"],
+                "height": derivative["height"],
+            },
+        }
+
+        # Content-address the complete released W. value_id itself is excluded
+        # from the digest, as with ordinary content-addressed objects.
+        governed_value["value_id"] = governed_value_content_id(
+            governed_value
+        )
+
+        pending_id = "pending-" + secrets.token_urlsafe(24)
+        pending_mode1b_derivatives[pending_id] = {
+            "state": "PENDING_CONSUMER_AUTHORIZATION",
+            "pending_id": pending_id,
+            "requester": req.requester,
+            "envelope_id": selected_id,
+            "run_id": req.run_id,
+            "requested_tissue": req.requested_tissue,
+            "derivative_representation": derivative_name,
+            "governed_value_id": governed_value["value_id"],
+            "governed_value": governed_value,
+            "source_admission": source_admission,
+            "agent_decision": decision,
+            "hal_inference": hal_inference_public,
+            "unbind_admission": unbind_admission,
+            "created_at": time.time(),
+            "expires_at": (
+                time.time() + MODE1B_PENDING_TTL_SECONDS
+            ),
+        }
+        append_event(
+            "mode1b_derivative_pending_authorization",
+            run_id=req.run_id,
+            envelope_id=selected_id,
+            requester=req.requester,
+            requested_tissues=[req.requested_tissue],
+            pending_id=pending_id,
+            governed_value_id=governed_value["value_id"],
+            derivative_sha256=governed_value["derivative_sha256"],
+            unbind_decision_id=unbind_admission.get("decision_id"),
+        )
+
+        return {
+            "requester": req.requester,
+            "source_admission": source_admission,
+            "agent_decision": decision,
+            "hal_inference": hal_inference_public,
+            "unbind_admission": unbind_admission,
+            "authorization_state":
+                "PENDING_CONSUMER_AUTHORIZATION",
+            "pending_id": pending_id,
+            "governed_value_id": governed_value["value_id"],
+            "executed": True,
+            "released": False,
+            "representation": "derivative",
+            "governed_value_summary": {
+                "resource": governed_value["resource"],
+                "requested_tissue":
+                    governed_value["requested_tissue"],
+                "derivative_representation":
+                    governed_value["derivative_representation"],
+                "derivative_sha256":
+                    governed_value["derivative_sha256"],
+            },
+        }
+
+    raise HTTPException(
+        500,
+        "offered_agent_action_not_implemented",
+    )
+
+
+@app.post("/mode1b/agent/consume")
+def mode1b_agent_consume(
+    req: AgentDerivativeConsumeRequest,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    dpop_header: Optional[str] = Header(None, alias="DPoP"),
+    dpop_nonce: Optional[str] = Header(None, alias="X-DPoP-Nonce"),
+) -> Dict[str, Any]:
+    binding_state = selected_envelope_binding_state()
+    selected_id = binding_state.get("selected_envelope_id")
+    if not selected_id:
+        raise HTTPException(409, "no_envelope_selected")
+    if req.envelope_id != selected_id:
+        raise HTTPException(409, "envelope_mismatch")
+    if not binding_state.get("bound", False):
+        raise HTTPException(409, "envelope_not_bound")
+
+    pending = pending_mode1b_derivatives.get(req.pending_id)
+    if pending is None:
+        raise HTTPException(404, "unknown_pending_authorization")
+    if pending.get("state") != "PENDING_CONSUMER_AUTHORIZATION":
+        raise HTTPException(
+            409,
+            f"pending_authorization_not_open:{pending.get('state')}",
+        )
+    if float(pending.get("expires_at") or 0) <= time.time():
+        pending["state"] = "EXPIRED"
+        raise HTTPException(410, "pending_authorization_expired")
+    if pending.get("requester") != req.requester:
+        raise HTTPException(403, "pending_requester_mismatch")
+    if pending.get("envelope_id") != req.envelope_id:
+        raise HTTPException(409, "pending_envelope_mismatch")
+    if pending.get("governed_value_id") != req.governed_value_id:
+        raise HTTPException(409, "pending_governed_value_mismatch")
+
+    requester_context = ACTOR_CONTEXTS.get(req.requester)
+    if requester_context is None:
+        raise HTTPException(
+            400,
+            f"unknown_principal:{req.requester}",
+        )
+    if not actor_is_operational(requester_context):
+        raise HTTPException(
+            409,
+            f"actor_not_operational:{req.requester}",
+        )
+    if requester_context.get("actor_type") != "human":
+        raise HTTPException(403, "human_requester_required")
+    if not authorization or not authorization.startswith("ECT "):
+        raise HTTPException(401, "holder_ect_required")
+    if not dpop_header or not dpop_nonce:
+        raise HTTPException(401, "holder_proof_required")
+
+    requester_ect = authorization.split(" ", 1)[1].strip()
+    requester_claims = decode_ect_claims(requester_ect)
+    if str(requester_claims.get("sub") or "") != req.requester:
+        raise HTTPException(
+            401,
+            "presented_ect_subject_mismatch",
+        )
+
+    governed_value = pending["governed_value"]
+    if (
+        governed_value_content_id(governed_value)
+        != req.governed_value_id
+    ):
+        pending["state"] = "DENIED"
+        raise HTTPException(
+            500,
+            "governed_value_changed_before_admission",
+        )
+
+    # Claim the pending authorization before the external Gatekeeper call.
+    # A concurrent second consume observes AUTHORIZING and is rejected.
+    pending["state"] = "AUTHORIZING"
+
+    release_admission = request_prediction_admission(
+        envelope_id=req.envelope_id,
+        run_id=str(pending["run_id"]),
+        requested_tissues=[str(pending["requested_tissue"])],
+        jti=req.jti,
+        authorization=authorization,
+        dpop=dpop_header,
+        dpop_nonce=dpop_nonce,
+        resource="pathmnist-derived-representation",
+        action="consume_derivative",
+        purpose="approved_derivative_consumption",
+        derivative_representation=str(
+            pending["derivative_representation"]
+        ),
+        governed_value_id=req.governed_value_id,
+        governed_value=governed_value,
+        event_type="mode1b_derivative_release_admission",
+    )
+
+    if not release_admission.get("allow", False):
+        pending["state"] = "DENIED"
+        return {
+            "requester": req.requester,
+            "source_admission": pending["source_admission"],
+            "agent_decision": pending["agent_decision"],
+            "hal_inference": pending["hal_inference"],
+            "unbind_admission": pending["unbind_admission"],
+            "release_admission": release_admission,
+            "authorization_state": "DENIED",
+            "pending_id": req.pending_id,
+            "governed_value_id": req.governed_value_id,
+            "executed": False,
+            "released": False,
+            "representation": "derivative",
+        }
+
+    if (
+        release_admission.get("governed_value_binding_result") != "verified"
+        or release_admission.get("governed_value_id")
+        != req.governed_value_id
+    ):
+        pending["state"] = "DENIED"
+        raise HTTPException(
+            502,
+            "governed_value_binding_not_confirmed",
+        )
+
+    if (
+        governed_value_content_id(governed_value)
+        != req.governed_value_id
+    ):
+        pending["state"] = "DENIED"
+        raise HTTPException(
+            500,
+            "governed_value_changed_after_admission",
+        )
+
+    try:
+        release_derivative_bytes = base64.b64decode(
+            str(governed_value["derivative_image"]["image_b64"]),
+            validate=True,
+        )
+    except Exception as exc:
+        pending["state"] = "DENIED"
+        raise HTTPException(
+            500,
+            "governed_value_changed_after_admission",
+        ) from exc
+
+    if (
+        hashlib.sha256(release_derivative_bytes).hexdigest()
+        != governed_value["derivative_sha256"]
+    ):
+        pending["state"] = "DENIED"
+        raise HTTPException(
+            500,
+            "governed_value_changed_after_admission",
+        )
+
+    pending["state"] = "RELEASED"
+    pending["release_decision_id"] = release_admission.get(
+        "decision_id"
+    )
+    append_event(
+        "mode1b_derivative_released",
+        run_id=str(pending["run_id"]),
+        envelope_id=req.envelope_id,
+        requester=req.requester,
+        requested_tissues=[str(pending["requested_tissue"])],
+        pending_id=req.pending_id,
+        governed_value_id=req.governed_value_id,
+        derivative_sha256=governed_value["derivative_sha256"],
+        unbind_decision_id=pending["unbind_admission"].get(
+            "decision_id"
+        ),
+        release_decision_id=release_admission.get("decision_id"),
+    )
+
+    return {
+        "requester": req.requester,
+        "source_admission": pending["source_admission"],
+        "agent_decision": pending["agent_decision"],
+        "hal_inference": pending["hal_inference"],
+        "unbind_admission": pending["unbind_admission"],
+        "release_admission": release_admission,
+        "authorization_state": "RELEASED",
+        "pending_id": req.pending_id,
+        "governed_value_id": req.governed_value_id,
+        "executed": True,
+        "released": True,
+        "representation": "derivative",
+        "prediction": governed_value,
+    }
+
+
+
+
+@app.post("/user/inference")
+def user_inference(
+    req: UserInferenceRequest,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    dpop_header: Optional[str] = Header(None, alias="DPoP"),
+    dpop_nonce: Optional[str] = Header(None, alias="X-DPoP-Nonce"),
+) -> Dict[str, Any]:
+    """Relay holder-custodied ECT and DPoP to Gatekeeper."""
+    if req.run_id != RUN_ID:
+        raise HTTPException(404, f"unknown_run:{req.run_id}")
+    if req.requested_tissue not in PATHMNIST_QUERY_TISSUES + ["background"]:
+        raise HTTPException(400, f"unknown_tissue:{req.requested_tissue}")
+
+    binding_state = selected_envelope_binding_state()
+    selected_id = binding_state.get("selected_envelope_id")
+    if not selected_id:
+        raise HTTPException(409, "no_envelope_selected")
+    if req.envelope_id != selected_id:
+        raise HTTPException(409, "envelope_mismatch")
+    if not binding_state.get("bound", False):
+        raise HTTPException(409, "envelope_not_bound")
+
+    principal_context = ACTOR_CONTEXTS.get(req.principal)
+    if principal_context is None:
+        raise HTTPException(400, f"unknown_principal:{req.principal}")
+    if not actor_is_operational(principal_context):
+        raise HTTPException(409, f"actor_not_operational:{req.principal}")
+    if principal_context.get("actor_type") != "human":
+        raise HTTPException(403, "human_holder_required")
+
+    if not authorization or not authorization.startswith("ECT "):
+        raise HTTPException(401, "holder_ect_required")
+    if not dpop_header or not dpop_nonce or not req.jti:
+        raise HTTPException(401, "holder_proof_required")
+
+    ect = authorization.split(" ", 1)[1].strip()
+    if not ect:
+        raise HTTPException(401, "holder_ect_required")
+    claims = decode_ect_claims(ect)
+    if str(claims.get("sub") or "") != req.principal:
+        raise HTTPException(401, "presented_ect_subject_mismatch")
+
+    admission = request_prediction_admission(
+        envelope_id=selected_id,
+        run_id=req.run_id,
+        requested_tissues=[req.requested_tissue],
+        jti=req.jti,
+        authorization=authorization,
+        dpop=dpop_header,
+        dpop_nonce=dpop_nonce,
+    )
+
+    model_evidence = envelope_model_evidence(selected_id)
+    response: Dict[str, Any] = {
+        "principal": req.principal,
+        "request": {
+            "envelope_id": selected_id,
+            "run_id": req.run_id,
+            "requested_tissue": req.requested_tissue,
+            "jti": req.jti,
+        },
+        "admission": admission,
+        "executed": False,
+        "model_run_id": model_evidence.get("run_id"),
+    }
+    if not admission.get("allow", False):
+        return response
+
+    try:
+        backend = requests.post(
+            FLOWER_BACKEND_URL + "/predict_image",
+            json={
+                "envelope_id": selected_id,
+                "run_id": req.run_id,
+                "requested_tissue": req.requested_tissue,
+                "topk": req.topk,
+            },
+            timeout=30,
+        )
+        backend.raise_for_status()
+        prediction = backend.json()
+    except Exception as exc:
+        raise HTTPException(502, f"prediction_error:{exc}") from exc
+
+    append_event(
+        "image_prediction_executed",
+        run_id=req.run_id,
+        envelope_id=selected_id,
+        principal=req.principal,
+        requested_tissues=[req.requested_tissue],
+        jti=req.jti,
+        image_sha256=prediction.get("image_sha256"),
+    )
+    response.update(
+        {
+            "executed": True,
+            "model_run_id": (
+                prediction.get("run_id")
+                or model_evidence.get("run_id")
+            ),
+            "prediction": prediction,
+        }
+    )
+    return response
+
+
+if __name__ == "__main__":
+    uvicorn.run(
+        "hub:app",
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", "8080")),
+    )
