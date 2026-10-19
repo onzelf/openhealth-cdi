@@ -8,7 +8,7 @@ issuers make every decision.
 
 - Call `/api/<path>`; nginx forwards it to the hub as `<path>`.
 - No authentication and no CORS headers, so a page must sit behind a same-origin `/api/` proxy.
-- The hub is private until L1-C, so pages built elsewhere should mock these calls.
+- The hub remains privately reachable; L1-C changes its deployment boundary and service-discovery path. Pages built elsewhere should mock these calls.
 - Every success is a JSON body, so a mock must return one (`{}` is enough).
 
 ## Read calls
@@ -66,5 +66,5 @@ a run id mismatch, 409 a precondition not met (re-read status and show the detai
 2. The scenarios and the training `phase` are hard-coded in the page.
 3. The ALLOW label is inferred from two status fields, not read as a decision.
 4. The start button recomputes `can_start` instead of reading it.
-5. Identity is a name the user picks, sent in the body. No login or token; L1-C needs one.
+5. Identity is a name the user picks, sent in the body. No application login or user token is currently required by the dashboard. Any future application-login mechanism remains separate from OpenHealth federation admission.
 6. The tissue list and the hospital ids are hard-coded; the hub has `/predictions/ab/options`.
