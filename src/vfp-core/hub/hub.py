@@ -250,6 +250,13 @@ class HolderEctMintRequest(BaseModel):
     holder_dpop: Optional[str] = None
 
 
+class AgentCredentialRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    envelope_id: str
+    holder_dpop: str
+
+
 class UserInferenceRequest(BaseModel):
     principal: str
     envelope_id: str
@@ -1383,12 +1390,11 @@ def administration_envelopes() -> Dict[str, Any]:
     }
 
 
-@app.post("/administration/holders/{principal}/mint-ect")
-def administration_mint_holder_ect(
+def _mint_holder_ect_for_principal(
     principal: str,
     req: HolderEctMintRequest,
 ) -> Dict[str, Any]:
-    """Relay a holder-authenticated mint request without retaining the ECT."""
+    """Mint a holder-authenticated ECT without retaining it in the Hub."""
     principal_context = ACTOR_CONTEXTS.get(principal)
     if principal_context is None:
         raise HTTPException(400, f"unknown_principal:{principal}")
@@ -1455,6 +1461,29 @@ def administration_mint_holder_ect(
         "ready": True,
         "custody": "holder",
     }
+
+
+@app.post("/administration/holders/{principal}/mint-ect")
+def administration_mint_holder_ect(
+    principal: str,
+    req: HolderEctMintRequest,
+) -> Dict[str, Any]:
+    """Administrative adapter for holder-authenticated ECT minting."""
+    return _mint_holder_ect_for_principal(principal, req)
+
+
+@app.post("/fc_agent/credential")
+def fc_agent_credential(
+    req: AgentCredentialRequest,
+) -> Dict[str, Any]:
+    """Narrow Hal credential aperture with no caller-selected principal."""
+    return _mint_holder_ect_for_principal(
+        "Hal",
+        HolderEctMintRequest(
+            envelope_id=req.envelope_id,
+            holder_dpop=req.holder_dpop,
+        ),
+    )
 
 
 @app.post("/administration/envelopes/{envelope_id}/select")

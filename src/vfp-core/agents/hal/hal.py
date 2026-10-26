@@ -247,7 +247,7 @@ def ensure_holder_ect(
     )
 
     request = urllib.request.Request(
-        HUB_URL + "/administration/holders/Hal/mint-ect",
+        HUB_URL + "/fc_agent/credential",
         data=json.dumps({
             "envelope_id": envelope_id,
             "holder_dpop": mint_proof,
