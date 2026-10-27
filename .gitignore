@@ -14,6 +14,7 @@ src/tools/holder_keys/
 src/tools/demo_model.sh
 LOCAL_GIT_STATUS.txt
 LOCAL_BASE_COMMIT.txt
+*.*.pre-*
 *.log
 *.patch
 src/tools/datamiss.sh
@@ -23,6 +24,7 @@ __pycache__/
 .vscode/
 
 # Local secrets
+src/tests/AdmissionPlane/.a8_cross_envelope_id
 secrets/
 .env
 *.env

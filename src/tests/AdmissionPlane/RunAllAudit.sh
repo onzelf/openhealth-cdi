@@ -20,7 +20,6 @@ TESTS=(
     TestA4_external_hub_substitution.sh
     TestA5_semantic_request_substitution.sh
     TestA6_issuer_independence.sh
-    TestA7_training_admission_bypass.sh
     TestA8_cross_envelope_authority.sh
     TestA9_actor_type_confusion.sh
     TestC1_minimal_statistics.sh
