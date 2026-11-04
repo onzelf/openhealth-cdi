@@ -194,7 +194,7 @@ training_state_lock = threading.Lock()
 class EnvelopeBinding(BaseModel):
     envelope_id: str
     policy_hash: Optional[str] = None
-    valid_until: Optional[int] = None
+    valid_until: int  # issue #7: only a bounded envelope can be bound
     participants: List[str] = Field(default_factory=list)
     # Issue #7: org_id -> public Flower execution key (Ed25519, base64url),
     # resolved by the Hub from each admitted organisation's issuer.
@@ -903,11 +903,19 @@ def keep_control_plane_alive() -> None:
         time.sleep(SERVER_POLL_SECONDS)
 
 
+class GuestAdmissionDenied(RuntimeError):
+    """The Gatekeeper denied the Mode 1A guest contribution, or the hub refused the request."""
+
+
 def require_mode1a_guest_admission(
     run_id: str,
     phase: str,
 ) -> Optional[Dict[str, Any]]:
-    """Gate Mode 1A training before the Flower gRPC server is opened."""
+    """Gate Mode 1A training before the Flower gRPC server is opened.
+
+    Issue #7: a DENY, or a request the hub refuses, raises GuestAdmissionDenied, so the run
+    fails through report_failed_run() (the hub says 'failed', the server goes idle). A hub or
+    Gatekeeper that is unavailable or not ready yet (no answer, 409, 5xx) is retried."""
 
     if phase != "MODE1A":
         return None
@@ -966,8 +974,7 @@ def require_mode1a_guest_admission(
                 admission_run_id=run_id,
                 error=error,
             )
-            while True:
-                time.sleep(GUEST_ADMISSION_RETRY_SECONDS)
+            raise GuestAdmissionDenied(error)
 
         result = response.json()
         admission = result.get("admission") or {}
@@ -987,8 +994,7 @@ def require_mode1a_guest_admission(
                 decision_id=admission.get("decision_id"),
                 reason=reason,
             )
-            while True:
-                time.sleep(GUEST_ADMISSION_RETRY_SECONDS)
+            raise GuestAdmissionDenied(f"Mode 1A guest contribution denied: {reason}")
 
         decision_id = admission.get("decision_id")
         write_event(
@@ -1279,6 +1285,10 @@ class CleanStopServer(fl.server.Server):
             return fl.server.History(), 0.0
 
 
+class ExecutionQuorumNotMet(RuntimeError):
+    """Fewer valid updates than min_fit_clients in a round: nothing is aggregated."""
+
+
 class EvidenceFedAvg(FedAvg):
     def __init__(
         self,
@@ -1293,10 +1303,8 @@ class EvidenceFedAvg(FedAvg):
         self.expected_rounds = expected_rounds
         # True only for a Mode 1A run whose guest contribution the Gatekeeper allowed.
         self.guest_admitted = guest_admitted
-        # Honest completion: rounds that produced an aggregate, and rounds whose
-        # accepted results fell below min_fit_clients (a client failed mid-round).
+        # Honest completion: only rounds that produced an aggregate count.
         self.rounds_aggregated = 0
-        self.short_rounds: List[int] = []
         self.participants: Dict[str, Dict[str, Any]] = {}
         self.fit_metrics: Dict[int, Metrics] = {}
         self.fit_counts: Dict[int, Tuple[int, int]] = {}
@@ -1348,7 +1356,7 @@ class EvidenceFedAvg(FedAvg):
                     valid_until=binding.get("valid_until"),
                 )
                 raise EnvelopeExpired(
-                    f"round {server_round}: envelope {envelope_id} expired"
+                    f"round {server_round}: envelope {envelope_id} expired or has no valid_until"
                 )
             instructions = super().configure_fit(
                 server_round, parameters, client_manager
@@ -1421,6 +1429,20 @@ class EvidenceFedAvg(FedAvg):
             for client, fit_result in results
             if client.cid in admitted
         ]
+        # Issue #7: the quorum holds before aggregation. A round that lost an admitted
+        # client during training must not change the model; the run fails closed.
+        if len(results) < int(self.min_fit_clients):
+            write_event(
+                "round_quorum_not_met",
+                round=server_round,
+                valid_updates=len(results),
+                failure_count=len(failures),
+                required=int(self.min_fit_clients),
+            )
+            raise ExecutionQuorumNotMet(
+                f"round {server_round}: {len(results)} valid update(s), "
+                f"{int(self.min_fit_clients)} required; nothing aggregated"
+            )
         parameters, metrics = super().aggregate_fit(
             server_round,
             results,
@@ -1428,8 +1450,6 @@ class EvidenceFedAvg(FedAvg):
         )
         if parameters is not None:
             self.rounds_aggregated += 1
-        if len(results) < int(self.min_fit_clients):
-            self.short_rounds.append(server_round)
 
         for client, _fit_result in results:
             participant = admitted[client.cid]
@@ -1782,14 +1802,9 @@ def run_training(run: Dict[str, Any]) -> None:
         raise flower.error
 
     rounds_completed = strategy.rounds_aggregated
-    run_ok = rounds_completed == rounds and not strategy.short_rounds
+    run_ok = rounds_completed == rounds
     final_status = "completed" if run_ok else "failed"
-    problem = (
-        None
-        if run_ok
-        else f"rounds_aggregated={rounds_completed}/{rounds};"
-        f"short_rounds={strategy.short_rounds}"
-    )
+    problem = None if run_ok else f"rounds_aggregated={rounds_completed}/{rounds}"
     update_training_state(
         status="done" if run_ok else "error",
         round=rounds_completed,
@@ -1811,7 +1826,6 @@ def run_training(run: Dict[str, Any]) -> None:
         "server_completed",
         flower_rounds=rounds_completed,
         status=final_status,
-        short_rounds=strategy.short_rounds,
     )
     notify_hub_finished(problem)
 

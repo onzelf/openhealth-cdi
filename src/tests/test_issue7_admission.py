@@ -128,12 +128,30 @@ def test_expired_envelope_stops_the_round(server, keys, monkeypatch):
     assert "round_envelope_expired" in json.dumps(events(server))
 
 
-def test_unreadable_expiry_fails_closed_and_missing_expiry_does_not(server):
+def test_unreadable_or_missing_expiry_fails_closed(server):
     import admission
 
     assert admission.envelope_expired("not-a-time", time.time()) is True
-    assert admission.envelope_expired(None, time.time()) is False
+    assert admission.envelope_expired(None, time.time()) is True  # only a bounded envelope is valid
+    assert admission.envelope_expired("", time.time()) is True
     assert admission.envelope_expired(time.time() + 60, time.time()) is False
+
+
+def test_envelope_without_valid_until_stops_the_round_and_cannot_be_bound(server, keys, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    bind(server, "env-unbounded", None, keys)
+    offer(monkeypatch, [])  # never reached
+    with pytest.raises(server.EnvelopeExpired, match="no valid_until"):
+        strategy(server, 2).configure_fit(1, None, None)
+
+    monkeypatch.setattr(server, "CONTROL_TOKEN", "the-hubs-token")
+    client = TestClient(server.control_app)
+    headers = {"X-OpenHealth-Control-Token": "the-hubs-token"}
+    body = {"envelope_id": "env-unbounded", "participants": [A], "participant_keys": {A: public(keys[A])}}
+    assert client.post("/bind_envelope", json=body, headers=headers).status_code == 422  # refused at bind
+    bounded = {**body, "valid_until": int(time.time()) + 600}
+    assert client.post("/bind_envelope", json=bounded, headers=headers).status_code == 200
 
 
 # ------------------------------------------------------------ admission: A and B, rogue refused, guest only when admitted
@@ -190,21 +208,37 @@ def test_too_few_proven_clients_fail_closed(server, keys, monkeypatch):
 
 # ------------------------------------------------------------ honest round accounting
 
-def test_rounds_counted_only_when_aggregated_and_short_rounds_recorded(server):
+def test_round_with_too_few_valid_updates_does_not_change_the_model(server):
+    import numpy as np
     from flwr.common import Code, FitRes, Status, ndarrays_to_parameters
 
     run = strategy(server, 2)
     good = server.get_parameters(run.model)
 
-    def res():
-        return FitRes(status=Status(Code.OK, ""), parameters=ndarrays_to_parameters(good), num_examples=10, metrics={})
+    def res(arrays):
+        return FitRes(status=Status(Code.OK, ""), parameters=ndarrays_to_parameters(arrays), num_examples=10, metrics={})
 
     run.admitted[1] = {"a": A, "b": B}
-    run.aggregate_fit(1, [(SimpleNamespace(cid="a"), res()), (SimpleNamespace(cid="b"), res())], [])
+    run.aggregate_fit(1, [(SimpleNamespace(cid="a"), res(good)), (SimpleNamespace(cid="b"), res(good))], [])
+    assert run.rounds_aggregated == 1
+    before = [value.clone() for value in run.model.state_dict().values()]
+    saved = server.checkpoint_path().read_bytes()
+
+    # Two clients were admitted; B fails during training, so only A's update arrives.
     run.admitted[2] = {"a": A, "b": B}
-    run.aggregate_fit(2, [(SimpleNamespace(cid="a"), res())], [RuntimeError("b timed out")])
-    assert run.rounds_aggregated == 2
-    assert run.short_rounds == [2]
+    shifted = [array + 1.0 for array in good]
+    with pytest.raises(server.ExecutionQuorumNotMet, match="1 valid update"):
+        run.aggregate_fit(2, [(SimpleNamespace(cid="a"), res(shifted))], [RuntimeError("b timed out")])
+    # A result from a connection that was not admitted does not count towards the quorum either.
+    run.admitted[3] = {"a": A}
+    with pytest.raises(server.ExecutionQuorumNotMet):
+        run.aggregate_fit(3, [(SimpleNamespace(cid="a"), res(shifted)), (SimpleNamespace(cid="rogue"), res(shifted))], [])
+
+    assert run.rounds_aggregated == 1
+    after = list(run.model.state_dict().values())
+    assert all(np.array_equal(x.cpu().numpy(), y.cpu().numpy()) for x, y in zip(before, after))
+    assert server.checkpoint_path().read_bytes() == saved  # nothing aggregated, nothing saved
+    assert any(e["event_type"] == "round_quorum_not_met" and e["round"] == 2 for e in events(server))
 
 
 def test_round_timeout_is_passed_to_flower(server):
@@ -359,11 +393,11 @@ def test_hub_is_told_failed_never_completed(server, monkeypatch):
 
     monkeypatch.setattr(server.requests, "post", post)
     server.notify_hub_finished("round 1: 1 client(s) connected within 300 s, 2 required")
-    server.notify_hub_finished("rounds_aggregated=1/2;short_rounds=[2]")
+    server.notify_hub_finished("rounds_aggregated=1/2")
     server.notify_hub_finished(None)
     assert posts == [
         ("fail", {"error": "round 1: 1 client(s) connected within 300 s, 2 required"}),
-        ("fail", {"error": "rounds_aggregated=1/2;short_rounds=[2]"}),
+        ("fail", {"error": "rounds_aggregated=1/2"}),
         ("complete", None),
     ]
 
@@ -390,3 +424,32 @@ def test_any_failure_after_start_is_reported_as_failed(server, monkeypatch):
     ]
     assert written == []  # no run of this START, so the previous run's evidence is left alone
     assert server.training_state["status"] == "error"
+
+
+def test_mode1a_guest_deny_fails_the_run_instead_of_waiting(server, keys, monkeypatch):
+    bind(server, "env-guest", time.time() + 600, keys)
+    hub = []
+    answers = {
+        "deny": (200, {"admission": {"allow": False, "reason": "capability_scope_exceeded", "decision_id": "decision-deny"}}),
+        "refused": (403, {"detail": "principal_not_sponsored"}),
+    }
+
+    def no_waiting(seconds):
+        raise AssertionError("waited instead of failing the run")
+
+    monkeypatch.setattr(server.time, "sleep", no_waiting)
+    for status, body in answers.values():
+        def post(url, json=None, timeout=None, status=status, body=body):
+            if url.endswith("/mode1a/guest/contribution/admission"):
+                return SimpleNamespace(status_code=status, ok=status < 400, json=lambda: body, text=str(body))
+            hub.append((url.rsplit("/", 1)[-1], json))
+            return SimpleNamespace(raise_for_status=lambda: None, json=lambda: {})
+
+        monkeypatch.setattr(server.requests, "post", post)
+        with pytest.raises(server.GuestAdmissionDenied) as failure:
+            server.require_mode1a_guest_admission("local-pathmnist-ab-099", "MODE1A")
+        server.report_failed_run(failure.value, {})
+    assert [outcome for outcome, _ in hub] == ["fail", "fail"]  # the hub hears 'failed' both times
+    assert "capability_scope_exceeded" in hub[0][1]["error"] and "HTTP 403" in hub[1][1]["error"]
+    assert server.training_state["status"] == "error"
+    assert any(e["event_type"] == "guest_contribution_denied" and e["decision_id"] == "decision-deny" for e in events(server))

@@ -32,10 +32,10 @@ class EnvelopeExpired(RuntimeError):
 
 
 def envelope_expired(valid_until: Any, now: float) -> bool:
-    """True once the envelope's valid_until has passed. A missing value is not expiry;
-    a value that cannot be read is treated as expired (fail closed)."""
+    """True once the envelope's valid_until has passed. Only a bounded envelope is valid:
+    a missing value, or one that cannot be read, counts as expired (fail closed)."""
     if valid_until in (None, ""):
-        return False
+        return True
     try:
         return now >= float(valid_until)
     except (TypeError, ValueError):
