@@ -1,0 +1,35 @@
+# Copy to terraform.tfvars (git-ignored) and replace every <...>.
+profile             = "<Flower account CLI profile>"
+flower_server_image = "<Sandbox-18 account ID>.dkr.ecr.eu-west-2.amazonaws.com/fcac/flower-server:local"
+
+# The governance host's private IP: central-18 output governance_host_ip, as a /32.
+hub_cidr = "<governance host private IP>/32"
+
+# Add these three later, from `terraform output -raw flower_43_vault` in ../central-18
+# (README step 5). Without them the server runs with no /vault.
+# vault_efs_id          = "fs-<...>"
+# vault_access_point_id = "fsap-<...>"
+# vault_mount_target_ip = "<EFS mount target private IP>"
+
+# Account IDs of the hospitals, whose requests this account accepts at stage 3.
+participant_account_ids = {
+  A = "<Sandbox-12 account ID>"
+  B = "<Sandbox-33 account ID>"
+  C = "<Sandbox-8 account ID>"
+}
+
+# Stage 2 (README): central-18's handover output, and each hospital's vpc_id output.
+# governance = {
+#   account_id = "<Sandbox-18 account ID>"
+#   vpc_id     = "vpc-<central-18 handover vpc_id>"
+#   zone_id    = "<central-18 handover zone_id>"
+# }
+# participant_vpc_ids = {
+#   A = "vpc-<hospital A vpc_id>"
+#   B = "vpc-<hospital B vpc_id>"
+#   C = "vpc-<hospital C vpc_id>"
+# }
+
+# Stage 3 (README):
+# governance_peering_active = true
+# accept_peerings           = true

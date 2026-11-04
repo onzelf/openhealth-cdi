@@ -1,0 +1,19 @@
+# Copy to terraform.tfvars (git-ignored) and replace every <...>. Shared by the three
+# hospitals; each hospital's own values are in hospital-a.tfvars, hospital-b.tfvars and
+# hospital-c.tfvars (copied from the .example files).
+flower_client_image = "<Sandbox-18 account ID>.dkr.ecr.eu-west-2.amazonaws.com/openhealth/flower-client:local"
+
+# Stage 2 (README): the handover outputs of central-18 and flower-43.
+# governance = {
+#   account_id = "<Sandbox-18 account ID>"
+#   vpc_id     = "vpc-<central-18 handover vpc_id>"
+#   zone_id    = "<central-18 handover zone_id>"
+# }
+# flower = {
+#   account_id = "<Sandbox-43 account ID>"
+#   vpc_id     = "vpc-<flower-43 handover vpc_id>"
+#   zone_id    = "<flower-43 handover zone_id>"
+# }
+
+# Stage 4 (README), once both accounts have accepted:
+# peerings_active = true

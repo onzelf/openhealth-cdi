@@ -1,0 +1,25 @@
+# Copy to terraform.tfvars (git-ignored) and replace every <...>. Account IDs are not
+# secrets, but they stay out of the repository. Print each one with:
+#   aws sts get-caller-identity --profile <profile> --query Account --output text
+profile                 = "<governance account CLI profile>"
+flower_account_id       = "<Sandbox-43 account ID>"
+participant_account_ids = {
+  A = "<Sandbox-12 account ID>"
+  B = "<Sandbox-33 account ID>"
+  C = "<Sandbox-8 account ID>"
+}
+
+# Only if the governance host's Name tag is not openhealth-cdi-l0-host:
+# governance_host_name = "<Name tag of the governance host>"
+
+# Stage 2 (README): the vpc_id output of flower-43 and of each hospital workspace.
+# member_vpc_ids = {
+#   flower = "vpc-<flower-43 vpc_id>"
+#   A      = "vpc-<hospital A vpc_id>"
+#   B      = "vpc-<hospital B vpc_id>"
+#   C      = "vpc-<hospital C vpc_id>"
+# }
+
+# Stage 3 (README):
+# accept_peerings = true
+# flower_zone_id  = "<flower-43 flower_zone_id output>"
