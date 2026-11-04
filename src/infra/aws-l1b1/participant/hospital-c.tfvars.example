@@ -1,0 +1,5 @@
+# Copy to hospital-c.tfvars (git-ignored). Use with workspace c.
+profile     = "<Sandbox-8 CLI profile>"
+hospital    = "C"
+vpc_cidr    = "10.33.0.0/16"
+subnet_cidr = "10.33.10.0/24"

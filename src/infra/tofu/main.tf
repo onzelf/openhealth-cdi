@@ -566,6 +566,7 @@ resource "docker_container" "hub" {
     "LOCAL_EPOCHS=${var.local_epochs}",
     "LEARNING_RATE=${var.learning_rate}",
     "FLOWER_BACKEND_URL=${var.flower_backend_url}",
+    "FLOWER_CONTROL_TOKEN_FILE=/run/secrets/flower_control.token",
     #"VERIFY_TLS=0",
     "HUB_CERT_CRT=/run/certs/hub.crt",
     "HUB_CERT_KEY=/run/certs/hub.key",
@@ -589,6 +590,13 @@ resource "docker_container" "hub" {
   volumes {
     host_path      = abspath("${local.repo_root}/vfp-governance/verifier/certs/hub.key")
     container_path = "/run/certs/hub.key"
+    read_only      = true
+  }
+
+  # Issue #7: the token the hub presents on the Flower server's /bind_envelope.
+  volumes {
+    host_path      = abspath("${local.repo_root}/vfp-governance/verifier/execution_keys/flower-control.token")
+    container_path = "/run/secrets/flower_control.token"
     read_only      = true
   }
 
@@ -703,6 +711,7 @@ resource "docker_container" "flower_server" {
 
     # NEW requirement: simulated enclave storage root
     "VAULT_ROOT=/vault",
+    "FLOWER_CONTROL_TOKEN_FILE=/run/secrets/flower_control.token",
   ], local.workload_env)
 
   # Simulated enclave/vault storage: host verifier/vault -> container /vault
@@ -710,6 +719,13 @@ resource "docker_container" "flower_server" {
     host_path      = abspath("${local.repo_root}/vfp-governance/verifier/vault")
     container_path = "/vault"
     read_only      = false
+  }
+
+  # Issue #7: only the hub may bind; the server checks this token on /bind_envelope.
+  volumes {
+    host_path      = abspath("${local.repo_root}/vfp-governance/verifier/execution_keys/flower-control.token")
+    container_path = "/run/secrets/flower_control.token"
+    read_only      = true
   }
 
   depends_on = [docker_container.redis, docker_container.hub, docker_container.verifier_proxy]
@@ -744,6 +760,7 @@ resource "docker_container" "flower_client_a" {
 
   env = concat([
     "HOSPITAL=A",
+    "EXECUTION_KEY_FILE=/run/secrets/execution.key",
     "ORG_ID=${var.org_a_id}",
     "RUN_ID=${var.run_id}",
     "HUB_URL=http://fc-hub:8080",
@@ -758,6 +775,13 @@ resource "docker_container" "flower_client_a" {
     "MEDMNIST_ROOT=/tmp/medmnist",
     "DEVICE=${lower(var.compute_backend)}",
   ], local.workload_env)
+
+  # Issue #7: this client's own Flower execution key, read-only. No other container mounts it.
+  volumes {
+    host_path      = abspath("${local.repo_root}/vfp-governance/verifier/execution_keys/flower-execution-HospitalA.privhex")
+    container_path = "/run/secrets/execution.key"
+    read_only      = true
+  }
 
   depends_on = [docker_container.flower_server]
   must_run   = true
@@ -777,6 +801,7 @@ resource "docker_container" "flower_client_b" {
 
   env = concat([
     "HOSPITAL=B",
+    "EXECUTION_KEY_FILE=/run/secrets/execution.key",
     "ORG_ID=${var.org_b_id}",
     "RUN_ID=${var.run_id}",
     "HUB_URL=http://fc-hub:8080",
@@ -791,6 +816,13 @@ resource "docker_container" "flower_client_b" {
     "MEDMNIST_ROOT=/tmp/medmnist",
     "DEVICE=${lower(var.compute_backend)}",
   ], local.workload_env)
+
+  # Issue #7: this client's own Flower execution key, read-only. No other container mounts it.
+  volumes {
+    host_path      = abspath("${local.repo_root}/vfp-governance/verifier/execution_keys/flower-execution-HospitalB.privhex")
+    container_path = "/run/secrets/execution.key"
+    read_only      = true
+  }
 
   depends_on = [docker_container.flower_server]
   must_run   = true
@@ -813,6 +845,7 @@ resource "docker_container" "flower_client_c" {
 
   env = concat([
     "HOSPITAL=C",
+    "EXECUTION_KEY_FILE=/run/secrets/execution.key",
     "ORG_ID=${var.org_c_id}",
     "RUN_ID=${var.run_id}",
     "HUB_URL=http://fc-hub:8080",
@@ -827,6 +860,13 @@ resource "docker_container" "flower_client_c" {
     "MEDMNIST_ROOT=/tmp/medmnist",
     "DEVICE=${lower(var.compute_backend)}",
   ], local.workload_env)
+
+  # Issue #7: this client's own Flower execution key, read-only. No other container mounts it.
+  volumes {
+    host_path      = abspath("${local.repo_root}/vfp-governance/verifier/execution_keys/flower-execution-guest-HospitalC.privhex")
+    container_path = "/run/secrets/execution.key"
+    read_only      = true
+  }
 
   depends_on = [docker_container.flower_server]
   must_run   = true

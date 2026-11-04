@@ -139,6 +139,77 @@ provision_holder "Bob"     "org://HospitalB"
 provision_holder "Charlie" "org://HospitalA"
 
 # ------------------------------------------------------------------
+# Flower execution keys (issue #7): one per training client, outside the vault,
+# so neither the hub nor the Flower server can read them. Each local client
+# mounts only its own file; on AWS the value goes into the hospital account's
+# Secrets Manager secret instead.
+# ------------------------------------------------------------------
+
+EXECUTION_KEYS_DIR="${SRC_DIR}/vfp-governance/verifier/execution_keys"
+mkdir -p "${EXECUTION_KEYS_DIR}" && chmod 700 "${EXECUTION_KEYS_DIR}" || {
+    echo "FAIL: cannot prepare execution-key directory: ${EXECUTION_KEYS_DIR}" >&2
+    exit 1
+}
+
+provision_execution_key() {
+    local who="$1"
+    local org="$2"
+    local private_key="${EXECUTION_KEYS_DIR}/${who}.privhex"
+
+    if [[ -d "${private_key}" ]]; then
+        echo "FAIL: ${private_key} is a folder (Docker created it because the key was missing)." >&2
+        echo "      Remove it (rmdir) and run this script again before tofu apply." >&2
+        exit 1
+    fi
+
+    if [[ ! -s "${private_key}" ]]; then
+        (
+            umask 077
+            python3 "${GEN_MEMBER_KEYS}" \
+                --generate \
+                --who "${who}" \
+                --org "${org}" \
+                --output-dir "${EXECUTION_KEYS_DIR}" \
+                >/dev/null
+        ) || {
+            echo "FAIL: unable to provision execution key ${who}" >&2
+            exit 1
+        }
+        chmod 600 "${private_key}"
+        echo "OK:   provisioned execution key ${who}"
+    else
+        echo "OK:   execution key exists ${who}"
+    fi
+}
+
+# The sponsor (Hospital A) holds and registers its guest's key: Hospital C has no issuer.
+provision_execution_key "flower-execution-HospitalA" "org://HospitalA"
+provision_execution_key "flower-execution-HospitalB" "org://HospitalB"
+provision_execution_key "flower-execution-guest-HospitalC" "org://HospitalA"
+
+# The token the hub presents on the Flower server's /bind_envelope. Only the hub and the
+# Flower server mount it (on AWS it goes into the Flower account's Secrets Manager).
+CONTROL_TOKEN_FILE="${EXECUTION_KEYS_DIR}/flower-control.token"
+if [[ -d "${CONTROL_TOKEN_FILE}" ]]; then
+    echo "FAIL: ${CONTROL_TOKEN_FILE} is a folder (Docker created it because the token was missing)." >&2
+    echo "      Remove it (rmdir) and run this script again before tofu apply." >&2
+    exit 1
+fi
+if [[ ! -s "${CONTROL_TOKEN_FILE}" ]]; then
+    (
+        umask 077
+        python3 -c 'import secrets; print(secrets.token_hex(32))' > "${CONTROL_TOKEN_FILE}"
+    ) || {
+        echo "FAIL: unable to provision the Flower control token" >&2
+        exit 1
+    }
+    chmod 600 "${CONTROL_TOKEN_FILE}"
+    echo "OK:   provisioned Flower control token"
+else
+    echo "OK:   Flower control token exists"
+fi
+
+# ------------------------------------------------------------------
 # Hal reasoning secret
 # ------------------------------------------------------------------
 

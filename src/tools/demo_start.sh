@@ -204,6 +204,21 @@ for holder in Audrey Bob Charlie; do
   require_file "${KEY_DIR}/${holder}.privhex"
 done
 
+# Issue #7: each Flower client's execution key. If a key was missing when the
+# container was created, Docker made an empty folder in its place: say so.
+EXECUTION_KEYS_DIR="${REPO_ROOT}/src/vfp-governance/verifier/execution_keys"
+for execution_key in \
+  flower-execution-HospitalA \
+  flower-execution-HospitalB \
+  flower-execution-guest-HospitalC; do
+  [[ ! -d "${EXECUTION_KEYS_DIR}/${execution_key}.privhex" ]] \
+    || fail "${EXECUTION_KEYS_DIR}/${execution_key}.privhex is a folder (Docker created it because the key was missing). Remove it, then run src/tools/preflight_bootstrap.sh and src/tools/bootstrap_members.sh."
+  require_file "${EXECUTION_KEYS_DIR}/${execution_key}.privhex"
+done
+[[ ! -d "${EXECUTION_KEYS_DIR}/flower-control.token" ]] \
+  || fail "${EXECUTION_KEYS_DIR}/flower-control.token is a folder (Docker created it because the token was missing). Remove it, then run src/tools/preflight_bootstrap.sh."
+require_file "${EXECUTION_KEYS_DIR}/flower-control.token"
+
 require_file "${GEN_KEYS}"
 require_file "${PATHMNIST_HOST}"
 require_file "${CA}"
@@ -214,7 +229,7 @@ find "${REPO_ROOT}" -path '*/runs/*/model.pt' -type f -print -quit \
   | grep -q . \
   || fail "No persisted model.pt found."
 
-pass "Holder keys, model, PathMNIST and TLS material present"
+pass "Holder keys, execution keys, model, PathMNIST and TLS material present"
 
 # ------------------------------------------------------------
 # 4. OpenTofu ownership and Docker object identity
@@ -311,6 +326,27 @@ check_member_identity \
   org__HospitalB.members.json \
   Bob \
   "${KEY_DIR}/Bob.privhex"
+
+# Issue #7: the Flower execution keys registered with the issuers match the files.
+# (First deployment with issue #7: run preflight_bootstrap.sh, tofu apply and
+# bootstrap_members.sh once before using this script.)
+check_member_identity \
+  issuer-registry-hospitala \
+  org__HospitalA.members.json \
+  flower-execution \
+  "${EXECUTION_KEYS_DIR}/flower-execution-HospitalA.privhex"
+
+check_member_identity \
+  issuer-registry-hospitalb \
+  org__HospitalB.members.json \
+  flower-execution \
+  "${EXECUTION_KEYS_DIR}/flower-execution-HospitalB.privhex"
+
+check_member_identity \
+  issuer-registry-hospitala \
+  org__HospitalA.members.json \
+  flower-execution-guest-HospitalC \
+  "${EXECUTION_KEYS_DIR}/flower-execution-guest-HospitalC.privhex"
 
 docker run --rm \
   -v hal-identity:/var/lib/hal/identity:ro \
