@@ -28,6 +28,7 @@ RUN python -m pip install --upgrade pip \
 COPY pathmnist /app/pathmnist
 COPY workloads /app/workloads
 COPY flower_server/server.py /app/server.py
+COPY flower_server/admission.py /app/admission.py
 
 ENV HUB_URL=http://fc-hub:8080
 ENV SERVER_ADDRESS=0.0.0.0:8080

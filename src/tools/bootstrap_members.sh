@@ -32,7 +32,7 @@ enroll_member() {
     local client_crt="$4"
     local client_key="$5"
 
-    local private_key="${HOLDER_KEYS_DIR}/${subject}.privhex"
+    local private_key="${6:-${HOLDER_KEYS_DIR}/${subject}.privhex}"
     local issuer_url="https://${issuer_host}:${ISSUER_PORT}"
 
     [[ -s "${private_key}" ]] \
@@ -185,6 +185,35 @@ enroll_member \
     "issuer-hospitala.local" \
     "${A_CRT}" \
     "${A_KEY}"
+
+# Flower execution keys (issue #7). Registered as members of the organisation's own
+# issuer; they carry no entitlements, so they cannot mint credentials.
+EXECUTION_KEYS_DIR="${SRC_DIR}/vfp-governance/verifier/execution_keys"
+
+enroll_member \
+    "flower-execution" \
+    "org://HospitalA" \
+    "issuer-hospitala.local" \
+    "${A_CRT}" \
+    "${A_KEY}" \
+    "${EXECUTION_KEYS_DIR}/flower-execution-HospitalA.privhex"
+
+enroll_member \
+    "flower-execution" \
+    "org://HospitalB" \
+    "issuer-hospitalb.local" \
+    "${B_CRT}" \
+    "${B_KEY}" \
+    "${EXECUTION_KEYS_DIR}/flower-execution-HospitalB.privhex"
+
+# Hospital C is a sponsored guest: Hospital A registers its key.
+enroll_member \
+    "flower-execution-guest-HospitalC" \
+    "org://HospitalA" \
+    "issuer-hospitala.local" \
+    "${A_CRT}" \
+    "${A_KEY}" \
+    "${EXECUTION_KEYS_DIR}/flower-execution-guest-HospitalC.privhex"
 
 echo
 echo "MEMBER BOOTSTRAP: PASS"

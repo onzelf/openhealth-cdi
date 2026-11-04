@@ -51,6 +51,30 @@ FLOWER_BACKEND_URL = os.getenv(
     "http://vfp-core-flower-server:8081",
 ).rstrip("/")
 
+
+def load_flower_control_token() -> str:
+    """Issue #7: the token the Flower server requires on /bind_envelope, from
+    FLOWER_CONTROL_TOKEN or a read-only mounted file (FLOWER_CONTROL_TOKEN_FILE)."""
+    value = os.getenv("FLOWER_CONTROL_TOKEN", "").strip()
+    path = os.getenv("FLOWER_CONTROL_TOKEN_FILE", "")
+    if value or not path:
+        return value
+    try:
+        return Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+FLOWER_CONTROL_TOKEN = load_flower_control_token()
+
+
+def flower_control_headers(url: str) -> Dict[str, str]:
+    """The token goes only to the configured Flower server, never to a backend URL that
+    registered itself with the hub."""
+    if FLOWER_CONTROL_TOKEN and url.rstrip("/") == FLOWER_BACKEND_URL:
+        return {"X-OpenHealth-Control-Token": FLOWER_CONTROL_TOKEN}
+    return {}
+
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 FCAC_ENVELOPE_CHANNEL = os.getenv(
     "FCAC_ENVELOPE_CHANNEL",
@@ -219,6 +243,10 @@ class ClientRegistration(BaseModel):
     org_label: Optional[str] = None
     data_partition: Optional[int] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ExperimentFailure(BaseModel):
+    error: Optional[str] = None
 
 
 class PredictionRequest(BaseModel):
@@ -494,6 +522,77 @@ def selected_envelope_binding_state(
         "bound": bool(backend_state.get("available", False) and selected_id),
         "backend_state": backend_state,
     }
+
+
+# Issue #7: each organisation registers its Flower execution key with its own
+# issuer, as the member with this sub. Flower receives only the public keys of
+# the organisations the envelope admits, in /bind_envelope.
+FLOWER_EXECUTION_SUB = os.getenv("FLOWER_EXECUTION_SUB", "flower-execution")
+# Mode 1A: the sponsor registers its guest institution's execution key under
+# this sub followed by the guest's slug, e.g. flower-execution-guest-HospitalC.
+FLOWER_GUEST_EXECUTION_SUB = os.getenv(
+    "FLOWER_GUEST_EXECUTION_SUB", "flower-execution-guest"
+)
+
+
+def org_slug(org_id: str) -> str:
+    return str(org_id).split("://", 1)[-1]
+
+
+def issuer_members(issuer_url: str) -> List[Dict[str, Any]]:
+    try:
+        response = requests.get(issuer_url.rstrip("/") + "/members", timeout=10)
+        response.raise_for_status()
+        members = response.json().get("members") or []
+    except Exception:
+        return []
+    return [member for member in members if isinstance(member, dict)]
+
+
+def flower_guest_execution_keys(participants: List[str]) -> Dict[str, str]:
+    """Guest institution -> execution key, read from its sponsor's issuer.
+
+    Only guests whose sponsoring organisation is an envelope participant. Flower
+    uses these keys only after the Gatekeeper allows the guest contribution.
+    """
+    sponsors: Dict[str, List[str]] = {}
+    for context in ACTOR_CONTEXTS.values():
+        guest_org = context.get("guest_institution")
+        sponsor = context.get("organization")
+        if guest_org and sponsor in participants:
+            sponsors.setdefault(str(sponsor), []).append(str(guest_org))
+    keys: Dict[str, str] = {}
+    for sponsor, guests in sponsors.items():
+        issuer_url = ISSUER_URLS.get(sponsor)
+        if not issuer_url:
+            continue
+        members = issuer_members(issuer_url)
+        for guest_org in guests:
+            wanted = f"{FLOWER_GUEST_EXECUTION_SUB}-{org_slug(guest_org)}"
+            for member in members:
+                if (
+                    member.get("sub") == wanted
+                    and member.get("org_id") == sponsor
+                    and member.get("pub_b64")
+                ):
+                    keys[guest_org] = str(member["pub_b64"])
+    return keys
+
+
+def flower_execution_keys(participants: List[str]) -> Dict[str, str]:
+    keys: Dict[str, str] = {}
+    for org_id in participants:
+        issuer_url = ISSUER_URLS.get(org_id)
+        if not issuer_url:
+            continue
+        for member in issuer_members(issuer_url):
+            if (
+                member.get("sub") == FLOWER_EXECUTION_SUB
+                and member.get("org_id") == org_id
+                and member.get("pub_b64")
+            ):
+                keys[org_id] = str(member["pub_b64"])
+    return keys
 
 
 def issuer_member_lookup(
@@ -836,6 +935,14 @@ async def bind_envelope_to_backend(
             "policy_hash": envelope.get("policy_hash"),
             "valid_until": envelope.get("valid_until"),
             "participants": envelope.get("participants", []),
+            "participant_keys": await asyncio.to_thread(
+                flower_execution_keys,
+                envelope.get("participants", []),
+            ),
+            "guest_keys": await asyncio.to_thread(
+                flower_guest_execution_keys,
+                envelope.get("participants", []),
+            ),
         }
 
         try:
@@ -843,6 +950,7 @@ async def bind_envelope_to_backend(
                 requests.post,
                 f"{backend['url'].rstrip('/')}/bind_envelope",
                 json=bind_payload,
+                headers=flower_control_headers(backend["url"]),
                 timeout=10,
             )
             response.raise_for_status()
@@ -1762,6 +1870,29 @@ def experiment_complete(run_id: str) -> Dict[str, Any]:
         "run_id": run_id,
         "status": "completed",
         "message": "Experiment completed",
+        "experiment": current_experiment_status(run_id),
+    }
+
+
+@app.post("/experiments/{run_id}/fail")
+def experiment_fail(
+    run_id: str,
+    failure: Optional[ExperimentFailure] = None,
+) -> Dict[str, Any]:
+    """Issue #7: the Flower server reports a failed run; it is never shown as
+    completed, and the server goes idle until the next START."""
+    experiment_status(run_id)
+    experiment_state["status"] = "failed"
+    append_event(
+        "experiment_failed",
+        run_id=run_id,
+        error=failure.error if failure else None,
+    )
+
+    return {
+        "run_id": run_id,
+        "status": "failed",
+        "message": "Experiment failed",
         "experiment": current_experiment_status(run_id),
     }
 

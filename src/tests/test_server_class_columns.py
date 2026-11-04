@@ -11,6 +11,8 @@ from pathlib import Path
 
 BACKEND = Path(__file__).resolve().parents[1] / "vfp-core" / "backend"
 sys.path.insert(0, str(BACKEND))
+# server.py imports admission.py from its own folder, as in the image (/app).
+sys.path.insert(0, str(BACKEND / "flower_server"))
 
 ORIGINAL_HEADER = [
     "run_id",

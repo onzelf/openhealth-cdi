@@ -8,6 +8,7 @@ from the frozen standalone implementation.
 
 from __future__ import annotations
 
+import base64
 import os
 import time
 from typing import Any, Dict
@@ -15,6 +16,7 @@ from typing import Any, Dict
 import flwr as fl
 import requests
 import torch
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from workloads.active import (
     ACTIVE_CLASSES,
@@ -40,6 +42,25 @@ SERVER = os.getenv("SERVER_ADDRESS", "flower-server:8080")
 HUB_URL = os.getenv("HUB_URL", "http://fc-hub:8080").rstrip("/")
 RUN_ID = os.getenv("RUN_ID", "local-pathmnist-ab-001")
 ORG_ID = os.getenv("ORG_ID", f"org://Hospital{HOSPITAL}")
+# Issue #7: this organisation's Flower execution key (32-byte Ed25519 seed,
+# hex, as written by tools/gen_member_keys.py). Without it the server does not
+# admit this client.
+EXECUTION_KEY_FILE = os.getenv("EXECUTION_KEY_FILE", "").strip()
+
+
+def load_execution_key() -> str:
+    """The key comes from EXECUTION_KEY_HEX (ECS secret) or a read-only mounted file (L0)."""
+    value = os.getenv("EXECUTION_KEY_HEX", "").strip()
+    if value or not EXECUTION_KEY_FILE:
+        return value
+    try:
+        with open(EXECUTION_KEY_FILE, encoding="utf-8") as handle:
+            return handle.read().strip()
+    except OSError:
+        return ""
+
+
+EXECUTION_KEY_HEX = load_execution_key()
 
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "0"))
 RETRY_INTERVAL = int(os.getenv("RETRY_INTERVAL", "10"))
@@ -212,6 +233,26 @@ class FlowerClient(fl.client.NumPyClient):
 
     def get_parameters(self, config):
         return get_parameters(self.model)
+
+    def get_properties(self, config):
+        # Issue #7: answer the server's per-round challenge by signing it with
+        # this organisation's Flower execution key.
+        nonce = config.get("admission_nonce")
+        if not nonce or not EXECUTION_KEY_HEX:
+            return {"org_id": ORG_ID}
+        message = "|".join(
+            [
+                "openhealth-flower-admission",
+                str(config.get("envelope_id", "")),
+                str(config.get("run_id", "")),
+                str(config.get("round", "")),
+                str(nonce),
+                ORG_ID,
+            ]
+        ).encode("utf-8")
+        key = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(EXECUTION_KEY_HEX))
+        signature = base64.urlsafe_b64encode(key.sign(message)).decode("ascii")
+        return {"org_id": ORG_ID, "admission_signature": signature.rstrip("=")}
 
     def fit(self, parameters, config):
         set_parameters(self.model, parameters)

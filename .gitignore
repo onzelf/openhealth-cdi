@@ -27,5 +27,6 @@ __pycache__/
 
 # Local secrets
 secrets/
+src/vfp-governance/verifier/execution_keys/
 .env
 *.env

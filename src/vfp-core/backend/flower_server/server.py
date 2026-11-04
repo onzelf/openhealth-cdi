@@ -17,6 +17,7 @@ import binascii
 import io
 import csv
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -33,18 +34,26 @@ import numpy as np
 import requests
 import torch
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from flwr.common import (
     Metrics,
     Parameters,
     ndarrays_to_parameters,
     parameters_to_ndarrays,
 )
+from flwr.server.client_manager import SimpleClientManager
 from flwr.server.client_proxy import ClientProxy
 from flwr.server.strategy import FedAvg
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 
+from admission import (
+    AdmissionThresholdNotMet,
+    EnvelopeExpired,
+    admission_keys,
+    admit,
+    envelope_expired,
+)
 from workloads.active import (
     ACTIVE_CLASSES,
     CLASS_NAMES,
@@ -78,6 +87,22 @@ SERVER_POLL_SECONDS = float(os.getenv("SERVER_POLL_SECONDS", "1"))
 
 CONTROL_HOST = os.getenv("CONTROL_HOST", "0.0.0.0")
 CONTROL_PORT = int(os.getenv("CONTROL_PORT", "8081"))
+
+
+def load_control_token() -> str:
+    """Issue #7: the token the hub presents on /bind_envelope, from FLOWER_CONTROL_TOKEN
+    (ECS secret) or a read-only mounted file (FLOWER_CONTROL_TOKEN_FILE, L0)."""
+    value = os.getenv("FLOWER_CONTROL_TOKEN", "").strip()
+    path = os.getenv("FLOWER_CONTROL_TOKEN_FILE", "")
+    if value or not path:
+        return value
+    try:
+        return Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+CONTROL_TOKEN = load_control_token()
 BACKEND_ID = os.getenv("BACKEND_ID", "flower-local")
 BACKEND_TYPE = os.getenv("BACKEND_TYPE", "flower_server")
 BACKEND_URL = os.getenv(
@@ -98,6 +123,16 @@ DEFAULT_MIN_CLIENTS = int(
     os.getenv("MIN_CLIENTS", os.getenv("MIN_AVAILABLE_CLIENTS", "2"))
 )
 DEFAULT_FRACTION_FIT = float(os.getenv("FRACTION_FIT", "1.0"))
+# Issue #7: how long a round waits for enough admitted clients to prove
+# their identity before it fails closed.
+ADMISSION_TIMEOUT_SECONDS = float(os.getenv("ADMISSION_TIMEOUT_SECONDS", "120"))
+ADMISSION_RETRY_SECONDS = 5.0
+# A sampled client that never answers must not hold a round open for ever.
+ROUND_TIMEOUT_SECONDS = float(os.getenv("ROUND_TIMEOUT_SECONDS", "600"))
+# How long a round waits for enough clients to connect (Flower's own wait is 24 h),
+# so a required hospital that never connects fails the run in bounded time. Longer
+# than a client start on ECS (about 3 minutes, mostly the image pull).
+CLIENT_WAIT_TIMEOUT_SECONDS = float(os.getenv("CLIENT_WAIT_TIMEOUT_SECONDS", "300"))
 MODE1A_TRAINING_MIN_CLIENTS = 3
 MODE1A_GUEST_PRINCIPAL = "Charlie"
 MODE1A_GUEST_TISSUES = [
@@ -161,6 +196,12 @@ class EnvelopeBinding(BaseModel):
     policy_hash: Optional[str] = None
     valid_until: Optional[int] = None
     participants: List[str] = Field(default_factory=list)
+    # Issue #7: org_id -> public Flower execution key (Ed25519, base64url),
+    # resolved by the Hub from each admitted organisation's issuer.
+    participant_keys: Dict[str, str] = Field(default_factory=dict)
+    # Mode 1A: sponsored guest organisation -> public execution key, registered by
+    # the sponsor's issuer. Used only after the guest's contribution is admitted.
+    guest_keys: Dict[str, str] = Field(default_factory=dict)
 
 
 class PredictionRequest(BaseModel):
@@ -266,11 +307,26 @@ def control_status() -> Dict[str, Any]:
     }
 
 
+def require_control_token(presented: Any) -> None:
+    """The binding sets the keys admission trusts, so only the hub may make it.
+    Fails closed: without a configured token nothing can bind."""
+    if not CONTROL_TOKEN:
+        raise HTTPException(503, "control_token_not_configured")
+    presented = presented if isinstance(presented, str) else ""
+    if not hmac.compare_digest(presented.encode("utf-8"), CONTROL_TOKEN.encode("utf-8")):
+        raise HTTPException(401, "invalid_control_token")
+
+
 @control_app.post("/bind_envelope")
-def bind_envelope(binding: EnvelopeBinding) -> Dict[str, Any]:
+def bind_envelope(
+    binding: EnvelopeBinding,
+    x_openhealth_control_token: str = Header(default=""),
+) -> Dict[str, Any]:
     """Record a Hub-approved binding without starting Flower training."""
 
     global bound_envelope, active_artifact_run_id
+
+    require_control_token(x_openhealth_control_token)
 
     payload = model_dict(binding)
     payload["bound_at"] = utc_now()
@@ -802,22 +858,28 @@ def wait_for_experiment_start() -> Dict[str, Any]:
         time.sleep(SERVER_POLL_SECONDS)
 
 
-def notify_hub_completed() -> None:
+def notify_hub_finished(error: Optional[str] = None) -> None:
+    """Report the end of the run: /complete, or /fail with the reason. Issue #7: a
+    failed run is never reported to the hub as completed."""
+    outcome = "fail" if error else "complete"
     while True:
         try:
             response = requests.post(
-                f"{HUB_URL}/experiments/{RUN_ID}/complete",
+                f"{HUB_URL}/experiments/{RUN_ID}/{outcome}",
+                json={"error": error} if error else None,
                 timeout=5,
             )
             response.raise_for_status()
             write_event(
                 "hub_completion_notified",
+                outcome=outcome,
                 response=response.json(),
             )
             return
         except Exception as exc:
             write_event(
                 "hub_completion_notify_failed",
+                outcome=outcome,
                 error=str(exc),
                 retry_seconds=COMPLETION_RETRY_SECONDS,
             )
@@ -1191,14 +1253,30 @@ def story_metrics(
 # Evidence-aware FedAvg with central evaluation
 # ---------------------------------------------------------------------
 
-def participant_identity(metrics: Metrics) -> Optional[str]:
-    org_id = metrics.get("org_id")
-    if org_id:
-        return str(org_id)
-    hospital = metrics.get("hospital")
-    if hospital:
-        return f"org://Hospital{str(hospital).upper()}"
-    return None
+class BoundedClientManager(SimpleClientManager):
+    """Issue #7: Flower waits up to 24 h for enough clients to connect before it
+    samples a round. Bounded here, so a missing hospital fails the round instead."""
+
+    def wait_for(self, num_clients: int, timeout: int = 86400) -> bool:
+        return super().wait_for(
+            num_clients,
+            min(timeout, CLIENT_WAIT_TIMEOUT_SECONDS),
+        )
+
+
+class CleanStopServer(fl.server.Server):
+    """Issue #7: an error during the run ends it the way a successful run ends
+    (clients disconnected, gRPC server stopped). Raised out of start_server()
+    instead, it left both running and the process stuck; main() reports it."""
+
+    error: Optional[Exception] = None
+
+    def fit(self, num_rounds: int, timeout: Optional[float]):
+        try:
+            return super().fit(num_rounds, timeout)
+        except Exception as exc:
+            self.error = exc
+            return fl.server.History(), 0.0
 
 
 class EvidenceFedAvg(FedAvg):
@@ -1207,14 +1285,23 @@ class EvidenceFedAvg(FedAvg):
         *,
         model: Net,
         expected_rounds: int,
+        guest_admitted: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self.model = model
         self.expected_rounds = expected_rounds
+        # True only for a Mode 1A run whose guest contribution the Gatekeeper allowed.
+        self.guest_admitted = guest_admitted
+        # Honest completion: rounds that produced an aggregate, and rounds whose
+        # accepted results fell below min_fit_clients (a client failed mid-round).
+        self.rounds_aggregated = 0
+        self.short_rounds: List[int] = []
         self.participants: Dict[str, Dict[str, Any]] = {}
         self.fit_metrics: Dict[int, Metrics] = {}
         self.fit_counts: Dict[int, Tuple[int, int]] = {}
+        # round -> {client cid: proven org_id} (issue #7)
+        self.admitted: Dict[int, Dict[str, str]] = {}
 
     def write_participants(self) -> None:
         participants_path().write_text(
@@ -1239,11 +1326,86 @@ class EvidenceFedAvg(FedAvg):
     ):
         update_training_state(status="running", round=server_round)
         write_event("round_fit_configured", round=server_round)
-        return super().configure_fit(
-            server_round,
-            parameters,
-            client_manager,
+
+        # Issue #7: only clients that prove an admitted organisation's Flower
+        # execution key take part, one connection per organisation. Too few
+        # within the timeout: the round fails closed (no aggregation).
+        with bound_envelope_lock:
+            binding = dict(bound_envelope or {})
+        envelope_id = str(binding.get("envelope_id") or "")
+        keys = admission_keys(binding, self.guest_admitted)
+        run_id = current_artifact_run_id() or RUN_ID
+        # The timeout starts once Flower has sampled clients (configure_fit waits for
+        # enough connections), so slow-starting honest clients are not failed early.
+        deadline: Optional[float] = None
+        while True:
+            # Every round, and every retry, re-checks the envelope's validity window.
+            if envelope_expired(binding.get("valid_until"), time.time()):
+                write_event(
+                    "round_envelope_expired",
+                    round=server_round,
+                    envelope_id=envelope_id,
+                    valid_until=binding.get("valid_until"),
+                )
+                raise EnvelopeExpired(
+                    f"round {server_round}: envelope {envelope_id} expired"
+                )
+            instructions = super().configure_fit(
+                server_round, parameters, client_manager
+            )
+            if not instructions:
+                # Fewer clients connected than the round needs within
+                # CLIENT_WAIT_TIMEOUT_SECONDS: a required hospital is missing.
+                connected = client_manager.num_available()
+                write_event(
+                    "round_clients_missing",
+                    round=server_round,
+                    connected=connected,
+                    required=self.min_available_clients,
+                )
+                raise AdmissionThresholdNotMet(
+                    f"round {server_round}: {connected} client(s) connected "
+                    f"within {CLIENT_WAIT_TIMEOUT_SECONDS:g} s, "
+                    f"{self.min_available_clients} required"
+                )
+            admitted, orgs, rejected = admit(
+                instructions,
+                keys,
+                envelope_id,
+                run_id,
+                server_round,
+            )
+            if deadline is None:
+                deadline = time.monotonic() + ADMISSION_TIMEOUT_SECONDS
+            for cid, reason in rejected:
+                write_event(
+                    "flower_client_rejected",
+                    round=server_round,
+                    client=cid,
+                    reason=reason,
+                )
+            if len(admitted) >= self.min_fit_clients:
+                break
+            if time.monotonic() >= deadline:
+                write_event(
+                    "round_admission_failed",
+                    round=server_round,
+                    admitted=sorted(orgs.values()),
+                    required=self.min_fit_clients,
+                )
+                raise AdmissionThresholdNotMet(
+                    f"round {server_round}: {len(admitted)} admitted client(s) "
+                    f"proved their identity, {self.min_fit_clients} required"
+                )
+            time.sleep(ADMISSION_RETRY_SECONDS)
+
+        self.admitted[server_round] = orgs
+        write_event(
+            "round_clients_admitted",
+            round=server_round,
+            participants=sorted(orgs.values()),
         )
+        return admitted
 
     def aggregate_fit(
         self,
@@ -1251,22 +1413,31 @@ class EvidenceFedAvg(FedAvg):
         results: List[Tuple[ClientProxy, Any]],
         failures: List[Any],
     ):
+        # Issue #7: only results from this round's admitted connections count,
+        # recorded under the proven organisation, not the self-reported one.
+        admitted = self.admitted.get(server_round, {})
+        results = [
+            (client, fit_result)
+            for client, fit_result in results
+            if client.cid in admitted
+        ]
         parameters, metrics = super().aggregate_fit(
             server_round,
             results,
             failures,
         )
+        if parameters is not None:
+            self.rounds_aggregated += 1
+        if len(results) < int(self.min_fit_clients):
+            self.short_rounds.append(server_round)
 
-        for _client, fit_result in results:
-            participant = participant_identity(
-                fit_result.metrics or {}
-            )
-            if participant:
-                self.participants[participant] = {
-                    "participant_id": participant,
-                    "last_seen_round": server_round,
-                    "last_event": "fit_completed",
-                }
+        for client, _fit_result in results:
+            participant = admitted[client.cid]
+            self.participants[participant] = {
+                "participant_id": participant,
+                "last_seen_round": server_round,
+                "last_event": "fit_completed",
+            }
 
         self.write_participants()
         self.fit_metrics[server_round] = metrics or {}
@@ -1409,19 +1580,30 @@ def main() -> None:
         keep_control_plane_alive()
         return
 
+    # Issue #7: any failure after START, setup included, is reported to the hub as
+    # failed and the server goes idle, so nothing restarts a run by itself.
+    run: Dict[str, Any] = {}
+    try:
+        run_training(run)
+    except Exception as exc:
+        report_failed_run(exc, run)
+    keep_control_plane_alive()
+
+
+def run_training(run: Dict[str, Any]) -> None:
+    """One run after START. Fills ``run`` for report_failed_run()."""
     if current_session_id() is None:
-        error = "Experiment activated without a bound envelope"
-        update_training_state(status="error", error=error)
-        write_event("server_failed", error=error)
-        raise RuntimeError(error)
+        raise RuntimeError("Experiment activated without a bound envelope")
 
     allocated_run_id = allocate_training_run()
+    run["run_id"] = allocated_run_id
     config = {
         **load_experiment_config(),
         "data_partition_profile": PATHMNIST_PARTITION_PROFILE,
         "data_partition_seed": PATHMNIST_PARTITION_SEED,
     }
     phase = str(config.get("phase") or "AB_BASE").strip().upper()
+    run.update(config=config, phase=phase)
     if phase not in {"AB_BASE", "MODE1A"}:
         raise RuntimeError(f"Unsupported training phase: {phase!r}")
 
@@ -1574,6 +1756,8 @@ def main() -> None:
         fraction_evaluate=0.0,
         min_fit_clients=min_clients,
         min_available_clients=min_clients,
+        # require_mode1a_guest_admission() returned only after an ALLOW.
+        guest_admitted=phase == "MODE1A",
         fit_metrics_aggregation_fn=fit_metrics_aggregation_fn,
         evaluate_fn=central_evaluate,
         initial_parameters=ndarrays_to_parameters(
@@ -1581,43 +1765,94 @@ def main() -> None:
         ),
     )
 
-    try:
-        fl.server.start_server(
-            server_address=SERVER_ADDRESS,
-            config=fl.server.ServerConfig(num_rounds=rounds),
-            strategy=strategy,
-        )
+    run["strategy"] = strategy
+    flower = CleanStopServer(
+        client_manager=BoundedClientManager(),
+        strategy=strategy,
+    )
+    fl.server.start_server(
+        server_address=SERVER_ADDRESS,
+        server=flower,
+        config=fl.server.ServerConfig(
+            num_rounds=rounds,
+            round_timeout=ROUND_TIMEOUT_SECONDS,
+        ),
+    )
+    if flower.error is not None:
+        raise flower.error
 
-        update_training_state(
-            status="done",
-            round=rounds,
-        )
-        write_final_metadata(
-            config=config,
-            rounds_completed=rounds,
-            status="completed",
-        )
-        write_envelope_run_summary(
-            phase=phase,
-            status="completed",
-            rounds_completed=rounds,
-        )
-        write_event("server_completed", flower_rounds=rounds)
-        notify_hub_completed()
-        keep_control_plane_alive()
-    except Exception as exc:
-        update_training_state(
-            status="error",
-            error=str(exc),
-        )
-        write_final_metadata(
-            config=config,
-            rounds_completed=0,
-            status="failed",
-            error=str(exc),
-        )
-        write_event("server_failed", error=str(exc))
-        raise
+    rounds_completed = strategy.rounds_aggregated
+    run_ok = rounds_completed == rounds and not strategy.short_rounds
+    final_status = "completed" if run_ok else "failed"
+    problem = (
+        None
+        if run_ok
+        else f"rounds_aggregated={rounds_completed}/{rounds};"
+        f"short_rounds={strategy.short_rounds}"
+    )
+    update_training_state(
+        status="done" if run_ok else "error",
+        round=rounds_completed,
+        error=problem,
+    )
+    write_final_metadata(
+        config=config,
+        rounds_completed=rounds_completed,
+        status=final_status,
+        error=problem,
+    )
+    write_envelope_run_summary(
+        phase=phase,
+        status=final_status,
+        rounds_completed=rounds_completed,
+        error=problem,
+    )
+    write_event(
+        "server_completed",
+        flower_rounds=rounds_completed,
+        status=final_status,
+        short_rounds=strategy.short_rounds,
+    )
+    notify_hub_finished(problem)
+
+
+def report_failed_run(exc: Exception, run: Dict[str, Any]) -> None:
+    """Issue #7: record the failure, tell the hub and go idle, as after a success.
+    Raising instead left the hub 'running', so a restarted server began a run itself."""
+    # An exception without a message (a bare assert, MemoryError()) is still a
+    # failure; an empty reason would be reported to the hub as completed.
+    reason = str(exc) or type(exc).__name__
+    strategy = run.get("strategy")
+    rounds_completed = strategy.rounds_aggregated if strategy is not None else 0
+    update_training_state(
+        status="error",
+        round=rounds_completed,
+        error=reason,
+    )
+    # Only a run allocated after this START has evidence to write; before that, the
+    # paths still point at the previous run. Never let a write hide the failure.
+    if run.get("run_id"):
+        try:
+            write_final_metadata(
+                config=run.get("config", {}),
+                rounds_completed=rounds_completed,
+                status="failed",
+                error=reason,
+            )
+        except Exception as metadata_exc:
+            write_event("final_metadata_failed", error=str(metadata_exc))
+        # The envelope's run.json must not keep describing the previous run.
+        try:
+            write_envelope_run_summary(
+                phase=run.get("phase", "AB_BASE"),
+                status="failed",
+                rounds_completed=rounds_completed,
+                error=reason,
+            )
+        except Exception as summary_exc:
+            write_event("run_summary_failed", error=str(summary_exc))
+    write_event("server_failed", error=reason)
+    notify_hub_finished(reason)
 
 
 if __name__ == "__main__":
