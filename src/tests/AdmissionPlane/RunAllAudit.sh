@@ -63,7 +63,7 @@ for test in "${TESTS[@]}"; do
     # The explicit verdict emitted by the audit test is authoritative.
     # Exit status is used only as a fallback for older tests.
     #
-    if grep -qiE 'VULNERABILITY[[:space:]]+CONFIRMED|C[0-9]+[[:space:]]+CONFIRMED|CONFIRMED[[:space:]]*$' "$tmp"; then
+    if grep -qiE 'VULNERABILITY[[:space:]]+CONFIRMED|[AC][0-9]+[[:space:]]+CONFIRMED' "$tmp"; then
         RESULTS["$test"]="VULNERABILITY CONFIRMED"
 
     elif grep -qiE 'ASSUMPTION[[:space:]]+REJECTED|PROTECTED' "$tmp"; then

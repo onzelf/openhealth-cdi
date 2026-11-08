@@ -201,7 +201,11 @@ def load_cached_ect(envelope_id: str) -> str:
         state = json.loads(ECT_STATE_PATH.read_text(encoding="utf-8"))
         ect = str(state.get("ect") or "").strip()
         claims = decode_compact_claims(ect)
-        if str(claims.get("sub") or "") != "Hal":
+        if (
+            str((claims.get("cnf") or {}).get("jkt") or "")
+            != JKT_PATH.read_text(encoding="utf-8").strip()
+            or not str(claims.get("sub") or "").strip()
+        ):
             return ""
         if str(claims.get("envelope_id") or "") != envelope_id:
             return ""
@@ -215,7 +219,7 @@ def load_cached_ect(envelope_id: str) -> str:
 def store_ect(ect: str) -> None:
     claims = decode_compact_claims(ect)
     state = {
-        "principal": "Hal",
+        "principal": claims.get("sub"),
         "envelope_id": claims.get("envelope_id"),
         "exp": claims.get("exp"),
         "ect": ect,
@@ -270,8 +274,12 @@ def ensure_holder_ect(
     if not ect:
         raise RuntimeError("hal_ect_mint_missing_ect")
     claims = decode_compact_claims(ect)
-    if str(claims.get("sub") or "") != "Hal":
-        raise RuntimeError("hal_ect_subject_mismatch")
+    if (
+        str((claims.get("cnf") or {}).get("jkt") or "")
+        != JKT_PATH.read_text(encoding="utf-8").strip()
+        or not str(claims.get("sub") or "").strip()
+    ):
+        raise RuntimeError("agent_ect_key_or_role_mismatch")
     if str(claims.get("envelope_id") or "") != envelope_id:
         raise RuntimeError("hal_ect_envelope_mismatch")
     if int(claims.get("exp") or 0) <= int(time.time()):
@@ -294,9 +302,6 @@ def make_authority_presentation(
     private_key: Ed25519PrivateKey,
     payload: dict,
 ) -> dict:
-    if str(payload.get("principal") or "").strip() != "Hal":
-        raise ValueError("principal_mismatch")
-
     envelope_id = str(payload.get("envelope_id") or "").strip()
     run_id = str(payload.get("run_id") or "").strip()
     resource = str(payload.get("resource") or "").strip()
@@ -332,6 +337,9 @@ def make_authority_presentation(
             exact_request[name] = payload[name]
 
     ect = ensure_holder_ect(private_key, envelope_id)
+    verified_subject = str(decode_compact_claims(ect).get("sub") or "")
+    if not verified_subject or str(payload.get("principal") or "") != verified_subject:
+        raise ValueError("presented_ect_subject_mismatch")
     request_hash = governed_request_hash(exact_request)
     nonce = "nonce-" + b64url(os.urandom(18))
     jti = "jti-" + b64url(os.urandom(18))
@@ -348,7 +356,7 @@ def make_authority_presentation(
     )
 
     return {
-        "principal": "Hal",
+        "principal": verified_subject,
         "envelope_id": envelope_id,
         "authorization": f"ECT {ect}",
         "dpop": dpop,

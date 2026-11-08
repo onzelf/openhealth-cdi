@@ -27,6 +27,9 @@ import requests
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
+from qualified_traversal import (
+    InvalidQualification, project_admitted_traversal,
+)
 
 # ---------------------------------------------------------------------
 # Environment
@@ -409,6 +412,7 @@ def request_prediction_admission(
     purpose: str = "approved_model_query",
     resource: str = "pathmnist-colon-pathology",
     event_type: str = "prediction_admission",
+    derive_traversal: bool = False,
     derivative_representation: Optional[str] = None,
     governed_value_id: Optional[str] = None,
     governed_value: Optional[Dict[str, Any]] = None,
@@ -454,6 +458,33 @@ def request_prediction_admission(
     except Exception as exc:
         raise HTTPException(502, f"verifier_error:{exc}") from exc
 
+    if derive_traversal and admission.get("allow") is True:
+        # The Gatekeeper already verified the issuer-signed ECT and holder DPoP.
+        # These claims are decoded solely to reference that verified relation;
+        # this local projection is neither a BADGE nor an authorization token.
+        if not authorization.startswith("ECT "):
+            raise HTTPException(502, "qualified_traversal_missing_ect")
+        try:
+            claims = decode_ect_claims(authorization.split(" ", 1)[1].strip())
+            traversal = project_admitted_traversal(
+                admission=admission,
+                checked_request=admission_request,
+                verified_ect_claims=claims,
+            )
+        except (InvalidQualification, ValueError, TypeError) as exc:
+            raise HTTPException(
+                502, f"qualified_traversal_invalid:{exc}"
+            ) from exc
+        # Keep holder binding internal: do not change the caller-facing admission.
+        traversal_evidence = traversal.evidence()
+    else:
+        traversal_evidence = None
+
+    # Event evidence is local; it must never be treated as a BADGE or trusted
+    # merely because the Hub wrote it. The Admission Plane stays authoritative.
+    event_fields = dict(admission)
+    if traversal_evidence is not None:
+        event_fields["qualified_traversal"] = traversal_evidence
     append_event(
         event_type,
         run_id=run_id,
@@ -463,7 +494,7 @@ def request_prediction_admission(
         resource=resource,
         action=action,
         purpose=purpose,
-        **admission,
+        **event_fields,
     )
     return admission
 
@@ -2118,7 +2149,9 @@ def admit_principal_operation(
         governed_value_id=governed_value_id,
         governed_value=governed_value,
         event_type=event_type,
+        derive_traversal=True,
     )
+
 
 def hal_decide(payload: Dict[str, Any]) -> Dict[str, Any]:
     try:
@@ -2194,6 +2227,7 @@ def mode1b_inference(req: UserInferenceRequest) -> Dict[str, Any]:
         action="bounded_inference",
         purpose="bounded_model_inference",
         event_type="mode1b_bounded_inference_admission",
+        derive_traversal=True,
     )
 
     model_evidence = envelope_model_evidence(selected_id)

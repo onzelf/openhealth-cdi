@@ -9,6 +9,7 @@ RUN pip install --upgrade pip \
   && pip install fastapi "uvicorn[standard]" pydantic redis requests
 
 COPY hub.py /app/hub.py
+COPY qualified_traversal.py /app/qualified_traversal.py
 
 ENV RUNS_DIR=/vault/runs
 ENV PORT=8080
