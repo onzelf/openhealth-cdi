@@ -1,7 +1,7 @@
 # ICE Authority Retirement Register
 
-**Baseline:** `onzelf/openhealth-cdi`, branch `audit-security-plane`, GitHub source inspected on 2026-10-27.  
-**Local state:** the user reports I0-v2.1 applied with Test0B, Test5A, Test5C, Test5D, Test5E and positive/negative qualified-traversal checks GREEN. Local modified sources were not inspected in this inventory. Source line numbers below refer to the inspected GitHub branch and may shift locally.  
+**Baseline:** `onzelf/openhealth-cdi`, branch `audit-security-plane`, GitHub source inspected on 2026-10-27.
+**Local state:** the user reports I0-v2.1 applied with Test0B, Test5A, Test5C, Test5D, Test5E and positive/negative qualified-traversal checks GREEN. Local modified sources were not inspected in this inventory. Source line numbers below refer to the inspected GitHub branch and may shift locally.
 **Scope:** initial targeted inventory, **not yet an exhaustive repository-wide audit**. All retirement entries below remain **OPEN** until change-specific adversarial and regression evidence is collected.
 
 ## Architectural criterion
