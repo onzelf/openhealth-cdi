@@ -293,6 +293,8 @@ aws secretsmanager put-secret-value --profile <c-profile> --secret-id openhealth
 
 Hospital C holds the guest key registered by its sponsor, Hospital A.
 
+With L1-B2 (below), the three hospital keys are made in the hospitals' own accounts instead, and the last three lines are not used.
+
 ### Step 7: check the network, then add /vault
 
 ```
@@ -406,6 +408,100 @@ claiming B, signing with A's key, is refused and the run fails closed; (b) B sti
 run fails after the server's `CLIENT_WAIT_TIMEOUT_SECONDS` (default 300 s); (c) B back: A and B complete.
 On exit it stops the rogue and puts B's service back to its count. L1-B1 is GREEN only with Test1F GREEN.
 
+## L1-B2: keys and data in each hospital's account
+
+L1-B2 (roadmap §6.5 to §6.7), in the minimal scope agreed for December. Raw data and execution keys stay in each
+hospital's account; nothing here grants another account access to either. In order: the data, the keys, the
+people's keys, then restart the clients and select the envelope.
+
+### Data in each hospital's own bucket
+
+Set `data_bucket = true` in `hospital-<x>.tfvars` and apply. `b2.tf` creates the bucket, an S3 gateway endpoint
+in the hospital's VPC and a bucket policy that allows reads only through that endpoint and only over TLS
+(enforced against everything except the account's own administrators, who can change the policy). The output
+`b2_data_upload` prints the command that puts the public `pathmnist.npz` into the bucket. When a task starts, a
+one-shot `fetch-data` container copies the file into a task-local volume, and the client starts only if the copy
+succeeded; it checks the file's MD5 and downloads nothing. Each client still trains only on its own slice (fixed
+seed).
+
+### Execution keys made in each hospital's account
+
+From `src/infra/aws-l1b1`, on a workstation with the three hospital profiles, each hospital runs
+`tools/make-execution-key.py` with its own credentials. It makes an Ed25519 key in memory, puts the private half
+straight into `openhealth-l1b-flower-execution-key-<x>` (the previous value stays as `AWSPREVIOUS`, the way back)
+and writes only the public half. Run it once per hospital: a second run moves `AWSPREVIOUS`.
+
+```
+mkdir -p new-keys
+python tools/make-execution-key.py --hospital a --profile <a-profile> --out-dir new-keys
+python tools/make-execution-key.py --hospital b --profile <b-profile> --out-dir new-keys
+python tools/make-execution-key.py --hospital c --profile <c-profile> --out-dir new-keys
+scp new-keys/execution-public-*.json tools/replace-execution-members.sh ubuntu@<host>:~/
+```
+
+On the governance host, `replace-execution-members.sh` registers the public halves. For each key it checks the
+issuer answers with the admin certificate, backs up the registry (one backup per entry), removes the old entry
+and registers the new key through the issuer API; if the registration fails it restores the backup. Hospital C's
+key goes to Hospital A's issuer, as its sponsor. No issuer code changes. Then the host's private copies go; keep
+the old public halves for the way back:
+
+```
+cd ~/openhealth-cdi
+bash ~/replace-execution-members.sh ~/execution-public-a.json ~/execution-public-b.json ~/execution-public-c.json
+K=src/vfp-governance/verifier/execution_keys; R=~/rollback-old-public-$(date +%Y%m%d); install -d -m 700 $R
+mv $K/flower-execution*.jkt $K/flower-execution*.pubb64 $K/flower-execution*.register.json $R/
+rm -f $K/flower-execution*.privhex
+```
+
+No private execution key stays on the host; `flower-control.token` stays. Then restart each running client so it
+reads its new secret, and select the envelope again so the hub binds the new keys:
+
+```
+aws ecs update-service --profile <x-profile> --cluster openhealth-l1b --service flower-client-<x> --force-new-deployment
+```
+
+### People's keys off the shared EFS
+
+The Flower account mounts the governance EFS, so the holder keys (Audrey, Bob, Charlie) move to a host-local
+directory, bind-mounted at the same path, so no code or container changes. The EFS is a network mount, so the
+bind mount needs `_netdev` (without it systemd breaks an ordering cycle at boot by skipping the bind mount), and
+Docker waits for it so the containers never start on the empty EFS directory. If the EFS is unreachable at boot,
+Docker does not start; fix the mount, then `sudo systemctl start docker`.
+
+```
+V=~/openhealth-cdi/src/vfp-governance/verifier/vault; L=/var/lib/openhealth/holder_keys
+sudo install -d -m 700 "$L" && sudo cp -a "$V/holder_keys/." "$L/" && sudo diff -r "$V/holder_keys" "$L" && echo SAME
+# only after SAME:
+sudo diff -r "$V/holder_keys" "$L" && docker stop holder-signer && sudo find "$V/holder_keys" -mindepth 1 -delete && sudo mount --bind "$L" "$V/holder_keys"
+echo "$L $V/holder_keys none bind,_netdev,x-systemd.requires-mounts-for=$V 0 0" | sudo tee -a /etc/fstab
+sudo install -d /etc/systemd/system/docker.service.d
+printf "[Unit]\nRequiresMountsFor=%s\n" "$V/holder_keys" | sudo tee /etc/systemd/system/docker.service.d/openhealth-mounts.conf
+sudo systemctl daemon-reload
+docker start holder-signer && docker restart fc-hub
+```
+
+### Single-hospital run
+
+Copy `tests/quorum1-b2.sh` to the host and, with Hospital B's and C's client services at 0, run
+`bash ~/quorum1-b2.sh <envelope_id>`. It runs a 3-round `AB_BASE` run with `min_clients` 1 and passes only if
+the run is new, every round admitted exactly `org://HospitalA`, no client was refused and all 3 rounds completed.
+The dashboard sends the hub's last `min_clients`, so a single-hospital run from the dashboard needs one initialise
+with `min_clients` 1 first; check that the hub reports `min_clients` 1 before starting. A+B runs stay at 2.
+
+### Restarts
+
+The hub keeps the registered Flower server and clients in memory, and each registers once, when it starts. After a
+hub or host restart, force a new deployment of the Flower server and of every running client, then select the
+envelope. A recovery through the hub's own api, without redeploying, is to follow separately. After each run the
+clients exit and take about 3 minutes to come back: wait for the tasks before starting a run.
+
+### Tested on 16 Nov 2026
+
+Keys made in A's, B's and C's accounts and registered; Mode 1A (A, B members, C guest) PASS; the single-hospital
+run PASS; a dashboard A+B run completed; a reboot with the bind mount in place; Test1F on the five accounts,
+Test1B and Test1C PASS; Test0C 5A, 5C and 5D GREEN, with 5E case 1 failing on the agent's choice of representation
+(a language-model choice, not an admission decision).
+
 ## Park, unpark, destroy
 
 **Park:** `desired_count` defaults to 0, so a plain plan and apply parks a root (the loop applies
@@ -455,8 +551,7 @@ Approximate London on-demand prices; check the pricing pages before relying on t
 ## Known limitations
 
 - Public task IPs and an internet gateway, no NAT, as in L1-A. No group admits anything from the
-  internet. VPC endpoints for ECR, CloudWatch Logs and Secrets Manager (and an S3 gateway endpoint
-  for image layers) would replace them; the clients still download MedMNIST when they start.
+  internet. VPC endpoints for ECR, CloudWatch Logs and Secrets Manager would replace them; without `data_bucket` the clients still download MedMNIST when they start (the S3 gateway endpoint exists once `data_bucket` is on).
 - Rules use CIDRs, not security-group references across accounts. Each client and the server
   have a dedicated /24 holding one service, and the hub is a /32.
 - The cross-account `/vault` mount pins one EFS mount target (one zone), so there is no failover
@@ -466,9 +561,12 @@ Approximate London on-demand prices; check the pricing pages before relying on t
   needed once the associations exist.
 - The host's own Terraform (`../aws-l0-host`) manages the instance's security groups; an apply of
   it would detach L1-A's and L1-B1's groups.
-- With Secrets Manager, anything in a hospital's account that can read its secret holds that
-  hospital's execution key. The keys are generated on the governance host and copied in, so the
-  host holds every hospital's key until L1-B2 creates them in the hospitals' own accounts.
+- With Secrets Manager (no KMS key of our own), anything in a hospital's account that can read its
+  secret holds that hospital's execution key. With L1-B2 the keys are made in the hospitals' own
+  accounts and the host holds none of them; replacing a key is an admin edit of the issuer registry
+  (no revocation feature).
+- Until L1-B2 the Flower account could read the people's keys on the shared EFS. Moving them stops
+  that from then on; outside a sandbox those keys would be replaced.
 - ECS Exec is on for the services, which the probes use; anyone allowed `ecs:ExecuteCommand` in an
   account can read a running client's key. It should be off except when testing.
 - Flower's gRPC (8080) and its control API (8081) are not encrypted; the traffic stays inside the
@@ -477,7 +575,8 @@ Approximate London on-demand prices; check the pricing pages before relying on t
 
 ## Not in this directory
 
-- **L1-B2** (roadmap §6.5 to §6.7): hospital-owned source data in S3, execution keys created in
-  each hospital's account, Flower-owned storage instead of the central EFS. It is a separate
-  change.
+- **Flower-owned storage** (roadmap §6.7): run files, models and metrics stay on the governance EFS
+  for December, as decided; people's and admin keys stay in the governance account (no CSR flow).
+- **Scripts that expect key files on the host**: `demo_start.sh`, `bootstrap_members.sh` and
+  `preflight_bootstrap.sh`. Don't run them on an aws host after L1-B2.
 - **The hub on ECS** (L1-C), **Bedrock**, and **GPU** clients.

@@ -25,9 +25,45 @@ locals {
     CANCER_SAMPLES_PER_AB_HOSPITAL = var.cancer_samples_per_ab_hospital
     PATHMNIST_PARTITION_PROFILE    = var.pathmnist_partition_profile
     PATHMNIST_PARTITION_SEED       = var.pathmnist_partition_seed
-    MEDMNIST_ROOT                  = "/tmp/medmnist"
+    MEDMNIST_ROOT                  = var.data_bucket ? "/data" : "/tmp/medmnist" # B2: copied from S3 (b2.tf)
     DEVICE                         = lower(var.compute_backend)
-  }, var.workload == "pathmnist" ? {} : { WORKLOAD = var.workload })
+    },
+    var.workload == "pathmnist" ? {} : { WORKLOAD = var.workload },
+  )
+
+  client_name = "flower-client-${lower(var.hospital)}"
+  log_options = {
+    "awslogs-group"         = module.base.log_group
+    "awslogs-region"        = var.region
+    "awslogs-stream-prefix" = local.client_name
+  }
+
+  client = {
+    name        = local.client_name
+    image       = var.flower_client_image
+    essential   = true
+    environment = [for k, v in local.env : { name = k, value = tostring(v) }]
+    # Issue #7: this hospital's Flower execution key, from this account's Secrets Manager.
+    secrets          = [{ name = "EXECUTION_KEY_HEX", valueFrom = aws_secretsmanager_secret.execution_key.arn }]
+    logConfiguration = { logDriver = "awslogs", options = local.log_options }
+  }
+
+  # B2: copies this hospital's dataset from its own bucket into the task, then
+  # exits; the client starts only if the copy succeeded. The client finds the
+  # file in MEDMNIST_ROOT, checks its MD5 and does not download anything.
+  fetch_data = {
+    name             = "fetch-data"
+    image            = var.fetch_image
+    essential        = false
+    command          = ["s3", "cp", "s3://${try(aws_s3_bucket.data[0].bucket, "")}/${var.data_file}", "/data/${var.data_file}", "--only-show-errors"]
+    mountPoints      = [{ sourceVolume = "data", containerPath = "/data", readOnly = false }]
+    logConfiguration = { logDriver = "awslogs", options = local.log_options }
+  }
+
+  client_with_data = merge(local.client, {
+    mountPoints = [{ sourceVolume = "data", containerPath = "/data", readOnly = true }]
+    dependsOn   = [{ containerName = "fetch-data", condition = "SUCCESS" }]
+  })
 }
 
 module "base" {
@@ -73,22 +109,17 @@ resource "aws_ecs_task_definition" "client" {
     cpu_architecture        = "X86_64"
   }
 
-  container_definitions = jsonencode([{
-    name        = "flower-client-${lower(var.hospital)}"
-    image       = var.flower_client_image
-    essential   = true
-    environment = [for k, v in local.env : { name = k, value = tostring(v) }]
-    # Issue #7: this hospital's Flower execution key, from this account's Secrets Manager.
-    secrets = [{ name = "EXECUTION_KEY_HEX", valueFrom = aws_secretsmanager_secret.execution_key.arn }]
-    logConfiguration = {
-      logDriver = "awslogs"
-      options = {
-        "awslogs-group"         = module.base.log_group
-        "awslogs-region"        = var.region
-        "awslogs-stream-prefix" = "flower-client-${lower(var.hospital)}"
-      }
+  # B2: a task-local volume shared by fetch-data and the client; it goes when the task stops.
+  dynamic "volume" {
+    for_each = var.data_bucket ? [1] : []
+    content {
+      name = "data"
     }
-  }])
+  }
+
+  # Encoded per branch: a conditional between the two object shapes would turn
+  # readOnly into a string.
+  container_definitions = var.data_bucket ? jsonencode([local.fetch_data, local.client_with_data]) : jsonencode([local.client])
 }
 
 resource "aws_ecs_service" "client" {

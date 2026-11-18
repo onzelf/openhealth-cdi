@@ -3,3 +3,6 @@ profile     = "<Sandbox-33 CLI profile>"
 hospital    = "B"
 vpc_cidr    = "10.32.0.0/16"
 subnet_cidr = "10.32.10.0/24"
+
+# L1-B2: load the dataset from this account's own S3 bucket (b2.tf)
+data_bucket = true
