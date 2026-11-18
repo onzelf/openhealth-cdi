@@ -6,3 +6,5 @@ terraform.tfstate.d/
 *.tfvars.json
 tfplan
 *.tfplan
+# L1-B2: public key files carry secret names and version ids
+new-keys/
