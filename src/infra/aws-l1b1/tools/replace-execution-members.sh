@@ -12,7 +12,9 @@
 #   3. registers the new public key through the issuer's own API with the organisation's admin
 #      certificate, exactly as src/tools/bootstrap_members.sh does;
 #   4. reads the members list back and checks the new key is the one registered.
-# If the registration fails, the registry file is restored from that backup before the script stops.
+# If the registration or the read-back check fails, the registry file is restored from that backup before
+# the script stops.
+# A failure stops at that entry: entries already replaced keep their new keys; rerun with the same files.
 # A rerun with the same files is safe. The edit is not taken under the issuer's own registry lock, so
 # don't run it while anything else registers members on that issuer.
 # Audrey, Bob, Charlie and every other entry are untouched. Run from ~/openhealth-cdi.
@@ -27,6 +29,12 @@ pass() { printf 'PASS %s\n' "$*"; }
 fail() { printf 'FAIL %s\n' "$*" >&2; exit 1; }
 [[ $# -ge 1 ]] || fail "usage: $0 <execution-public-x.json>..."
 for c in curl jq docker; do command -v "$c" >/dev/null || fail "missing $c"; done
+
+restore() {  # put the backup back, then stop: $1 says why
+  docker exec "${container}" cp "${backup}" "${registry}" \
+    && fail "$1; registry restored from ${backup}" \
+    || fail "$1 and the restore failed: copy ${backup} over ${registry} in ${container}"
+}
 
 issuer_for() {  # org -> container, host name, admin cert prefix
   case "$1" in
@@ -79,16 +87,12 @@ PY
   status="$(curl -sS --cacert "${CERTS}/ca.crt" --cert "${CERTS}/${cert}.crt" --key "${CERTS}/${cert}.key" \
     --resolve "${host}:${ISSUER_PORT}:${ISSUER_IP}" -o /dev/null -w '%{http_code}' \
     -X POST -H 'content-type: application/json' -d "${body}" "https://${host}:${ISSUER_PORT}/members/register" || true)"
-  if [[ "${status}" != "200" ]]; then
-    docker exec "${container}" cp "${backup}" "${registry}" \
-      && fail "registration of ${sub} returned HTTP ${status:-none}; registry restored from ${backup}" \
-      || fail "registration of ${sub} returned HTTP ${status:-none} and the restore failed: copy ${backup} over ${registry} in ${container}"
-  fi
+  [[ "${status}" == "200" ]] || restore "registration of ${sub} returned HTTP ${status:-none}"
 
   # 4. read it back
   got="$(curl -sS --cacert "${CERTS}/ca.crt" --cert "${CERTS}/${cert}.crt" --key "${CERTS}/${cert}.key" \
     --resolve "${host}:${ISSUER_PORT}:${ISSUER_IP}" "https://${host}:${ISSUER_PORT}/members" \
     | jq -r --arg sub "${sub}" '.members[] | select(.sub == $sub) | "\(.pub_b64) \(.jkt)"' || true)"
-  [[ "${got}" == "${pub} ${jkt}" ]] || fail "${sub}: the registry does not hold the new key"
+  [[ "${got}" == "${pub} ${jkt}" ]] || restore "${sub}: the new key could not be confirmed in the registry"
   pass "${sub} at ${org} now holds the key made in Hospital $(jq -r .hospital "${file}")'s account"
 done

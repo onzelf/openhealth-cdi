@@ -480,13 +480,22 @@ sudo systemctl daemon-reload
 docker start holder-signer && docker restart fc-hub
 ```
 
-### Single-hospital run
+### Single-hospital run (optional diagnostic)
 
-Copy `tests/quorum1-b2.sh` to the host and, with Hospital B's and C's client services at 0, run
+A+B (`min_clients` 2) is the execution baseline. The quorum of one agreed for L1-B2 is the governance quorum, not
+Flower's: a single-hospital Flower run is an optional diagnostic, not an acceptance test.
+
+To run it, copy `tests/quorum1-b2.sh` to the host and, with Hospital B's and C's client services at 0, run
 `bash ~/quorum1-b2.sh <envelope_id>`. It runs a 3-round `AB_BASE` run with `min_clients` 1 and passes only if
-the run is new, every round admitted exactly `org://HospitalA`, no client was refused and all 3 rounds completed.
-The dashboard sends the hub's last `min_clients`, so a single-hospital run from the dashboard needs one initialise
-with `min_clients` 1 first; check that the hub reports `min_clients` 1 before starting. A+B runs stay at 2.
+the run is new, every round admitted exactly `org://HospitalA`, no client was refused and all 3 rounds completed;
+it stops with FAIL and a non-zero exit on anything else, including a failed command.
+The dashboard sends the hub's last `min_clients`, so after this diagnostic initialise once with `min_clients` 2
+and check that the hub reports 2 before the next A+B run from the dashboard:
+
+```
+curl -fsS -X POST -H 'content-type: application/json' -d '{"run_id":"local-pathmnist-ab-001","phase":"AB_BASE","rounds":3,"min_clients":2}' http://127.0.0.1:8080/experiments/initialise
+curl -fsS http://127.0.0.1:8080/experiments/local-pathmnist-ab-001/status | jq .min_clients
+```
 
 ### Restarts
 
@@ -498,7 +507,7 @@ clients exit and take about 3 minutes to come back: wait for the tasks before st
 ### Tested on 16 Nov 2026
 
 Keys made in A's, B's and C's accounts and registered; Mode 1A (A, B members, C guest) PASS; the single-hospital
-run PASS; a dashboard A+B run completed; a reboot with the bind mount in place; Test1F on the five accounts,
+run (optional diagnostic) PASS; a dashboard A+B run completed; a reboot with the bind mount in place; Test1F on the five accounts,
 Test1B and Test1C PASS; Test0C 5A, 5C and 5D GREEN, with 5E case 1 failing on the agent's choice of representation
 (a language-model choice, not an admission decision).
 
