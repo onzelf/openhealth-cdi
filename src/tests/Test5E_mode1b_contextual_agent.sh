@@ -542,6 +542,7 @@ run_context_case() {
       --arg representation "${expected_representation}" '
         .agent_decision.action == $action
         and .agent_decision.fallback == false
+        and .agent_decision.available_actions == ["no_transform"]
         and .executed == true
         and .representation == $representation
         and ((.prediction.sample_image.image_b64 // "") | length > 0)
@@ -563,6 +564,7 @@ run_context_case() {
       --arg derivative "${DERIVATIVE_REPRESENTATION}" '
         .agent_decision.action == $action
         and .agent_decision.fallback == false
+        and .agent_decision.available_actions == ["blur_image", "refuse"]
         and .unbind_admission.allow == true
         and .release_admission.allow == true
         and .release_admission.governed_value_binding_result == "verified"
@@ -685,6 +687,7 @@ jq -e '
   .source_admission.allow == false
   and .agent_decision.action == "blur_image"
   and .agent_decision.fallback == false
+  and .agent_decision.available_actions == ["blur_image", "refuse"]
   and .hal_inference.admission.allow == true
   and .unbind_admission.allow == true
   and .release_admission.allow == false

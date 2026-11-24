@@ -2407,13 +2407,14 @@ def mode1b_agent_request(
         source_admission.get("allow", False)
     )
 
-    available_actions = [
-        "blur_image",
-        "refuse",
-    ]
-
+    # The hub builds Hal's action space from the Gatekeeper's source decision.
+    # An authorised source is returned as it is: Hal is not offered a
+    # downgrade. Without source authority Hal may choose a derivative, which
+    # still needs the unbind and consume_derivative admissions, or refuse.
     if source_authorized:
-        available_actions.insert(0, "no_transform")
+        available_actions = ["no_transform"]
+    else:
+        available_actions = ["blur_image", "refuse"]
 
     decision = hal_decide({
         "request_goal":
@@ -2422,13 +2423,18 @@ def mode1b_agent_request(
             "source_representation_authorized":
                 source_authorized,
         },
+        # The image's content isn't assessed before the decision, so nothing
+        # is asserted about it.
         "resource_context": {
             "type": "pathology_image",
-            "contains_cancer_related_collateral": True,
             "requested_tissue": req.requested_tissue,
         },
         "available_actions": available_actions,
     })
+    if not isinstance(decision, dict):
+        raise HTTPException(502, "hal_reasoning_error:decision_not_an_object")
+    # The hub's own record of what it offered, beside Hal's reply.
+    decision = {**decision, "available_actions": list(available_actions)}
 
     action = str(decision.get("action") or "")
 
@@ -2438,6 +2444,26 @@ def mode1b_agent_request(
             "source_admission": source_admission,
             "agent_decision": decision,
             "executed": False,
+        }
+
+    # An action that wasn't offered is never executed. This is the hub
+    # rejecting the agent's reply, not Hal refusing: say so and record it.
+    if action not in available_actions:
+        append_event(
+            "mode1b_agent_action_rejected",
+            run_id=req.run_id,
+            envelope_id=selected_id,
+            requester=req.requester,
+            requested_tissues=[req.requested_tissue],
+            selected_action=action[:64],
+            available_actions=available_actions,
+        )
+        return {
+            "requester": req.requester,
+            "source_admission": source_admission,
+            "agent_decision": decision,
+            "executed": False,
+            "refusal_reason": "agent_action_not_offered",
         }
 
     hal_inference = mode1b_inference(
